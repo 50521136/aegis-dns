@@ -1,0 +1,101 @@
+# ============================================================================
+# DNSForge (aegis-dns) 配置示例
+#
+# 用法：
+#   cp config.example.yaml config.yaml
+#   编辑下面带 ★ 的项，其余保持默认即可
+#
+# 约定（务必先读，能省掉大部分排障时间）：
+#   1. 密钥/密码不要写在这个文件里，写 ${VAR} 占位符，值放同目录的 .env
+#      （或直接 export 到环境变量）。未设置的环境变量会保留原文，
+#      启动时会明确报错而不是静默用一个空密钥。
+#   2. 53 / 853 / 443 由 dnsd 直接监听，不要在前面挂任何反向代理。
+#   3. api.tls_listen 不能配成 443 —— 那个端口被 dnsd 的 DoH 占着。
+#      面板默认走 8443。
+# ============================================================================
+
+# ★ 主域名。用户的专属子域名由它派生：
+#      <client_id>.<domain>  例如 k7m2pqx4ab.dns.example.com
+#   必须配一张能覆盖 *.domain 的通配证书。
+#   注意：通配符只覆盖一级，所以如果证书是 *.example.com，
+#   这里就该填 example.com，而不是 dns.example.com。
+domain: "dns.example.com"
+
+# 数据目录：SQLite、配置快照、证书、日志全在这一个目录下。
+# dnsd 与 apid 必须指向同一个目录。
+data_dir: "./data"
+
+dns:
+  listen_udp: ":53"
+  listen_tcp: ":53"
+  listen_dot: ":853"
+  # dnsd 自己做 TLS 终止的 DoH 端口。
+  listen_doh: ":443"
+  # 明文 DoH，默认关闭。仅当你想在前面挂反向代理终止 TLS、
+  # 或者本机 curl 调试时打开（例如 ":8053"）。
+  listen_doh_plain: ""
+
+  # ★ 证书路径。留空则使用 data/certs/fullchain.pem 与 privkey.pem。
+  cert_file: ""
+  key_file: ""
+
+  # 没有证书时是否自签一张（仅供内网测试；客户端需要 -k）。
+  dev_tls: false
+
+  # 内置 ACME 自动签发（DNS-01）。
+  # 本版本要求证书以文件方式提供（手动上传或由 certbot/acme.sh 签发），
+  # 内置签发尚未实现；打开 enabled 会在启动日志里给出明确提示。
+  acme:
+    enabled: false
+    provider: cloudflare      # cloudflare | alidns | dnspod
+    token_env: CF_API_TOKEN
+    email: ""
+    directory: ""
+
+  # dnsd 内存查询日志环形缓冲容量（未落库前的暂存）。
+  query_log_ring: 1000
+
+api:
+  # API 与内嵌前端（HTTP）。建议只监听 127.0.0.1 或由防火墙限制，
+  # 因为面板的 HTTPS 走下面的 tls_listen。
+  listen: ":8080"
+
+  # ★ 面板 HTTPS 端口。不要改成 :443（与 dnsd 的 DoH 冲突）。
+  tls_listen: ":8443"
+  # 留空则复用 dns.dns.cert_file / key_file 指向的同一张通配证书。
+  cert_file: ""
+  key_file: ""
+
+  # ★ JWT 签名密钥。用 `./aegis-apid -gen-secret` 生成，写进 .env：
+  #     JWT_SECRET=<生成的 64 位十六进制串>
+  #   至少 32 字节，否则启动会被拒绝。
+  jwt_secret: "${JWT_SECRET}"
+
+  admin:
+    username: "admin"
+    # ★ 首次启动用它创建管理员账号，之后密码入库，这一行就可以删掉。
+    password: "${ADMIN_PASSWORD}"
+    email: ""
+
+  # 只有在 apid 前面确实有反向代理时才填，否则 X-Forwarded-For 会被伪造，
+  # 按 IP 的限流形同虚设。
+  trusted_proxies: []
+
+  # 前端由 apid 同源托管，默认不需要 CORS。留空即可。
+  cors_origins: []
+
+# 默认上游 DNS。用户可以在面板里为自己覆盖。
+# 国内服务器建议用 223.5.5.5 / 119.29.29.29，1.1.1.1 与 8.8.8.8 常常不可达。
+upstreams:
+  - "223.5.5.5"
+  - "119.29.29.29"
+  - "1.1.1.1"
+
+update:
+  # ★ GitHub 仓库（owner/repo），用于检查与执行在线更新。
+  repo: "50521136/aegis-dns"
+  channel: "stable"   # stable | beta
+
+log:
+  level: "info"       # debug | info | warn | error
+  format: "text"      # text | json

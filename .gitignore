@@ -1,0 +1,31 @@
+# 构建产物
+/out/
+/dist/
+*.exe
+
+# 运行时数据（数据库 / 快照 / 证书 / 日志）
+/data/
+*.db
+*.db-wal
+*.db-shm
+/config.yaml
+!deploy/config.example.yaml
+!server/config.example.yaml
+
+# 前端
+web/node_modules/
+web/dist/
+web/.vite/
+
+# 内嵌前端产物：完全由发布流程填充，仓库里只保留一个 .gitkeep 占位
+# （go:embed 需要目录里至少有一个文件才能编译）。
+# 这样能彻底避免「不小心把带哈希文件名的 index.html 提交上去、但 assets 被忽略」
+# 造成的坏提交 —— 那种仓库 clone 下来编译出的二进制会白屏。
+server/internal/api/webdist/dist/*
+!server/internal/api/webdist/dist/.gitkeep
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp

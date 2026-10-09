@@ -1,0 +1,52 @@
+# aegis-dnsd —— DNS 引擎
+#
+# 只有本进程需要绑定 53/853/443 这类特权端口，因此也是唯一需要
+# CAP_NET_BIND_SERVICE 的服务。apid 监听 8080/8443，不需要任何 capability。
+[Unit]
+Description=AegisDNS Engine (dnsd) - DoT/DoH/UDP/TCP resolver
+Documentation=https://github.com/50521136/aegis-dns
+# 不依赖 apid：dnsd 只读磁盘上的配置快照，apid 挂掉它照常解析。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/aegis/aegis-dnsd --config /opt/aegis/config.yaml
+WorkingDirectory=/opt/aegis
+EnvironmentFile=-/opt/aegis/.env
+
+Restart=always
+RestartSec=3
+# 不限制重启次数：DNS 中断的影响远大于重启风暴。
+StartLimitIntervalSec=0
+
+# 优雅关闭：留出时间把最后一批统计落库并关掉监听。
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# --- 权限加固（文档 10.3）---
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# 唯一可写的目录：数据目录（SQLite + 快照 + 证书）。
+ReadWritePaths=/opt/aegis/data
+LimitNOFILE=65535
+
+# --- 资源约束 ---
+# 参考文档 15.2 容量规划：小型部署 256MB 足够；
+# 中型（<500 用户 / <100 万规则）建议提到 1G。
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

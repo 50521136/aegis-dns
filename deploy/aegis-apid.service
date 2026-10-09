@@ -1,0 +1,45 @@
+# aegis-apid —— REST API + 内嵌前端
+#
+# 本进程挂掉不影响 DNS 解析（dnsd 已经把配置载入内存），
+# 影响的只是管理面板与 API。
+[Unit]
+Description=AegisDNS API (apid) - REST API and embedded web UI
+Documentation=https://github.com/50521136/aegis-dns
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/aegis/aegis-apid --config /opt/aegis/config.yaml
+WorkingDirectory=/opt/aegis
+EnvironmentFile=-/opt/aegis/.env
+
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=0
+
+KillSignal=SIGTERM
+# 在线更新后 apid 会自己 os.Exit(0)，systemd 随即拉起新版本。
+TimeoutStopSec=15
+
+# --- 权限加固 ---
+# 不需要 CAP_NET_BIND_SERVICE：监听的是 8080 / 8443 非特权端口。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/opt/aegis/data
+LimitNOFILE=65535
+
+# apid 需要读 SQLite、写快照、拉订阅；规则多时内存占用高于 dnsd。
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

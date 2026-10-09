@@ -1,0 +1,212 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   设计令牌（Design Tokens）—— 以 RGB 通道三元组存储，
+   便于 Tailwind 使用 `rgb(var(--x) / <alpha-value>)` 支持透明度修饰符。
+   数值严格对应设计文档第十一章 11.3。
+   ============================================================ */
+@layer base {
+  :root {
+    /* 浅色主题 */
+    --background: 246 247 251; /* #F6F7FB */
+    --foreground: 17 24 39; /* #111827 */
+
+    --card: 255 255 255; /* #FFFFFF */
+    --card-foreground: 17 24 39; /* #111827 */
+
+    --popover: 255 255 255;
+    --popover-foreground: 17 24 39;
+
+    --primary: 99 102 241; /* #6366F1 */
+    --primary-foreground: 255 255 255; /* #FFFFFF */
+
+    --secondary: 243 244 246; /* #F3F4F6 */
+    --secondary-foreground: 17 24 39;
+
+    --accent: 34 211 238; /* #22D3EE */
+    --accent-foreground: 11 16 32;
+
+    --muted: 243 244 246; /* #F3F4F6 */
+    --muted-foreground: 107 114 128; /* #6B7280 */
+
+    --border: 229 231 235; /* #E5E7EB */
+    --input: 229 231 235;
+    --ring: 99 102 241;
+
+    --success: 16 185 129; /* #10B981 */
+    --success-foreground: 255 255 255;
+
+    --warning: 245 158 11; /* #F59E0B */
+    --warning-foreground: 255 255 255;
+
+    --danger: 239 68 68; /* #EF4444 */
+    --danger-foreground: 255 255 255;
+
+    /* 圆角 */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+  }
+
+  .dark {
+    /* 暗色主题 */
+    --background: 11 16 32; /* #0B1020 */
+    --foreground: 229 231 235; /* #E5E7EB */
+
+    --card: 20 26 46; /* #141A2E */
+    --card-foreground: 229 231 235;
+
+    --popover: 20 26 46;
+    --popover-foreground: 229 231 235;
+
+    --primary: 129 140 248; /* #818CF8 */
+    --primary-foreground: 11 16 32; /* #0B1020 */
+
+    --secondary: 30 41 59; /* #1E293B */
+    --secondary-foreground: 229 231 235;
+
+    --accent: 34 211 238; /* #22D3EE */
+    --accent-foreground: 11 16 32;
+
+    --muted: 30 41 59; /* #1E293B */
+    --muted-foreground: 148 163 184; /* #94A3B8 */
+
+    --border: 30 41 59; /* #1E293B */
+    --input: 30 41 59;
+    --ring: 129 140 248;
+
+    --success: 52 211 153; /* #34D399 */
+    --success-foreground: 11 16 32;
+
+    --warning: 251 191 36; /* #FBBF24 */
+    --warning-foreground: 11 16 32;
+
+    --danger: 248 113 113; /* #F87171 */
+    --danger-foreground: 11 16 32;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    min-height: 100dvh;
+  }
+
+  /* 数字统一使用等宽数字，避免跳动 */
+  .tabular-nums,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 输入框在移动端字号 >= 16px，防止 iOS 自动缩放 */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  @media (min-width: 768px) {
+    input,
+    textarea,
+    select {
+      font-size: 14px;
+    }
+  }
+
+  /* 自定义滚动条 */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--border));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--muted-foreground) / 0.5);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* 卡片规范：rounded-2xl bg-card p-6 shadow-sm border border-border/50 */
+  .card-base {
+    @apply rounded-2xl bg-card p-6 shadow-sm border border-border/50 transition-all duration-200;
+  }
+  .card-hover {
+    @apply hover:shadow-md hover:-translate-y-0.5;
+  }
+
+  /* 等宽地址/域名显示 */
+  .mono-addr {
+    @apply font-mono text-sm break-all;
+  }
+}
+
+@layer utilities {
+  /* 安全区（刘海屏） */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom);
+  }
+  .h-safe-bottom {
+    height: env(safe-area-inset-bottom);
+  }
+
+  /* 隐藏滚动条但保留滚动能力 */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .animate-in-up {
+    animation: slide-up 150ms ease-out both;
+  }
+}
+
+/* ============================================================
+   可访问性：尊重 prefers-reduced-motion
+   命中时禁用位移与缩放，仅保留透明度变化（设计文档 11.5）
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 关闭所有由 Tailwind animate 插件产生的位移/缩放 */
+  .animate-in,
+  [data-state='open'],
+  [data-state='closed'] {
+    transform: none !important;
+  }
+}

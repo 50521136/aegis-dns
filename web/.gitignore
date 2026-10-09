@@ -1,0 +1,28 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物（由 CI / apid 内嵌时生成，不入库）
+dist/
+dist-ssr/
+
+# 本地环境
+.env
+.env.local
+.env.*.local
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.local
+
+# 日志
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript 增量缓存
+*.tsbuildinfo

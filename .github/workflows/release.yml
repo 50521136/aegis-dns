@@ -1,0 +1,178 @@
+name: Release
+
+# 打 tag（v1.0.0 之类）即触发：构建前端 → 交叉编译多平台 → 发布到 GitHub Releases。
+# 服务器上只需 wget + tar + chmod +x，不需要 Docker，也不需要编译环境。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v1.0.0，需已存在）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. 构建前端
+  # ---------------------------------------------------------------------------
+  build-web:
+    name: Build web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: web
+        # 没有 lockfile 时回落到普通 install，避免首次发布直接失败。
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+
+      - name: Build
+        working-directory: web
+        run: pnpm build
+
+      - name: Verify dist
+        run: |
+          test -f web/dist/index.html || { echo "web/dist/index.html 不存在，前端构建失败"; exit 1; }
+          echo "dist 内容："
+          find web/dist -type f | head -30
+          du -sh web/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2. 交叉编译并发布
+  # ---------------------------------------------------------------------------
+  release:
+    name: Release ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: build-web
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: server/go.sum
+
+      - name: Download web dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          # 直接落到 go:embed 的目标目录，覆盖仓库里的占位 index.html。
+          path: server/internal/api/webdist/dist
+
+      - name: Verify embedded frontend
+        run: |
+          test -f server/internal/api/webdist/dist/index.html || { echo "前端产物未落到 webdist/dist"; exit 1; }
+          grep -q 'assets/' server/internal/api/webdist/dist/index.html \
+            && echo "index.html 已引用构建产物" \
+            || echo "::warning::index.html 里没找到 assets/ 引用，可能内嵌的是占位页"
+
+      - name: Build binaries
+        working-directory: server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          # workflow_dispatch 时 GITHUB_REF_NAME 是分支名，用输入值覆盖。
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VER="${{ inputs.tag }}"; VER="${VER#v}"
+          fi
+          COMMIT="${GITHUB_SHA::7}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w \
+            -X github.com/50521136/aegis-dns/server/internal/version.Version=${VER} \
+            -X github.com/50521136/aegis-dns/server/internal/version.Commit=${COMMIT} \
+            -X github.com/50521136/aegis-dns/server/internal/version.BuildTime=${BUILD_TIME}"
+
+          for bin in dnsd apid; do
+            out="../out/aegis-${bin}-${VER}-${GOOS}-${GOARCH}"
+            mkdir -p "$out"
+            # CGO_ENABLED=0 是交叉编译的前提：SQLite 用的是纯 Go 实现
+            # （modernc.org/sqlite），所以不需要 C 工具链。
+            CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" \
+              go build -trimpath -ldflags "${LDFLAGS}" \
+              -o "${out}/aegis-${bin}" ./cmd/${bin}
+          done
+
+          ls -lh ../out/aegis-${bin}-${VER}-${GOOS}-${GOARCH}/
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VER="${{ inputs.tag }}"; VER="${VER#v}"
+          fi
+          cd out
+          for d in aegis-*-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}; do
+            [ -d "$d" ] || continue
+            if [[ "${{ matrix.goos }}" == "windows" ]]; then
+              # Windows 用 zip：tar.gz 在资源管理器里不友好。
+              (cd "$d" && zip -q -r "../${d}.zip" .)
+            else
+              tar czf "${d}.tar.gz" "$d"
+            fi
+          done
+          ls -lh
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: |
+            out/*.tar.gz
+            out/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
+  # ---------------------------------------------------------------------------
+  # 3. 汇总校验和（独立 job：必须在所有平台产物都上传完才能算）
+  # ---------------------------------------------------------------------------
+  checksums:
+    name: Checksums
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all assets and compute checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          mkdir -p assets && cd assets
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern '*.tar.gz' --pattern '*.zip' --clobber
+          sha256sum *.tar.gz *.zip > checksums.txt
+          echo "生成的校验和："
+          cat checksums.txt
+          gh release upload "$TAG" checksums.txt --repo "${{ github.repository }}" --clobber
