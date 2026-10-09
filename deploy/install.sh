@@ -101,6 +101,25 @@ BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 WORK=$(mktemp -d /tmp/aegis-install-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
+# --- 升级：先停服务再换二进制 ---
+#
+# 必须停：Linux 上覆盖一个正在运行的二进制的写入会返回 ETXTBSY
+# （Text file busy），`install` 直接失败。首次安装时服务还不存在，
+# 所以这个坑只在「升级」路径上出现 —— 也就是最容易被跳过的路径。
+#
+# 停 dnsd 会短暂中断解析。若在意这几十毫秒，可改用「先装到临时名再
+# rename」的原子替换（rename 不会碰到 ETXTBSY），但那样 dnsd 与 apid
+# 的版本会短暂不一致。这里选择停服务，保证版本一致。
+IS_UPGRADE=0
+if [[ -f "${INSTALL_DIR}/aegis-dnsd" ]]; then
+  IS_UPGRADE=1
+  if command -v systemctl >/dev/null 2>&1; then
+    info "检测到已有安装，先停止服务以便替换二进制"
+    systemctl stop aegis-dnsd aegis-apid 2>/dev/null || true
+    ok "服务已停止（升级模式）"
+  fi
+fi
+
 for comp in dnsd apid; do
   asset="aegis-${comp}-${VER_NUM}-${PLATFORM}.tar.gz"
   info "下载 ${asset}"
@@ -165,22 +184,39 @@ else
 fi
 
 # --- 生成密钥与密码 ---
-JWT_SECRET=$("${INSTALL_DIR}/aegis-apid" -gen-secret)
-ADMIN_PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 20)
+#
+# 升级时必须复用已有的 .env。无条件重写会：
+#   1. 换掉 JWT_SECRET —— 所有已登录用户的会话立刻失效；
+#   2. 重置 ADMIN_PASSWORD —— 管理员自己改过的密码被悄悄换掉，
+#      而且新密码只在安装输出里出现一次，人很容易就此被挡在面板外。
+# 所以「已存在就沿用」是硬要求，不是优化。
+ENV_FILE="${INSTALL_DIR}/.env"
+JWT_SECRET=""
+ADMIN_PASSWORD=""
+if [[ -f "$ENV_FILE" ]]; then
+  JWT_SECRET=$(grep -E '^JWT_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+  ADMIN_PASSWORD=$(grep -E '^ADMIN_PASSWORD=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+fi
+if [[ -n "$JWT_SECRET" && -n "$ADMIN_PASSWORD" ]]; then
+  ok ".env 已存在，沿用原有 JWT 密钥与管理员密码（未重置）"
+else
+  [[ -n "$JWT_SECRET" ]] || JWT_SECRET=$("${INSTALL_DIR}/aegis-apid" -gen-secret)
+  [[ -n "$ADMIN_PASSWORD" ]] || ADMIN_PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 20)
+fi
 UPSTREAM_LINE='  - "223.5.5.5"
   - "119.29.29.29"
   - "1.1.1.1"'
 
 # --- .env ---
 umask 077
-cat > "${INSTALL_DIR}/.env" <<EOF
+cat > "$ENV_FILE" <<EOF
 # 由 install.sh 生成于 $(date -Iseconds)
 # 修改后执行 systemctl restart aegis-apid 生效。
 JWT_SECRET=${JWT_SECRET}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 EOF
-chmod 600 "${INSTALL_DIR}/.env"
-ok ".env 已生成（含 JWT 密钥与初始管理员密码）"
+chmod 600 "$ENV_FILE"
+ok ".env 已写入 ${ENV_FILE}"
 
 # --- config.yaml ---
 if [[ -f "${INSTALL_DIR}/config.yaml" ]]; then
