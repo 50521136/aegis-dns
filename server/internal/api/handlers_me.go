@@ -67,10 +67,10 @@ func (s *Server) handleDNSConfig(w http.ResponseWriter, r *http.Request) {
 
 // exportPayload 是配置导出的结构（文档 9.3 /me/export）。
 type exportPayload struct {
-	ExportedAt    string              `json:"exported_at"`
-	Version       string              `json:"version"`
-	ClientID      string              `json:"client_id"`
-	Rules         []model.Rule        `json:"rules"`
+	ExportedAt    string               `json:"exported_at"`
+	Version       string               `json:"version"`
+	ClientID      string               `json:"client_id"`
+	Rules         []model.Rule         `json:"rules"`
 	Subscriptions []model.Subscription `json:"subscriptions"`
 }
 
@@ -108,7 +108,7 @@ func derefSubs(in []*model.Subscription) []model.Subscription {
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Rules         []model.Rule        `json:"rules"`
+		Rules         []model.Rule         `json:"rules"`
 		Subscriptions []model.Subscription `json:"subscriptions"`
 	}
 	if !decodeJSON(w, r, &req) {

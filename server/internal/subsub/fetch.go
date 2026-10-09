@@ -23,12 +23,12 @@ const FetchTimeout = 30 * time.Second
 // FetchResult 是一次拉取的结果。
 type FetchResult struct {
 	// NotModified 为 true 表示服务端返回 304，内容未变。
-	NotModified bool
-	Content     []byte
-	ETag        string
+	NotModified  bool
+	Content      []byte
+	ETag         string
 	LastModified string
 	// Truncated 表示内容被大小上限截断。
-	Truncated bool
+	Truncated  bool
 	StatusCode int
 }
 

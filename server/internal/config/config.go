@@ -29,8 +29,8 @@ type DNS struct {
 	CertFile       string `yaml:"cert_file"`
 	KeyFile        string `yaml:"key_file"`
 	// DevTLS 为 true 时，若无证书则自签一张内存证书，方便内网测试。
-	DevTLS bool  `yaml:"dev_tls"`
-	ACME   ACME  `yaml:"acme"`
+	DevTLS bool `yaml:"dev_tls"`
+	ACME   ACME `yaml:"acme"`
 	// QueryLogRing 是内存查询环形缓冲的容量（dnsd 侧，未落库前的暂存）。
 	QueryLogRing int `yaml:"query_log_ring"`
 	// StatsFlushSeconds 是统计批量落库的间隔，默认 60 秒。

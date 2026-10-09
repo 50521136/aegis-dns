@@ -18,6 +18,7 @@ import (
 
 	"github.com/50521136/aegis-dns/server/internal/certmgr"
 	"github.com/50521136/aegis-dns/server/internal/config"
+	"github.com/50521136/aegis-dns/server/internal/id"
 )
 
 // Server 承载全部 DNS 协议监听。
@@ -248,13 +249,54 @@ func (s *Server) handleDOTConn(ctx context.Context, raw net.Conn) {
 }
 
 // firstLabel 取主机名的第一段（k7m2p9xq4a.dns.example.com -> k7m2p9xq4a）。
+//
+// 只有形状合法的 client_id 才会被返回，否则返回空串。
+//
+// 这一点很关键：DoH 客户端用路径式地址时，Host 是**裸域名**
+// （https://dns.example.com/dns-query/<client_id>），它的首段是 "dns" 这类
+// 普通标签。若不校验，调用方会把它当成 client_id 认领下来、查一次查不到，
+// 然后直接掉到来源 IP 兜底 —— 路径段就永远没机会被解析，文档承诺的路径式
+// DoH 会静默失效（表现为「明明带上了 client_id，却走的是别人的规则」）。
 func firstLabel(host string) string {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	if host == "" || strings.Contains(host, ":") {
+		// 含冒号的是 IPv6 字面量或带端口的 Host，一律不认。
 		return ""
 	}
 	label, _, _ := strings.Cut(host, ".")
+	if !id.ValidClientID(label) {
+		return ""
+	}
 	return label
+}
+
+// dohPathClientID 从 DoH 路径里取出 client_id（/dns-query/<client_id> -> <client_id>）。
+//
+// 只取第一段，且必须形状合法：/dns-query 之后可能还有别的东西（某些客户端会
+// 拼 ?dns=... 或附加路径），取第一段即可；形状不合法的直接丢弃，避免把
+// /dns-query/foo 这种垃圾当成租户 id 去查一次。
+//
+// 必须先确认路径确实以 /dns-query 开头：只做 TrimPrefix 的话，像 /other/abc
+// 这种路径 TrimPrefix 不匹配、原样留下，随后取首段就得到 "other" —— 一个恰好
+// 形状合法的假 client_id。虽然当前路由只会把 /dns-query* 交给本函数，
+// 但依赖「调用方保证」的隐式契约太脆，这里显式挡掉。
+func dohPathClientID(path string) string {
+	if path != "/dns-query" && !strings.HasPrefix(path, "/dns-query/") {
+		return ""
+	}
+	rest := strings.TrimPrefix(path, "/dns-query")
+	rest = strings.Trim(rest, "/")
+	if rest == "" {
+		return ""
+	}
+	seg, _, _ := strings.Cut(rest, "/")
+	// 与 firstLabel 一致地做小写归一：Host 和 URL 路径在客户端侧大小写写法不一，
+	// 不归一就会出现「用大写 client_id 的 URL 认不出租户」。
+	seg = strings.ToLower(seg)
+	if !id.ValidClientID(seg) {
+		return ""
+	}
+	return seg
 }
 
 // streamResponseWriter 是流式连接（DoT）的 ResponseWriter 实现。
@@ -345,6 +387,11 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 识别租户：Host 首段优先，其次路径段。
+	//
+	// 路径段必须作为**独立的次级线索**传下去，不能在 Host 段非空时被跳过。
+	// 路径式地址 https://<域名>/dns-query/<client_id> 的 Host 是裸域名，
+	// firstLabel 校验后会返回空串；若这里写成「Host 段非空就不看路径」，
+	// 那么一旦 Host 是别的什么东西，路径段就再也没机会被解析。
 	clientID, source := "", ""
 	host := r.Host
 	if host == "" {
@@ -353,18 +400,23 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 	if cid := firstLabel(host); cid != "" {
 		clientID, source = cid, "host"
 	}
+
+	altID, altSource := "", ""
+	if cid := dohPathClientID(r.URL.Path); cid != "" {
+		altID, altSource = cid, "path"
+	}
+	// Host 没给出线索时，路径段直接升为主线索，保持 hint 语义直观。
 	if clientID == "" {
-		// 路径形如 /dns-query/<client_id>
-		rest := strings.TrimPrefix(r.URL.Path, "/dns-query")
-		rest = strings.Trim(rest, "/")
-		if rest != "" {
-			seg, _, _ := strings.Cut(rest, "/")
-			clientID, source = seg, "path"
-		}
+		clientID, source, altID, altSource = altID, altSource, "", ""
 	}
 
 	cap := &captureWriter{remote: clientAddr(r)}
-	s.handler.Handle(cap, msg, &IdentifyHint{ClientID: clientID, Source: source})
+	s.handler.Handle(cap, msg, &IdentifyHint{
+		ClientID:    clientID,
+		Source:      source,
+		AltClientID: altID,
+		AltSource:   altSource,
+	})
 
 	if cap.msg == nil {
 		http.Error(w, "内部错误", http.StatusInternalServerError)
@@ -404,10 +456,10 @@ func (w *captureWriter) Write(b []byte) (int, error) {
 	w.msg = m
 	return len(b), nil
 }
-func (w *captureWriter) Close() error               { return nil }
-func (w *captureWriter) TsigStatus() error          { return nil }
-func (w *captureWriter) TsigTimersOnly(bool)        {}
-func (w *captureWriter) Hijack()                    {}
+func (w *captureWriter) Close() error        { return nil }
+func (w *captureWriter) TsigStatus() error   { return nil }
+func (w *captureWriter) TsigTimersOnly(bool) {}
+func (w *captureWriter) Hijack()             {}
 
 // clientAddr 从 HTTP 请求还原客户端地址。
 func clientAddr(r *http.Request) net.Addr {

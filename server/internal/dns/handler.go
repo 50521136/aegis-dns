@@ -22,11 +22,23 @@ import (
 //
 // DoT 的 SNI、DoH 的 Host / 路径段在建立连接或解析请求头时就已经拿到，
 // 不必等到 DNS 报文解析。把它显式传下来，比让 handler 去猜更可靠。
+//
+// 线索是**有序**的：ClientID 优先，取不到再退到 AltClientID。
+// 两者都在来源 IP 之前 —— 它们是显式指定的租户，而来源 IP 只是环境推断。
 type IdentifyHint struct {
-	// ClientID 来自 SNI（DoT）或 Host 首段 / 路径段（DoH）。
+	// ClientID 来自 SNI（DoT）或 Host 首段（DoH）。
 	ClientID string
 	// Source 标识线索来源，仅用于日志与调试：sni | host | path | edns。
 	Source string
+	// AltClientID 是次级线索，目前只有 DoH 会填：Host 首段不是合法 client_id
+	// 时（例如客户端只能访问 https://<域名>/dns-query/<client_id> 这种路径式
+	// 地址，此时 Host 是裸域名），用路径段兜底。
+	//
+	// 必须有这一级，否则路径式 DoH 会静默失效：裸域名 Host 的首段会被当成
+	// client_id 查一次、查不到，然后直接掉到来源 IP，路径段永远轮不到。
+	AltClientID string
+	// AltSource 是 AltClientID 的来源标识：path | edns。
+	AltSource string
 }
 
 // Handler 实现 DNS 查询管线（文档第四章）。
@@ -36,7 +48,7 @@ type Handler struct {
 	// 而查询路径上可能有成百上千个 goroutine 正在读它。
 	cache     atomic.Pointer[Cache]
 	collector *stats.Collector
-	log      *slog.Logger
+	log       *slog.Logger
 
 	// sem 限制并发处理的查询数（文档 4.2 max_goroutines）。
 	sem chan struct{}
@@ -50,8 +62,8 @@ type Handler struct {
 	defaults atomic.Pointer[model.Defaults]
 
 	// 指标
-	rejected atomic.Int64
-	panics   atomic.Int64
+	rejected     atomic.Int64
+	panics       atomic.Int64
 	upstreamErrs atomic.Int64
 }
 
@@ -283,6 +295,11 @@ func (h *Handler) identify(snap *registrySnapshot, w dns.ResponseWriter, req *dn
 		}
 		// 线索给了但查不到（例如用户已删）：不猜测，继续往下走。
 	}
+	if hint != nil && hint.AltClientID != "" {
+		if u := snap.LookupClientID(hint.AltClientID); u != nil {
+			return u
+		}
+	}
 	if w != nil {
 		if ip := remoteIP(w.RemoteAddr()); ip != nil {
 			if u := snap.LookupIP(ip); u != nil {
@@ -378,10 +395,10 @@ func (h *Handler) record(userID string, q dns.Question, action, rcode string, du
 // Metrics 返回 dnsd 的运行指标。
 func (h *Handler) Metrics() map[string]any {
 	return map[string]any{
-		"inflight":      h.inflight.Load(),
-		"max_inflight":  cap(h.sem),
-		"rejected":      h.rejected.Load(),
-		"panics":        h.panics.Load(),
+		"inflight":        h.inflight.Load(),
+		"max_inflight":    cap(h.sem),
+		"rejected":        h.rejected.Load(),
+		"panics":          h.panics.Load(),
 		"upstream_errors": h.upstreamErrs.Load(),
 	}
 }

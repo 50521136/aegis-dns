@@ -39,6 +39,19 @@ jobs:
           fi
           echo "go.mod 已整理"
 
+      - name: gofmt
+        working-directory: server
+        # gofmt 只管格式、不改语义，但混在功能提交里会让 diff 失真，
+        # 所以在 CI 里挡住，保证「格式」这件事永远不会成为提交内容的一部分。
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未按 gofmt 格式化："
+            echo "$unformatted"
+            echo "本地执行：cd server && gofmt -w ."
+            exit 1
+          fi
+
       - name: Vet
         working-directory: server
         run: go vet ./...

@@ -48,11 +48,11 @@ type shard struct {
 }
 
 type rollupAcc struct {
-	userID string
-	ts     int64
-	total  int64
+	userID  string
+	ts      int64
+	total   int64
 	blocked int64
-	cached int64
+	cached  int64
 	allowed int64
 	latency int64
 }

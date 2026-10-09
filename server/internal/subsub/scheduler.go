@@ -14,12 +14,12 @@ import (
 
 // RefreshResult 是一次订阅刷新的结果。
 type RefreshResult struct {
-	SubID      string `json:"id"`
-	LastCount  int    `json:"last_count"`
-	LastStatus string `json:"last_status"`
-	FetchedAt  int64  `json:"last_fetched"`
-	DurationMS int64  `json:"duration_ms"`
-	NotModified bool  `json:"not_modified"`
+	SubID       string `json:"id"`
+	LastCount   int    `json:"last_count"`
+	LastStatus  string `json:"last_status"`
+	FetchedAt   int64  `json:"last_fetched"`
+	DurationMS  int64  `json:"duration_ms"`
+	NotModified bool   `json:"not_modified"`
 }
 
 // Manager 负责订阅的拉取与入库。

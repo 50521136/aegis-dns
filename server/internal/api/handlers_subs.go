@@ -208,12 +208,12 @@ func (s *Server) handleRefreshSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":            sub.ID,
-		"last_count":    res.LastCount,
-		"last_fetched":  rfc3339OrEmpty(res.FetchedAt),
-		"last_status":   res.LastStatus,
-		"duration_ms":   res.DurationMS,
-		"not_modified":  res.NotModified,
+		"id":           sub.ID,
+		"last_count":   res.LastCount,
+		"last_fetched": rfc3339OrEmpty(res.FetchedAt),
+		"last_status":  res.LastStatus,
+		"duration_ms":  res.DurationMS,
+		"not_modified": res.NotModified,
 	})
 }
 

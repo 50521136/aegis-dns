@@ -28,13 +28,13 @@ type Registry struct {
 
 // registrySnapshot 是一次构建产生的不可变配置快照。
 type registrySnapshot struct {
-	version   int64
+	version    int64
 	byClientID map[string]*UserRuntime
-	byUserID  map[string]*UserRuntime
-	byIP      *cidrIndex
-	fallback  *UserRuntime
-	defaults  model.Defaults
-	loadedAt  time.Time
+	byUserID   map[string]*UserRuntime
+	byIP       *cidrIndex
+	fallback   *UserRuntime
+	defaults   model.Defaults
+	loadedAt   time.Time
 	// users 是全部租户（含禁用的），供管理统计使用。
 	users []*UserRuntime
 }
@@ -250,10 +250,10 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 		return fmt.Errorf("创建默认上游池失败: %w", err)
 	}
 	fallback := &UserRuntime{
-		UserID:   "",
-		ClientID: "",
-		Enabled:  true,
-		Pool:     fallbackPool,
+		UserID:    "",
+		ClientID:  "",
+		Enabled:   true,
+		Pool:      fallbackPool,
 		RuleStats: fallbackRules.Stats,
 	}
 	fallback.Rules.Store(fallbackRules)

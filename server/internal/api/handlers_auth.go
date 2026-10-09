@@ -23,8 +23,8 @@ type registerRequest struct {
 // 注册时直接把完整 DNS 配置一起返回，前端可以立刻展示
 // 「你的专属地址」，不需要再发一次请求 —— 这是首次体验的关键。
 type authResponse struct {
-	User      userJSON     `json:"user"`
-	DNSConfig dnsConfigJSON `json:"dns_config"`
+	User      userJSON        `json:"user"`
+	DNSConfig dnsConfigJSON   `json:"dns_config"`
 	Tokens    *auth.TokenPair `json:"tokens"`
 }
 

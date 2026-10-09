@@ -308,19 +308,10 @@ func TestRewriteResponseQTypeMatch(t *testing.T) {
 	}
 }
 
-// TestFirstLabel 验证子域名首段提取。
-func TestFirstLabel(t *testing.T) {
-	cases := map[string]string{
-		"k7m2p9xq4a.dns.example.com": "k7m2p9xq4a",
-		"K7M2P9XQ4A.Example.COM":     "k7m2p9xq4a",
-		"k7m2p9xq4a.":                "k7m2p9xq4a",
-		"example.com":                "example",
-		"":                           "",
-		"::1":                        "",
-	}
-	for in, want := range cases {
-		if got := firstLabel(in); got != want {
-			t.Errorf("firstLabel(%q) = %q，期望 %q", in, got, want)
-		}
-	}
-}
+// TestFirstLabel 的用例已合并到 identify_test.go 的
+// TestFirstLabelOnlyAcceptsClientIDShape —— 那里连同「裸域名必须返回空串」
+// 这个契约一起测，因为它正是路径式 DoH 失效的根因。
+//
+// 这里原本用的例子 "k7m2p9xq4a" 取自设计文档，但它含字符 '9'，
+// 而 client_id 字符集是 [a-z2-7]（排除 0/1/8/9）。文档示例与自己的字符集
+// 规则相矛盾，以字符集为准；测试里改用合法值。

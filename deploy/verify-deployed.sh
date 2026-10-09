@@ -114,7 +114,9 @@ REG=$(curl -s --max-time 15 -X POST "$API/api/v1/auth/register" -H 'Content-Type
   -d "{\"username\":\"$U\",\"email\":\"$U@verify.local\",\"password\":\"$P\"}")
 CID=$(echo "$REG" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 TOKEN=$(echo "$REG" | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)
-UID=$(echo "$REG" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+# 注意不要用 UID 这个变量名：bash 里 UID 是只读内建变量，
+# 赋值会报 "readonly variable" 且赋值失败，后续拿到的是当前用户的 uid。
+TENANT_ID=$(echo "$REG" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [[ -n "$CID" && -n "$TOKEN" ]]; then
   ok "注册成功 username=$U client_id=$CID"
   [[ -z "$DOMAIN" ]] && DOMAIN=$(echo "$REG" | grep -o '"domain":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -134,7 +136,11 @@ add_rule() {
   [[ "$code" == "201" ]] && ok "创建规则 $code" || bad "创建规则失败 $code $(cat /tmp/vr.out)"
 }
 add_rule '{"kind":"block","pattern":"||verify-block.test^","value":"","qtypes":[]}'
-add_rule '{"kind":"allow","pattern":"||safe.verify-block.test^","value":"","qtypes":[]}'
+# 白名单必须用「父域被拦、子域放行」这一对来测，才真正验证到优先级。
+# 单独给一个不存在的域名加 allow 是测不出东西的：放行的语义是「不拦，转发上游」，
+# 而上游对该域名本来就会回 NXDOMAIN —— 断言 NOERROR 会把正确行为判成失败。
+add_rule '{"kind":"block","pattern":"||example.org^","value":"","qtypes":[]}'
+add_rule '{"kind":"allow","pattern":"||www.example.org^","value":"","qtypes":[]}'
 add_rule '{"kind":"rewrite_a","pattern":"||verify-rewrite.test^","value":"10.99.99.99","qtypes":["A"]}'
 
 # UDP/TCP 没有 SNI/Host，只能靠来源 IP 识别租户。
@@ -159,10 +165,19 @@ t() {
   out=$($PROBE "$@" 2>&1 | tail -1)
   if [[ "$out" == *"$want"* ]]; then ok "$desc → $out"; else bad "$desc → $out（期望含 $want）"; fi
 }
+# tn 断言「结果里不含某串」—— 用于「必须没被拦截」这类判断。
+tn() {
+  local desc="$1" notwant="$2"; shift 2
+  local out
+  out=$($PROBE "$@" 2>&1 | tail -1)
+  if [[ "$out" != *"$notwant"* ]]; then ok "$desc → $out"; else bad "$desc → $out（不应含 $notwant）"; fi
+}
 
 t "UDP 拦截"        "0.0.0.0"   udp "$UDP_TARGET" verify-block.test
 t "UDP 子域继承"    "0.0.0.0"   udp "$UDP_TARGET" x.verify-block.test
-t "UDP 白名单放行"  "NOERROR"   udp "$UDP_TARGET" safe.verify-block.test
+t "UDP 父域拦截"    "0.0.0.0"   udp "$UDP_TARGET" example.org
+t "UDP 白名单覆盖父域拦截" "NOERROR" udp "$UDP_TARGET" www.example.org
+tn "UDP 白名单未被误拦"    "0.0.0.0" udp "$UDP_TARGET" www.example.org
 t "UDP 改写"        "10.99.99.99" udp "$UDP_TARGET" verify-rewrite.test
 t "UDP 正常转发"    "NOERROR"   udp "$UDP_TARGET" example.com
 t "TCP 拦截"        "0.0.0.0"   tcp "$TCP_TARGET" verify-block.test
@@ -223,9 +238,36 @@ CID2=$(echo "$REG2" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 TOKEN2=$(echo "$REG2" | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)
 N2=$(curl -fsS --max-time 8 "$API/api/v1/rules" -H "Authorization: Bearer $TOKEN2" | grep -o '"total":[0-9]*' | cut -d: -f2)
 [[ "$N2" == "0" ]] && ok "第二个租户看不到别人的规则（total=0）" || bad "跨租户数据泄漏：total=$N2"
+
+# 判别性用例：给租户 2 一条自己的改写规则，然后**用路径式 DoH 地址**查它。
+# 这一条才是真正能抓出「路径段被 Host 段短路」的用例 ——
+# 若路径段没被解析，请求会掉到来源 IP 兜底（本机 127.0.0.1 登记给了租户 1），
+# 于是拿到租户 1 的规则，既看不到租户 2 的改写，也会被租户 1 的拦截命中。
 if [[ -n "$DOMAIN" && -n "$CID2" ]]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/api/v1/rules" \
+    -H "Authorization: Bearer $TOKEN2" -H 'Content-Type: application/json' \
+    -d '{"kind":"rewrite_a","pattern":"||tenant2-only.test^","value":"10.77.77.77","qtypes":["A"]}')
+  [[ "$code" == "201" ]] && ok "给租户 2 建立专属改写规则" || bad "建立租户 2 规则失败 $code"
+  for i in $(seq 1 30); do
+    [[ "$($PROBE udp "$UDP_TARGET" tenant2-only.test 2>/dev/null)" == *"10.77.77.77"* ]] && break
+    sleep 1
+  done
+  # 路径式地址：Host 是裸域名，租户只能从路径段得到。
+  OUT=$($PROBE doh "$DOH_URL" --path "/dns-query/$CID2" --insecure tenant2-only.test 2>&1 | tail -1)
+  [[ "$OUT" == *"10.77.77.77"* ]] \
+    && ok "路径式 DoH 命中租户 2 自己的规则 → $OUT" \
+    || bad "路径式 DoH 未解析出租户 2（路径段被短路）→ $OUT"
+
   OUT=$($PROBE doh "$DOH_URL" --path "/dns-query/$CID2" --insecure verify-block.test 2>&1 | tail -1)
-  [[ "$OUT" != *"0.0.0.0"* ]] && ok "第二个租户不受别人规则影响 → $OUT" || bad "跨租户规则泄漏：$OUT"
+  [[ "$OUT" != *"0.0.0.0"* ]] \
+    && ok "租户 2 不受租户 1 规则影响 → $OUT" \
+    || bad "跨租户规则泄漏：租户 2 命中了租户 1 的拦截 → $OUT"
+
+  # 路径段是垃圾时不应被当成租户 id 认领，应回退到来源 IP（租户 1）
+  OUT=$($PROBE doh "$DOH_URL" --path "/dns-query/notacliid" --insecure verify-block.test 2>&1 | tail -1)
+  [[ "$OUT" == *"0.0.0.0"* ]] \
+    && ok "非法路径段被忽略，回退来源 IP → $OUT" \
+    || bad "非法路径段的回退行为异常 → $OUT"
 fi
 code=$(curl -s -o /dev/null -w '%{http_code}' "$API/api/v1/admin/users" -H "Authorization: Bearer $TOKEN")
 [[ "$code" == "403" ]] && ok "普通租户访问 /admin/* → 403" || bad "越权：$code"
@@ -237,7 +279,7 @@ hdr "清理测试账号"
 if [[ $KEEP_USER -eq 1 ]]; then
   echo "  ${DIM}--keep-user 已指定，保留账号 $U 与 ${U}b${NC}"
 elif [[ -n "$ADMTOK" ]]; then
-  for id in "$UID" "$(echo "$REG2" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"; do
+  for id in "$TENANT_ID" "$(echo "$REG2" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"; do
     [[ -z "$id" ]] && continue
     code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/api/v1/admin/users/$id" -H "Authorization: Bearer $ADMTOK")
     [[ "$code" == "204" ]] && ok "已删除测试账号 $id" || bad "删除 $id 失败：$code"

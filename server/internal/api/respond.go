@@ -216,7 +216,7 @@ type dnsConfigJSON struct {
 	// PlainDNS 为 null：本系统不对外提供明文 DNS（避免被当作开放解析器滥用）。
 	PlainDNS *string `json:"plain_dns"`
 	// CertFingerprintSHA256 供客户端固定证书用（自签场景尤其重要）。
-	CertFingerprintSHA256 string `json:"cert_fingerprint_sha256"`
+	CertFingerprintSHA256 string          `json:"cert_fingerprint_sha256"`
 	PlatformGuides        []platformGuide `json:"platform_guides"`
 }
 

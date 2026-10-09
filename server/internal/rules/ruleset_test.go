@@ -240,10 +240,10 @@ func TestWildcardEqualsAdblockForm(t *testing.T) {
 // TestBuildSkipsInvalidRules 验证非法规则不会中断构建（文档 5.4）。
 func TestBuildSkipsInvalidRules(t *testing.T) {
 	rs, err := Build([]model.Rule{
-		{Kind: model.KindBlock, Pattern: "||^", Enabled: true},          // 非法
-		{Kind: "unknown_kind", Pattern: "||x.com^", Enabled: true},       // 未知类型
+		{Kind: model.KindBlock, Pattern: "||^", Enabled: true},                    // 非法
+		{Kind: "unknown_kind", Pattern: "||x.com^", Enabled: true},                // 未知类型
 		{Kind: model.KindRewriteA, Pattern: "||y.com^", Value: "", Enabled: true}, // 缺目标
-		{Kind: model.KindBlock, Pattern: "||good.com^", Enabled: true},   // 合法
+		{Kind: model.KindBlock, Pattern: "||good.com^", Enabled: true},            // 合法
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("构建不应返回错误: %v", err)

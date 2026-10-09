@@ -99,13 +99,13 @@ type Defaults struct {
 	FallbackPolicy string   `json:"fallback_policy"`
 	// 以下为解析行为调优，apid 从全局设置读取后写进快照，
 	// 使 dnsd 无需读数据库也能拿到运行参数（P2 运行期零 IO）。
-	CacheSize    int  `json:"cache_size"`
-	CacheMinTTL  int  `json:"cache_min_ttl"`
-	CacheMaxTTL  int  `json:"cache_max_ttl"`
-	RateLimitQPS int  `json:"rate_limit_qps"`
-	MaxInflight  int  `json:"max_inflight"`
-	QueryTimeout int  `json:"query_timeout_ms"`
-	QueryLogSize int  `json:"query_log_size"`
+	CacheSize      int  `json:"cache_size"`
+	CacheMinTTL    int  `json:"cache_min_ttl"`
+	CacheMaxTTL    int  `json:"cache_max_ttl"`
+	RateLimitQPS   int  `json:"rate_limit_qps"`
+	MaxInflight    int  `json:"max_inflight"`
+	QueryTimeout   int  `json:"query_timeout_ms"`
+	QueryLogSize   int  `json:"query_log_size"`
 	EnableQueryLog bool `json:"enable_query_log"`
 }
 
@@ -124,10 +124,10 @@ type UserSnap struct {
 
 // Snapshot 是 apid 写给 dnsd 的完整配置快照（data/runtime/config.json）。
 type Snapshot struct {
-	Version     int64      `json:"version"`
-	Schema      int        `json:"schema"`
-	GeneratedAt time.Time  `json:"generated_at"`
-	Defaults    Defaults   `json:"defaults"`
+	Version     int64     `json:"version"`
+	Schema      int       `json:"schema"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Defaults    Defaults  `json:"defaults"`
 	// ChangedUsers 非空时表示增量快照：dnsd 只重建这些用户的 RuleSet，
 	// 其余复用旧对象。为空表示全量。
 	ChangedUsers []string   `json:"changed_users,omitempty"`

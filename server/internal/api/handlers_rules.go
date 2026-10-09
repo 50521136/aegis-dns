@@ -231,7 +231,7 @@ func (s *Server) handleValidateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	// 顺带回显解析出的规范化域名，让用户确认「我写的规则被理解成了什么」。
 	writeJSON(w, http.StatusOK, map[string]any{
-		"valid":   true,
+		"valid": true,
 		"normalized": map[string]any{
 			"kind":    rule.Kind,
 			"pattern": rule.Pattern,
