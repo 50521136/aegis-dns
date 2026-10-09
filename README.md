@@ -80,6 +80,9 @@ UDP 解析、API 健康、内嵌前端、配置快照，并给出**可操作的*
 
 ### 从源码构建
 
+需要 Go 1.26+（准确下限见 `server/go.mod` 的 `go` 指令；`actions/setup-go` 用
+`go-version-file` 自动对齐，本地请用 `go version` 自查）。前端需要 Node 20+ 与 pnpm。
+
 ```bash
 # 后端（两个二进制）
 cd server

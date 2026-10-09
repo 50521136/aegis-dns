@@ -15,7 +15,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          # 从 go.mod 读版本，而不是写死：依赖（dnsproxy 等）会不断抬高
+          # 最低 Go 版本要求，写死的数字迟早和 go.mod 不一致，
+          # 表现为 CI 在 tidy 阶段报 "requires go >= 1.26.8"。
+          go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
 
       - name: Verify modules are tidy
