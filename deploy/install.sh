@@ -17,6 +17,10 @@
 #   --version  版本 tag，默认 latest
 #   --dir      安装目录，默认 /opt/aegis
 #   --admin    管理员用户名，默认 admin
+#   --from-dir 离线安装：从本地目录读取 aegis-*-<版本>-<平台>.tar.gz
+#              （或裸二进制 aegis-dnsd / aegis-apid），不访问 GitHub。
+#              国内服务器拉不动 GitHub 时用这个：先在能访问的机器上
+#              `gh release download <tag>` 再 scp 过来。
 #   --no-ufw   不自动改防火墙
 # ============================================================================
 set -euo pipefail
@@ -29,6 +33,7 @@ CERT=""
 KEY=""
 ADMIN_USER="admin"
 CONFIGURE_UFW=1
+FROM_DIR=""
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; DIM=$'\033[2m'; NC=$'\033[0m'
 info()  { echo "${BLUE}[*]${NC} $*"; }
@@ -46,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --version) VERSION="$2"; shift 2 ;;
     --dir)     INSTALL_DIR="$2"; shift 2 ;;
     --admin)   ADMIN_USER="$2"; shift 2 ;;
+    --from-dir) FROM_DIR="$2"; shift 2 ;;
     --no-ufw)  CONFIGURE_UFW=0; shift ;;
     -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) die "未知参数: $1（用 --help 查看用法）" ;;
@@ -54,6 +60,22 @@ done
 
 [[ $EUID -eq 0 ]] || die "请用 root 运行（需要绑定 53/853/443 与写 systemd 单元）"
 [[ -n "$DOMAIN" ]] || die "必须指定 --domain（例如 --domain example.com）"
+
+# --- 脚本自身所在目录 ---
+#
+# 必须在任何 cd 之前算出来。脚本中段会 `cd "$INSTALL_DIR"`，如果等到那时再算，
+# `dirname "${BASH_SOURCE[0]}"` 里的相对路径 "install.sh" 会被解析成 "."，
+# 也就是安装目录本身 —— 于是「把脚本目录下的 selfcheck.sh 拷到安装目录」变成
+# 「把 /opt/aegis/selfcheck.sh 拷到 /opt/aegis/selfcheck.sh」，install 报
+# "are the same file" 并以非 0 退出，配合 set -e 直接把脚本掐断在
+# systemd 注册与启动服务之前。
+#
+# 只在交互式 `bash install.sh` 时触发；`bash /abs/path/install.sh` 因为
+# BASH_SOURCE 是绝对路径，看起来一切正常 —— 所以这个坑很难在测试中发现。
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || SCRIPT_DIR=""
+fi
 
 # --- 架构识别 ---
 ARCH=$(uname -m)
@@ -71,7 +93,14 @@ for cmd in curl tar; do
 done
 
 # --- 解析版本 ---
-if [[ "$VERSION" == "latest" ]]; then
+if [[ -n "$FROM_DIR" && "$VERSION" == "latest" ]]; then
+  # 离线模式不查 GitHub：从目录里的压缩包名反推版本。
+  [[ -d "$FROM_DIR" ]] || die "离线目录不存在: ${FROM_DIR}"
+  VERSION=$(ls "$FROM_DIR" 2>/dev/null | sed -n 's/^aegis-dnsd-\([0-9][^-]*\)-.*\.tar\.gz$/\1/p' | head -1)
+  [[ -n "$VERSION" ]] || die "无法从 ${FROM_DIR} 推断版本，请显式指定 --version"
+  VERSION="v${VERSION}"
+  info "离线模式：从目录名推断版本 ${VERSION}"
+elif [[ "$VERSION" == "latest" ]]; then
   info "查询最新版本..."
   VERSION=$(curl -fsSL --max-time 20 "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\(v[^"]*\)"/\1/') || true
@@ -101,39 +130,64 @@ BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 WORK=$(mktemp -d /tmp/aegis-install-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
-# --- 升级：先停服务再换二进制 ---
+# --- 先把两个压缩包都下载并解压完，再动服务 ---
 #
-# 必须停：Linux 上覆盖一个正在运行的二进制的写入会返回 ETXTBSY
-# （Text file busy），`install` 直接失败。首次安装时服务还不存在，
-# 所以这个坑只在「升级」路径上出现 —— 也就是最容易被跳过的路径。
-#
-# 停 dnsd 会短暂中断解析。若在意这几十毫秒，可改用「先装到临时名再
-# rename」的原子替换（rename 不会碰到 ETXTBSY），但那样 dnsd 与 apid
-# 的版本会短暂不一致。这里选择停服务，保证版本一致。
-IS_UPGRADE=0
-if [[ -f "${INSTALL_DIR}/aegis-dnsd" ]]; then
-  IS_UPGRADE=1
-  if command -v systemctl >/dev/null 2>&1; then
-    info "检测到已有安装，先停止服务以便替换二进制"
-    systemctl stop aegis-dnsd aegis-apid 2>/dev/null || true
-    ok "服务已停止（升级模式）"
-  fi
-fi
-
+# 顺序很关键：如果先停服务再下载，一旦下载失败（国内网络访问 GitHub 很常见），
+# 服务就停在那里没人拉起来 —— 一次「升级失败」变成一次「线上中断」。
+# 所以下载、解压、校验全部成功之后，才允许停服务。
+declare -A BIN_SRC
 for comp in dnsd apid; do
   asset="aegis-${comp}-${VER_NUM}-${PLATFORM}.tar.gz"
-  info "下载 ${asset}"
-  download "$asset" "${BASE}/${asset}" "${WORK}/${asset}" || die "下载 ${asset} 失败"
+  if [[ -n "$FROM_DIR" ]]; then
+    # 离线模式：直接从本地目录取，适用于服务器拉不动 GitHub 的场景。
+    if [[ -f "${FROM_DIR}/${asset}" ]]; then
+      cp -f "${FROM_DIR}/${asset}" "${WORK}/${asset}" || die "复制 ${asset} 失败"
+      info "使用本地压缩包 ${asset}"
+    else
+      # 兼容只传了裸二进制的情况。
+      if [[ -f "${FROM_DIR}/aegis-${comp}" ]]; then
+        BIN_SRC[$comp]="${FROM_DIR}/aegis-${comp}"
+        info "使用本地二进制 ${FROM_DIR}/aegis-${comp}"
+        continue
+      fi
+      die "在 ${FROM_DIR} 里找不到 ${asset}，也找不到裸二进制 aegis-${comp}"
+    fi
+  else
+    info "下载 ${asset}"
+    download "$asset" "${BASE}/${asset}" "${WORK}/${asset}" || die "下载 ${asset} 失败"
+  fi
 
   # 解压到独立目录再取二进制。
   # 不要用 `find /tmp -newer <tar.gz>` 找解压结果：tar 保留的是打包时的
   # 文件 mtime，而刚下载的 tar.gz 的 mtime 是「现在」，所以 -newer 永远不成立，
   # 这条路径必然走到 fallback —— 一个只在特定 tar 版本下才暴露的坑。
   mkdir -p "${WORK}/${comp}"
-  tar xzf "${WORK}/${asset}" -C "${WORK}/${comp}"
+  tar xzf "${WORK}/${asset}" -C "${WORK}/${comp}" || die "解压 ${asset} 失败"
   found=$(find "${WORK}/${comp}" -type f -name "aegis-${comp}" -print -quit)
   [[ -n "$found" ]] || die "压缩包 ${asset} 里没有找到 aegis-${comp}"
-  install -m755 "$found" "${INSTALL_DIR}/aegis-${comp}" || die "安装 aegis-${comp} 失败"
+  BIN_SRC[$comp]="$found"
+done
+
+# --- 到这里两个二进制都已就绪，才停服务 ---
+#
+# 必须停：Linux 上覆盖一个正在运行的二进制的写入会返回 ETXTBSY
+# （Text file busy），`install` 直接失败。首次安装时服务还不存在，
+# 所以这个坑只在「升级」路径上出现 —— 也就是最容易被跳过的路径。
+#
+# 万一安装过程中脚本异常退出，兜底把服务拉起来，避免留下「停着没人管」的状态。
+IS_UPGRADE=0
+if [[ -f "${INSTALL_DIR}/aegis-dnsd" ]]; then
+  IS_UPGRADE=1
+  if command -v systemctl >/dev/null 2>&1; then
+    info "检测到已有安装，停止服务以便替换二进制"
+    systemctl stop aegis-dnsd aegis-apid 2>/dev/null || true
+    trap 'rm -rf "$WORK"; systemctl start aegis-dnsd aegis-apid >/dev/null 2>&1 || true' EXIT
+    ok "服务已停止（升级模式）"
+  fi
+fi
+
+for comp in dnsd apid; do
+  install -m755 "${BIN_SRC[$comp]}" "${INSTALL_DIR}/aegis-${comp}" || die "安装 aegis-${comp} 失败"
   ok "aegis-${comp} 已安装（$("${INSTALL_DIR}/aegis-${comp}" -version 2>&1 | head -1)）"
 done
 
@@ -337,10 +391,14 @@ RESOLV
 fi
 
 # --- 运维脚本 ---
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-for f in selfcheck.sh dnsprobe.py; do
-  if [[ -f "${SCRIPT_DIR}/${f}" ]]; then
-    install -m755 "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/${f}"
+for f in selfcheck.sh dnsprobe.py verify-deployed.sh; do
+  if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/${f}" ]]; then
+    # 源与目的相同就跳过：脚本可能就是从安装目录里执行的（见 SCRIPT_DIR 处的说明）。
+    if [[ "$(readlink -f "${SCRIPT_DIR}/${f}")" == "$(readlink -f "${INSTALL_DIR}/${f}")" ]]; then
+      chmod +x "${INSTALL_DIR}/${f}" 2>/dev/null || true
+      continue
+    fi
+    install -m755 "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/${f}" || warn "拷贝 ${f} 失败"
   else
     curl -fsSL --max-time 60 -o "${INSTALL_DIR}/${f}" \
       "https://raw.githubusercontent.com/${REPO}/${VERSION}/deploy/${f}" 2>/dev/null \
@@ -352,7 +410,7 @@ done
 
 # --- systemd ---
 if command -v systemctl >/dev/null 2>&1; then
-  if [[ -f "${SCRIPT_DIR}/aegis-dnsd.service" ]]; then
+  if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/aegis-dnsd.service" ]]; then
     cp -f "${SCRIPT_DIR}/aegis-dnsd.service" "${SCRIPT_DIR}/aegis-apid.service" /etc/systemd/system/
   else
     # 单文件运行（curl | bash）时从仓库取。

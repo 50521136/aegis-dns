@@ -260,6 +260,39 @@ func (c *Cache) Flush() {
 	}
 }
 
+// FlushUsers 只清掉指定租户的缓存条目。
+//
+// 用于规则变更后的定向失效。缓存键是 {UserID, QName, QType, DO}，**不含规则
+// 版本** —— 规则改了键不变，旧应答会一直被命中。不主动清的话，新加的拦截
+// 规则对该域名在 TTL 内完全不生效（cache_max_ttl 默认 86400，最长一天），
+// 用户看到的是「加了规则没用，过一阵子才生效」。
+//
+// 为什么不直接全量 Flush：一次规则改动就把整机缓存清空，会让所有租户的
+// 命中率瞬间归零并向上游打一波真实查询 —— 这正是缓存要避免的事。
+// 定向失效只影响真正改了规则的那几个租户。
+//
+// 代价是 O(分片条目数) 的遍历。这只在快照重载时发生（规则变更触发），
+// 不在查询路径上，因此可以接受。
+func (c *Cache) FlushUsers(userIDs []string) {
+	if c == nil || len(userIDs) == 0 {
+		return
+	}
+	drop := make(map[string]struct{}, len(userIDs))
+	for _, id := range userIDs {
+		drop[id] = struct{}{}
+	}
+	for _, s := range c.shards {
+		s.mu.Lock()
+		for k, el := range s.items {
+			if _, ok := drop[k.UserID]; ok {
+				s.lru.Remove(el)
+				delete(s.items, k)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 // hasECS 判断请求是否携带 EDNS Client Subnet 选项。
 func hasECS(req *dns.Msg) bool {
 	if req == nil {

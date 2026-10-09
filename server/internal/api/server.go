@@ -274,22 +274,34 @@ func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// 安全头：CSP 限制脚本来源为自身，挡住注入的第三方脚本。
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("X-Frame-Options", "DENY")
+	setHTMLSecurityHeaders(w)
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(data)
 	}
 }
 
+// setHTMLSecurityHeaders 给所有返回 HTML 的响应统一加安全头。
+//
+// 抽成函数是因为「前端未内嵌」的占位页也走 HTML，之前它只设了
+// Content-Type 和 Cache-Control，漏掉了 CSP / X-Frame-Options / Referrer-Policy。
+// 后果是：二进制里没有前端产物时，SPA 路由的安全头静默消失 ——
+// 本地开发用占位页构建、或者构建流程漏掉前端产物时，都不会有人注意到。
+// 安全头不该因为「这次返回的是哪张 HTML」而不同。
+func setHTMLSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// CSP 限制脚本来源为自身，挡住注入的第三方脚本。
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+}
+
 // writeNoFrontend 在二进制没有内嵌前端时给出可操作的提示。
 func (s *Server) writeNoFrontend(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	setHTMLSecurityHeaders(w)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>DNSForge</title><style>body{background:#0B1020;color:#E5E7EB;font:15px/1.7 Inter,"PingFang SC",system-ui,sans-serif;

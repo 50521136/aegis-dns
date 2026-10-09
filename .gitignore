@@ -29,3 +29,6 @@ server/internal/api/webdist/dist/*
 .idea/
 .vscode/
 *.swp
+
+# 发布产物缓存（离线部署用，不入库）
+.release-cache/

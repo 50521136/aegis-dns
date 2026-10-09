@@ -58,6 +58,41 @@ func NewLoader(path string, reg *Registry, h *Handler, log *slog.Logger) *Loader
 // OnReload 注册重载回调。
 func (l *Loader) OnReload(fn func(*model.Snapshot)) { l.onReload = fn }
 
+// invalidateCache 在规则变更后清掉受影响的缓存条目。
+//
+// 缓存键是 {UserID, QName, QType, DO}，不含规则版本 —— 规则改了键不变，
+// 旧应答会一直被命中。不主动清的话，新加的拦截规则对该域名在 TTL 内
+// 完全不生效（cache_max_ttl 默认 86400，最长一天），用户看到的是
+// 「加了规则没用，过一会儿才生效」。设计文档承诺的「配置生效延迟 < 2s」
+// 就落在这上面。
+//
+// 定向失效的依据是快照里的 ChangedUsers：
+//   - 为空表示全量快照，影响面未知，整体清空；
+//   - 非空表示增量，只清列出的租户。
+//
+// 无论哪种情况都要顺带清掉 fallback（UserID 为空）的条目：全局设置
+// （上游、拦截模式、缓存 TTL）变了会影响未识别请求的应答，而那些条目
+// 的键里没有租户 id，只清 ChangedUsers 是覆盖不到的。
+func (l *Loader) invalidateCache(snap *model.Snapshot) {
+	if l.handler == nil {
+		return
+	}
+	c := l.handler.Cache()
+	if c == nil {
+		return
+	}
+	if len(snap.ChangedUsers) == 0 {
+		c.Flush()
+		l.log.Info("配置全量重载，缓存已整体清空")
+		return
+	}
+	ids := make([]string, 0, len(snap.ChangedUsers)+1)
+	ids = append(ids, snap.ChangedUsers...)
+	ids = append(ids, "") // fallback
+	c.FlushUsers(ids)
+	l.log.Info("配置增量重载，已定向失效缓存", "users", len(snap.ChangedUsers))
+}
+
 // LoadOnce 读取并应用一次快照。
 //
 // 任何失败都只记录日志并保留旧配置（文档 P4 / 7.4）：
@@ -72,8 +107,17 @@ func (l *Loader) LoadOnce() error {
 		return err
 	}
 
+	verBefore := l.registry.Version()
+
 	if err := l.registry.Build(snap); err != nil {
 		return err
+	}
+
+	// Build 在「版本没前进」时会直接跳过（例如文件被 touch 了一下），
+	// 这种情况下什么都没变，不该清缓存 —— 否则空转重载会把缓存打光。
+	// 用版本号是否推进来判断「这次真的应用了新配置」。
+	if l.registry.Version() != verBefore {
+		l.invalidateCache(snap)
 	}
 
 	if l.onReload != nil {
