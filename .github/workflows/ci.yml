@@ -84,11 +84,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        # 不写死版本：action 会读取 package.json 的 packageManager，
+        # 不写死版本：action 读取 web/package.json 的 packageManager，
         # 保证 CI 与本地开发用的是同一个 pnpm。
         # 写死版本的代价是「本地用 pnpm 12、CI 用 pnpm 9」这类分歧 ——
         # 两者对 pnpm-workspace.yaml 里设置项的语义并不一致
         # （例如 onlyBuiltDependencies 在 11 起被 allowBuilds 取代且静默失效）。
+        #
+        # package_json_file 必须显式给出：它默认是仓库根的 package.json，
+        # 而本项目的前端 package.json 在 web/ 下，不指路就会以
+        # "No pnpm version is specified." 直接失败。
+        with:
+          package_json_file: web/package.json
 
       - uses: actions/setup-node@v4
         with:
