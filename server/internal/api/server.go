@@ -265,6 +265,18 @@ func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 看起来像静态资源的路径，找不到就必须 404，不能回落到 index.html。
+	//
+	// 回落会让浏览器拿到 200 + text/html 去当 .js/.css 执行，被 nosniff 挡掉，
+	// 表现为**白屏且控制台安静** —— 没有 404、没有报错，最难查的那类故障。
+	// 典型案例：前端 base 配成相对路径 './' 时，深层路由 /app/rules 下的
+	// ./assets/index-xxx.js 会被解析成 /app/assets/index-xxx.js，正好落进这里。
+	// 返回 404 能把这类问题立刻暴露出来。
+	if isAssetLikePath(rel) {
+		http.Error(w, "静态资源不存在", http.StatusNotFound)
+		return
+	}
+
 	// 回落 index.html。必须 no-cache，否则用户会一直拿到旧版本引用的
 	// 已删除 chunk，表现为白屏。
 	data, err := fs.ReadFile(s.staticFS, "index.html")
@@ -279,6 +291,41 @@ func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(data)
 	}
+}
+
+// assetExts 是「静态资源」的常见扩展名。
+//
+// 用于区分「前端路由」与「资源请求」：两者都是未命中文件的路径，
+// 但前者该回落 index.html，后者该 404。
+var assetExts = map[string]bool{
+	".js": true, ".mjs": true, ".cjs": true, ".css": true, ".map": true,
+	".json": true, ".txt": true, ".xml": true, ".webmanifest": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".webp": true, ".avif": true, ".ico": true, ".bmp": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".wasm": true, ".mp4": true, ".webm": true, ".mp3": true,
+}
+
+// isAssetLikePath 判断路径是否看起来像静态资源。
+//
+// 前端路由里不会出现带扩展名的段，所以「最后一段含 .xxx 且是已知资源后缀」
+// 就足以判定。宁可少判也不要误判：把某个真实前端路由误判成资源会导致它 404。
+func isAssetLikePath(rel string) bool {
+	if rel == "" {
+		return false
+	}
+	base := rel
+	if i := strings.LastIndex(rel, "/"); i >= 0 {
+		base = rel[i+1:]
+	}
+	if base == "" || base[0] == '.' {
+		return false
+	}
+	dot := strings.LastIndex(base, ".")
+	if dot <= 0 {
+		return false
+	}
+	return assetExts[strings.ToLower(base[dot:])]
 }
 
 // setHTMLSecurityHeaders 给所有返回 HTML 的响应统一加安全头。

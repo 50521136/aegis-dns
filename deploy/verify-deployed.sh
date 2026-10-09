@@ -81,6 +81,49 @@ else
   bad "二进制未内嵌前端（frontend=false），面板会显示占位页"
 fi
 
+# --- 前端静态资源在深层路由下能否正确加载 ---
+#
+# 这一组断言专门盯一个曾经真实存在的白屏故障：前端 base 配成相对路径 './'
+# 时，index.html 引用的是 ./assets/index-xxx.js。浏览器在深层路由
+# /app/rules 下按当前目录解析，请求变成 /app/assets/index-xxx.js；
+# 而 apid 对未命中路径回落 index.html，于是返回 200 + text/html，
+# 浏览器拒绝当 JS 执行（nosniff），**白屏且控制台无报错**。
+# 只有单段路径（/、/login）能侥幸正常，所以「首页能打开」掩盖了它。
+#
+# 必须在带真实前端的部署上测 —— 本地 e2e 用占位页，测不出来。
+hdr "前端静态资源（深层路由）"
+DEEP_HTML=$(curl -s --max-time 10 "$API/app/rules")
+JSREF=$(echo "$DEEP_HTML" | grep -oE 'src="[^"]*index-[A-Za-z0-9_-]*\.js"' | head -1 | sed 's/src="//;s/"$//')
+CSSREF=$(echo "$DEEP_HTML" | grep -oE 'href="[^"]*index-[A-Za-z0-9_-]*\.css"' | head -1 | sed 's/href="//;s/"$//')
+
+if [[ -z "$JSREF" ]]; then
+  bad "深层路由返回的 HTML 里找不到 JS 引用（前端可能未内嵌）"
+else
+  # 引用必须是绝对路径：相对路径正是白屏的根因。
+  [[ "$JSREF" == /* ]] \
+    && ok "入口 JS 用绝对路径引用：$JSREF" \
+    || bad "入口 JS 用了相对路径（$JSREF）—— 深层路由下会白屏，检查 vite 的 base 配置"
+
+  # 绝对引用应能取到真正的 JS，且 Content-Type 正确。
+  CT=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 20 "${API}${JSREF}")
+  [[ "$CT" == 200*javascript* ]] \
+    && ok "入口 JS 可取且 MIME 正确（$CT）" \
+    || bad "入口 JS 异常：$CT（期望 200 + javascript）"
+
+  # 相对解析出来的路径必须 404，不能是 200 的 HTML —— 那是白屏的直接原因。
+  RELCODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${API}/app${JSREF}")
+  [[ "$RELCODE" == "404" ]] \
+    && ok "被解析歪的资源路径返回 404（不会再伪装成 HTML）" \
+    || bad "资源路径返回 $RELCODE —— SPA 回落把 HTML 当 JS 返回，浏览器会白屏"
+fi
+
+if [[ -n "$CSSREF" ]]; then
+  CT=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 20 "${API}${CSSREF}")
+  [[ "$CT" == 200*css* ]] && ok "入口 CSS 可取且 MIME 正确（$CT）" || bad "入口 CSS 异常：$CT"
+else
+  bad "深层路由返回的 HTML 里找不到 CSS 引用"
+fi
+
 # --- 2. 管理员登录 ---
 hdr "[2/8] 管理员登录"
 ADM_USER="${AEGIS_ADMIN_USER:-admin}"

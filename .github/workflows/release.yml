@@ -94,7 +94,19 @@ jobs:
           test -f server/internal/api/webdist/dist/index.html || { echo "前端产物未落到 webdist/dist"; exit 1; }
           grep -q 'assets/' server/internal/api/webdist/dist/index.html \
             && echo "index.html 已引用构建产物" \
-            || echo "::warning::index.html 里没找到 assets/ 引用，可能内嵌的是占位页"
+            || { echo "::error::index.html 里没找到 assets/ 引用，内嵌的是占位页"; exit 1; }
+          # 资源引用必须是绝对路径。相对路径（./assets/...）会让深层路由
+          # /app/rules 下的请求变成 /app/assets/...，而 SPA 回落会返回
+          # 200 + text/html，浏览器拒绝当 JS 执行 —— 白屏且控制台无报错。
+          # 在这里挡住，避免带病发版。
+          if grep -qE '(src|href)="\./assets/' server/internal/api/webdist/dist/index.html; then
+            echo "::error::前端资源用了相对路径引用，深层路由会白屏；检查 web/vite.config.ts 的 base 应为 '/'"
+            grep -oE '(src|href)="[^"]*"' server/internal/api/webdist/dist/index.html
+            exit 1
+          fi
+          grep -qE '(src|href)="/assets/' server/internal/api/webdist/dist/index.html \
+            && echo "资源引用为绝对路径，深层路由可正常加载" \
+            || { echo "::error::index.html 里没有绝对路径的资源引用"; exit 1; }
 
       - name: Build binaries
         working-directory: server
