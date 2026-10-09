@@ -31,7 +31,9 @@ web/
 
 ## 开发
 
-前置：Node ≥ 18、pnpm（本项目使用 pnpm，勿用 npm/yarn）。
+前置：Node ≥ 20、pnpm（本项目使用 pnpm，勿用 npm/yarn）。
+pnpm 版本由 `package.json` 的 `packageManager` 固定为 `pnpm@12.10.1`，
+CI 也读这个字段，避免「本地 pnpm 12 / CI pnpm 9」这类分歧。
 
 ```bash
 cd web
@@ -40,6 +42,36 @@ pnpm install          # 安装依赖
 # 启动开发服务器（默认 http://localhost:5173）
 pnpm dev
 ```
+
+### 依赖构建脚本的批准（pnpm 10+ 必读）
+
+pnpm 10 起默认**不执行依赖的 postinstall 脚本**，`esbuild` 就在其中。
+如果只看到报错而没批准，`pnpm install` 会以非 0 退出并打印：
+
+```
+Error: ERR_PNPM_IGNORED_BUILDS
+  ╰─▶ Ignored build scripts: esbuild@0.21.5
+```
+
+本项目已在 `pnpm-workspace.yaml` 里批准：
+
+```yaml
+allowBuilds:
+  esbuild: true
+```
+
+两个容易踩的坑：
+
+1. **`onlyBuiltDependencies` 已经不生效了**。pnpm 11 起它被 `allowBuilds` 取代，
+   旧键会被**静默忽略**（放在 `package.json` 的 `pnpm` 字段里还会额外打一条警告，
+   因为 pnpm 12 不再读取 package.json 里的 pnpm 配置）。
+   照着老教程写 `onlyBuiltDependencies` 会得到「配置看起来没问题但报错依旧」。
+2. **设置必须写在 `pnpm-workspace.yaml`**，不能写在 `.npmrc`。
+   pnpm 12 只从 `.npmrc` 读认证与 registry 相关项，其余设置一概不看。
+
+补充：这个报错**不会导致构建失败** —— esbuild 的二进制来自平台包
+（`@esbuild/linux-x64`），postinstall 只创建入口 shim，`pnpm build` 照样能成功。
+所以它更像一个「必须修掉但容易误判为无害」的噪音，CI 里会真的把流程判失败。
 
 开发模式下 Vite 会把 `/api` 反向代理到 `http://127.0.0.1:8080`（apid 默认端口），
 因此本地开发时请确保 apid 正在运行，或修改 `vite.config.ts` 中的 `server.proxy` 目标。

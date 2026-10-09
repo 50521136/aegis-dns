@@ -93,10 +93,24 @@ echo "${DIM}[4/9] 端口监听${NC}"
 check_listen() {
   local proto="$1" port="$2" name="$3"
   if command -v ss >/dev/null 2>&1; then
-    if ss -lntu 2>/dev/null | awk '{print $1, $5}' | grep -qE "^${proto}.*:${port}$"; then
+    # 只看「对外」的绑定（*:PORT 或 0.0.0.0:PORT），不看 127.0.0.53:PORT 这类
+    # 回环绑定。否则 systemd-resolved 的 stub listener 会让 :53 检查假阳性 ——
+    # 端口检查显示「监听中」，实际 dnsd 根本没绑上。
+    local hits
+    hits=$(ss -lntu 2>/dev/null | awk '{print $1, $5}' | grep -E "^${proto}.*(\*|0\.0\.0\.0|\[::\]):${port}$" | wc -l)
+    if [[ "$hits" -gt 0 ]]; then
       ok "$name (:${port}/${proto})" "监听中"
     else
-      if [[ "$name" == "UDP DNS" || "$name" == "TCP DNS" ]]; then
+      # 区分「完全没人监听」与「被别人占了」—— 后者才是真正要处理的。
+      local occupied
+      occupied=$(ss -lntu 2>/dev/null | awk '{print $5}' | grep -E ":${port}$" | head -1)
+      if [[ -n "$occupied" ]]; then
+        if [[ "$name" == "UDP DNS" || "$name" == "TCP DNS" ]]; then
+          bad "$name (:${port}/${proto})" "被 ${occupied} 占用（不是 dnsd）"
+        else
+          wn "$name (:${port}/${proto})" "被 ${occupied} 占用"
+        fi
+      elif [[ "$name" == "UDP DNS" || "$name" == "TCP DNS" ]]; then
         bad "$name (:${port}/${proto})" "未监听"
       else
         wn "$name (:${port}/${proto})" "未监听（无证书时属预期）"

@@ -98,36 +98,44 @@ download() {
 }
 
 BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+WORK=$(mktemp -d /tmp/aegis-install-XXXXXX)
+trap 'rm -rf "$WORK"' EXIT
+
 for comp in dnsd apid; do
   asset="aegis-${comp}-${VER_NUM}-${PLATFORM}.tar.gz"
   info "下载 ${asset}"
-  download "$asset" "${BASE}/${asset}" "/tmp/${asset}" || die "下载 ${asset} 失败"
-  tar xzf "/tmp/${asset}" -C /tmp
-  # 发布包结构是 aegis-<comp>-<ver>-<platform>/aegis-<comp>
-  found=$(find /tmp -maxdepth 2 -type f -name "aegis-${comp}" -newer /tmp/"${asset}" 2>/dev/null | head -1)
-  [[ -n "$found" ]] || found=$(tar tzf "/tmp/${asset}" | grep -E "aegis-${comp}$" | head -1 | sed 's|^|/tmp/|')
+  download "$asset" "${BASE}/${asset}" "${WORK}/${asset}" || die "下载 ${asset} 失败"
+
+  # 解压到独立目录再取二进制。
+  # 不要用 `find /tmp -newer <tar.gz>` 找解压结果：tar 保留的是打包时的
+  # 文件 mtime，而刚下载的 tar.gz 的 mtime 是「现在」，所以 -newer 永远不成立，
+  # 这条路径必然走到 fallback —— 一个只在特定 tar 版本下才暴露的坑。
+  mkdir -p "${WORK}/${comp}"
+  tar xzf "${WORK}/${asset}" -C "${WORK}/${comp}"
+  found=$(find "${WORK}/${comp}" -type f -name "aegis-${comp}" -print -quit)
+  [[ -n "$found" ]] || die "压缩包 ${asset} 里没有找到 aegis-${comp}"
   install -m755 "$found" "${INSTALL_DIR}/aegis-${comp}" || die "安装 aegis-${comp} 失败"
-  rm -rf /tmp/"${asset}" /tmp/"aegis-${comp}-${VER_NUM}-${PLATFORM}"
-  ok "aegis-${comp} 已安装"
+  ok "aegis-${comp} 已安装（$("${INSTALL_DIR}/aegis-${comp}" -version 2>&1 | head -1)）"
 done
 
 # --- 校验和 ---
-if download checksums.txt "${BASE}/checksums.txt" /tmp/checksums.txt 2>/dev/null; then
-  info "校验 SHA-256..."
-  fail=0
+if download checksums.txt "${BASE}/checksums.txt" "${WORK}/checksums.txt" 2>/dev/null; then
+  info "校验下载完整性（对比 Release 的 checksums.txt）..."
+  okcount=0
   for comp in dnsd apid; do
-    want=$(grep -E "aegis-${comp}-${VER_NUM}-${PLATFORM}\.tar\.gz" /tmp/checksums.txt | awk '{print $1}' | head -1)
+    asset="aegis-${comp}-${VER_NUM}-${PLATFORM}.tar.gz"
+    want=$(grep -E "[[:space:]]\*?${asset}$" "${WORK}/checksums.txt" | awk '{print $1}' | head -1)
     [[ -n "$want" ]] || continue
-    got=$(sha256sum "${INSTALL_DIR}/aegis-${comp}" | awk '{print $1}')
-    # 校验和是针对 tar.gz 的，这里只做「下载完整性」的等价检查：
-    # 比对发布包内的二进制与安装后的文件。
+    got=$(sha256sum "${WORK}/${asset}" | awk '{print $1}')
     if [[ "$want" == "$got" ]]; then
-      ok "aegis-${comp} 校验通过"
+      ok "aegis-${comp} 的压缩包 SHA-256 校验通过"
+      okcount=$((okcount+1))
     else
-      warn "aegis-${comp} 的 tar.gz 校验和与二进制不同（正常：校验和针对压缩包）"
+      err "aegis-${comp} 校验和不匹配！期望 $want 实际 $got"
+      die "下载内容与发布清单不符，已中止安装"
     fi
   done
-  rm -f /tmp/checksums.txt
+  [[ $okcount -gt 0 ]] || warn "checksums.txt 里没有当前平台的记录，跳过校验"
 fi
 
 # --- 证书 ---
@@ -231,23 +239,83 @@ fi
 
 # --- 处理 53 端口占用（文档风险 R2，这是最常见的启动失败原因）---
 if command -v systemctl >/dev/null 2>&1; then
-  if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    warn "systemd-resolved 正在占用 53 端口，正在停用..."
+  if ss -lntu 2>/dev/null | awk '{print $5}' | grep -qE '127\.0\.0\.53:53$'; then
+    warn "systemd-resolved 的 stub listener 正在占用 127.0.0.53:53，正在释放..."
+
+    # 关键：必须写进主配置文件 /etc/systemd/resolved.conf。
+    #
+    # 在 /etc/systemd/resolved.conf.d/ 下放 drop-in 是更「标准」的做法，
+    # `systemd-analyze cat-config` 也能看到它被合并进去了，但实测在
+    # Ubuntu 22.04 的 systemd 249 上 **resolved 不会采纳 drop-in 里的
+    # DNSStubListener**，重启后 53 端口照样被占。
+    # 表现为 dnsd 启动日志里 "listen udp :53: bind: address already in use"，
+    # 而 DoT/DoH 却正常 —— 很容易误判成端口检查脚本的假阳性。
+    #
+    # 同一文件内后出现的同名键会覆盖先出现的，所以在文件末尾追加一个
+    # 只含该键的 [Resolve] 段即可，不必改写原有内容。
+    cp -a /etc/systemd/resolved.conf "/etc/systemd/resolved.conf.bak-$(date +%Y%m%d-%H%M%S)"
+    if ! grep -qE '^[[:space:]]*DNSStubListener[[:space:]]*=' /etc/systemd/resolved.conf; then
+      printf '\n# 由 aegis-dns 安装脚本追加：把 53 端口让给 dnsd\n[Resolve]\nDNSStubListener=no\n' \
+        >> /etc/systemd/resolved.conf
+    else
+      sed -i -E 's/^[[:space:]]*DNSStubListener[[:space:]]*=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
+    fi
+    # 同时放一份 drop-in：对将来会采纳它的 systemd 版本算是双保险。
     mkdir -p /etc/systemd/resolved.conf.d
-    cat > /etc/systemd/resolved.conf.d/99-aegis.conf <<'EOF'
-[Resolve]
-DNSStubListener=no
-EOF
+    printf '[Resolve]\nDNSStubListener=no\n' > /etc/systemd/resolved.conf.d/99-aegis.conf
+    chmod 644 /etc/systemd/resolved.conf.d/99-aegis.conf
+
     systemctl restart systemd-resolved || true
-    ok "已关闭 systemd-resolved 的 DNSStubListener（保留 systemd-resolved 本身用于其它解析）"
-    # 上面这行是关键：直接 disable systemd-resolved 会让 apt/docker 等
-    # 依赖它的组件失去解析能力，只关 stub listener 才是最小改动。
+    sleep 2
+
+    if ss -lntu 2>/dev/null | awk '{print $5}' | grep -qE '127\.0\.0\.53:53$'; then
+      warn "53 端口仍被 systemd-resolved 占用，改为完全停用它"
+      # 兜底：彻底停用。注意此时 /etc/resolv.conf 会失效，
+      # 必须立刻写一份静态的，否则这台机器自己就解析不了域名了。
+      systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+      if [[ -L /etc/resolv.conf || -f /etc/resolv.conf ]]; then
+        cp -a /etc/resolv.conf "/etc/resolv.conf.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+      fi
+      rm -f /etc/resolv.conf
+      cat > /etc/resolv.conf <<'RESOLV'
+# 由 aegis-dns 安装脚本生成（systemd-resolved 已停用）
+# 首选指向本机 dnsd；它没起来时回落到公共 DNS，避免整机失去解析能力。
+nameserver 127.0.0.1
+nameserver 223.5.5.5
+nameserver 119.29.29.29
+options timeout:2 attempts:2
+RESOLV
+      chattr +i /etc/resolv.conf 2>/dev/null || true
+      ok "systemd-resolved 已停用，并写入了静态 /etc/resolv.conf"
+    else
+      ok "已释放 53 端口（改的是 /etc/systemd/resolved.conf，不是 drop-in）"
+    fi
+
+    # 确认整机解析没被搞坏
+    if getent hosts example.com >/dev/null 2>&1; then
+      ok "本机域名解析正常"
+    else
+      warn "本机域名解析异常，请检查 /etc/resolv.conf"
+    fi
   fi
 fi
 
+# --- 运维脚本 ---
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+for f in selfcheck.sh dnsprobe.py; do
+  if [[ -f "${SCRIPT_DIR}/${f}" ]]; then
+    install -m755 "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/${f}"
+  else
+    curl -fsSL --max-time 60 -o "${INSTALL_DIR}/${f}" \
+      "https://raw.githubusercontent.com/${REPO}/${VERSION}/deploy/${f}" 2>/dev/null \
+      && chmod +x "${INSTALL_DIR}/${f}" \
+      || warn "未能获取 ${f}（自检脚本），可稍后从仓库 deploy/ 目录手动拷贝"
+  fi
+done
+[[ -x "${INSTALL_DIR}/selfcheck.sh" ]] && ok "自检脚本已就位（bash ${INSTALL_DIR}/selfcheck.sh）"
+
 # --- systemd ---
 if command -v systemctl >/dev/null 2>&1; then
-  SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   if [[ -f "${SCRIPT_DIR}/aegis-dnsd.service" ]]; then
     cp -f "${SCRIPT_DIR}/aegis-dnsd.service" "${SCRIPT_DIR}/aegis-apid.service" /etc/systemd/system/
   else

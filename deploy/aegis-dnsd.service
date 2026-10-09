@@ -8,6 +8,10 @@ Documentation=https://github.com/50521136/aegis-dns
 # 不依赖 apid：dnsd 只读磁盘上的配置快照，apid 挂掉它照常解析。
 After=network-online.target
 Wants=network-online.target
+# 不限制重启次数：DNS 中断的影响远大于重启风暴。
+# 这一项属于 [Unit] 段 —— 写进 [Service] 会被 systemd 忽略（只打一条
+# "Unknown key name" 警告），实际生效的是默认启动限流，重启风暴时服务会被卡住。
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -17,8 +21,6 @@ EnvironmentFile=-/opt/aegis/.env
 
 Restart=always
 RestartSec=3
-# 不限制重启次数：DNS 中断的影响远大于重启风暴。
-StartLimitIntervalSec=0
 
 # 优雅关闭：留出时间把最后一批统计落库并关掉监听。
 KillSignal=SIGTERM

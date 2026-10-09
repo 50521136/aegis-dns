@@ -7,6 +7,7 @@ Description=AegisDNS API (apid) - REST API and embedded web UI
 Documentation=https://github.com/50521136/aegis-dns
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -16,7 +17,6 @@ EnvironmentFile=-/opt/aegis/.env
 
 Restart=always
 RestartSec=3
-StartLimitIntervalSec=0
 
 KillSignal=SIGTERM
 # 在线更新后 apid 会自己 os.Exit(0)，systemd 随即拉起新版本。
