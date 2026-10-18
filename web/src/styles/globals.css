@@ -3,92 +3,252 @@
 @tailwind utilities;
 
 /* ============================================================
-   设计令牌（Design Tokens）—— 以 RGB 通道三元组存储，
-   便于 Tailwind 使用 `rgb(var(--x) / <alpha-value>)` 支持透明度修饰符。
-   数值严格对应设计文档第十一章 11.3。
+   珍珠玻璃（Pearl Glass）主题层
+   ------------------------------------------------------------
+   来源：scaffold-master 的 DESIGN.md + tokens.css + materials.css
+   移植要点：原项目是 Vue + 原生 CSS 变量，本项目是 React + Tailwind。
+   做法是把珍珠玻璃的语义色映射进 Tailwind 的 RGB 三元组变量
+   （--background / --card / --primary …），既有组件类名不用改；
+   材质（玻璃、凹槽、浮层）与仪器化排版另外用 CSS 变量 + 工具类承载。
+
+   视觉语言：柔和灰白背景、清晰阅读面、克制的玻璃浮层、细边线。
+   蓝 = 选择与主操作，青柠 = 能力与正常状态，红 = 警示。
+   深色用同一套语义，只换材质与色值。
    ============================================================ */
+
 @layer base {
   :root {
-    /* 浅色主题 */
-    --background: 246 247 251; /* #F6F7FB */
-    --foreground: 17 24 39; /* #111827 */
+    /* ── 语义色（RGB 三元组，供 Tailwind 的 rgb(var(--x) / <alpha>) 使用） ── */
+    --background: 246 248 247; /* #f6f8f7 画布 */
+    --foreground: 16 20 24; /* #101418 正文 */
 
-    --card: 255 255 255; /* #FFFFFF */
-    --card-foreground: 17 24 39; /* #111827 */
+    --card: 251 252 252; /* #fbfcfc 阅读面 */
+    --card-foreground: 16 20 24;
 
-    --popover: 255 255 255;
-    --popover-foreground: 17 24 39;
+    --popover: 248 250 249;
+    --popover-foreground: 16 20 24;
 
-    --primary: 99 102 241; /* #6366F1 */
-    --primary-foreground: 255 255 255; /* #FFFFFF */
+    --primary: 31 99 216; /* #1f63d8 选择 / 主操作（5.13:1，白字反底 5.48:1） */
+    --primary-foreground: 255 255 255;
 
-    --secondary: 243 244 246; /* #F3F4F6 */
-    --secondary-foreground: 17 24 39;
+    --secondary: 237 240 239;
+    --secondary-foreground: 16 20 24;
 
-    --accent: 34 211 238; /* #22D3EE */
-    --accent-foreground: 11 16 32;
+    --accent: 130 221 45; /* #82dd2d 青柠：能力与正常状态 */
+    --accent-foreground: 16 20 24;
 
-    --muted: 243 244 246; /* #F3F4F6 */
-    --muted-foreground: 107 114 128; /* #6B7280 */
+    --muted: 238 241 240;
+    --muted-foreground: 103 113 117; /* #677175 次级标签（4.69:1） */
 
-    --border: 229 231 235; /* #E5E7EB */
-    --input: 229 231 235;
-    --ring: 99 102 241;
+    --border: 227 230 229;
+    --input: 227 230 229;
+    --ring: 31 99 216;
 
-    --success: 16 185 129; /* #10B981 */
+    --success: 67 122 24; /* #437a18 承载文字的青柠（4.88:1） */
     --success-foreground: 255 255 255;
 
-    --warning: 245 158 11; /* #F59E0B */
+    --warning: 186 140 52;
     --warning-foreground: 255 255 255;
 
-    --danger: 239 68 68; /* #EF4444 */
+    --danger: 209 58 49; /* #d13a31 警示文字（4.52:1） */
     --danger-foreground: 255 255 255;
 
-    /* 圆角 */
+    /* ── 字色五档 ── */
+    --ink: #101418;
+    --ink-muted: #596368;
+    --ink-soft: #677175;   /* 4.69:1，小字可用 */
+    --ink-faint: #757f83;  /* 3.85:1，仅装饰 / 大字，不作正文 */
+
+    /* ── 圆角五级（4px 一档，胶囊 999） ── */
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 16px;
-    --radius-xl: 24px;
+    --radius-xl: 20px;
+    --radius-2xl: 24px;
+
+    /* ── 描边 ── */
+    --shade: 46, 58, 62;
+    --line: rgba(var(--shade), 0.085);
+    --line-strong: rgba(var(--shade), 0.11);
+    --glass-line: rgba(255, 255, 255, 0.88);
+    --glass-line-soft: rgba(255, 255, 255, 0.7);
+
+    /* ── 材质高度：接触阴影 + 环境阴影 ── */
+    --e1: 0 1px 2px rgba(var(--shade), 0.05), 0 5px 14px rgba(var(--shade), 0.04);
+    --e2: 0 1px 3px rgba(var(--shade), 0.06), 0 12px 30px rgba(var(--shade), 0.055);
+    --e3: 0 2px 6px rgba(var(--shade), 0.07), 0 22px 50px rgba(var(--shade), 0.08);
+    --e-accent: 0 1px 2px rgba(16, 56, 128, 0.28), 0 8px 18px rgba(31, 99, 216, 0.24);
+    --e-accent-hover: 0 1px 2px rgba(16, 56, 128, 0.32), 0 12px 24px rgba(31, 99, 216, 0.3);
+    --e-danger: 0 1px 2px rgba(150, 40, 34, 0.26), 0 8px 18px rgba(209, 58, 49, 0.24);
+    --edge: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+    --edge-strong: inset 0 1px 0 rgba(255, 255, 255, 0.98);
+
+    /* ── 场景面与四种玻璃配方 ── */
+    --stage: #dfe3e2;
+    --frame: #17191d;
+    --canvas: #f6f8f7;
+    --rail-bg: rgba(250, 251, 250, 0.92);
+    --pill-bg: linear-gradient(145deg, rgba(255, 255, 255, 0.93), rgba(246, 251, 249, 0.62));
+    --pill-inset: inset 0 -1px 0 rgba(105, 122, 128, 0.08);
+    --float-bg: rgba(246, 248, 247, 0.86);
+    --float-inset: inset 0 0 0 1px rgba(120, 132, 135, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    --surface: linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(249, 252, 251, 0.93));
+    --surface-solid: #fbfcfc;
+    --groove-bg: rgba(225, 231, 229, 0.5);
+    --groove-inset: inset 0 1px 0 rgba(255, 255, 255, 0.46);
+    --input-bg: rgba(255, 255, 255, 0.78);
+    --hover-bg: rgba(var(--shade), 0.045);
+    --press-bg: rgba(var(--shade), 0.075);
+    --overlay: rgba(16, 20, 24, 0.26);
+
+    /* ── 仪器化排版：等宽读数与眉标 ── */
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --fs-display-xl: 56px;
+    --fs-display-l: 40px;
+    --fs-display-m: 28px;
+    --track-eyebrow: 0.14em;
+
+    /* 斜线填充：只表示区间、目标、当前柱 */
+    --hatch-ink: rgba(var(--shade), 0.16);
+    --hatch: repeating-linear-gradient(135deg, var(--hatch-ink) 0 1.5px, transparent 1.5px 6px);
+
+    /* 刻度与深色铭牌（两种主题都是深色面） */
+    --tick: rgba(var(--shade), 0.22);
+    --tick-strong: rgba(var(--shade), 0.5);
+    --plate-bg: rgba(21, 24, 26, 0.9);
+    --plate-line: rgba(255, 255, 255, 0.1);
+    --plate-ink: #f2f5f4;
+    --plate-soft: rgba(255, 255, 255, 0.56);
+
+    /* ── 分类色：只区分类别，不承载状态含义 ── */
+    --cat-1-bg: #f6e7c4;
+    --cat-1-ink: #7a5a16; /* 沙 */
+    --cat-2-bg: #d7e7fb;
+    --cat-2-ink: #275a96; /* 天 */
+    --cat-3-bg: #e4dcf7;
+    --cat-3-ink: #5b4597; /* 丁香 */
+    --cat-4-bg: #f7dce1;
+    --cat-4-ink: #94384c; /* 玫瑰 */
+    --cat-5-bg: #d8f0dc;
+    --cat-5-ink: #2d7140; /* 薄荷 */
+
+    /* 环境光：画布上两团极淡的静态漫射光 */
+    --ambient-a: rgba(130, 221, 45, 0.07);
+    --ambient-b: rgba(31, 99, 216, 0.055);
+
+    /* 缓动 */
+    --ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* 布局尺寸 */
+    --rail-w: 232px;
+    --topbar-h: 64px;
+    --control-h: 36px;
+    --control-h-sm: 30px;
+    --row-h: 48px;
+    --cell-px: 16px;
   }
 
-  .dark {
-    /* 暗色主题 */
-    --background: 11 16 32; /* #0B1020 */
-    --foreground: 229 231 235; /* #E5E7EB */
+  /* ── 深色外观：同一套语义，换成深色材质 ── */
+  .dark,
+  :root[data-theme="dark"] {
+    color-scheme: dark;
 
-    --card: 20 26 46; /* #141A2E */
-    --card-foreground: 229 231 235;
+    --background: 18 21 23; /* #121517 */
+    --foreground: 238 242 241; /* #eef2f1 */
 
-    --popover: 20 26 46;
-    --popover-foreground: 229 231 235;
+    --card: 27 31 33; /* #1b1f21 */
+    --card-foreground: 238 242 241;
 
-    --primary: 129 140 248; /* #818CF8 */
-    --primary-foreground: 11 16 32; /* #0B1020 */
+    --popover: 30 34 37;
+    --popover-foreground: 238 242 241;
 
-    --secondary: 30 41 59; /* #1E293B */
-    --secondary-foreground: 229 231 235;
+    --primary: 76 141 255; /* #4c8dff */
+    /* 亮蓝底上白字只有 3.20:1；深字 5.73:1，主按钮才达标 */
+    --primary-foreground: 18 21 23;
 
-    --accent: 34 211 238; /* #22D3EE */
-    --accent-foreground: 11 16 32;
+    --secondary: 38 43 46;
+    --secondary-foreground: 238 242 241;
 
-    --muted: 30 41 59; /* #1E293B */
-    --muted-foreground: 148 163 184; /* #94A3B8 */
+    --accent: 155 227 90; /* #9be35a */
+    --accent-foreground: 18 21 23;
 
-    --border: 30 41 59; /* #1E293B */
-    --input: 30 41 59;
-    --ring: 129 140 248;
+    --muted: 34 38 41;
+    --muted-foreground: 141 151 154; /* #8d979a */
 
-    --success: 52 211 153; /* #34D399 */
-    --success-foreground: 11 16 32;
+    --border: 40 45 48;
+    --input: 40 45 48;
+    --ring: 76 141 255;
 
-    --warning: 251 191 36; /* #FBBF24 */
-    --warning-foreground: 11 16 32;
+    --success: 155 227 90;
+    --success-foreground: 18 21 23;
 
-    --danger: 248 113 113; /* #F87171 */
-    --danger-foreground: 11 16 32;
+    --warning: 236 199 121;
+    --warning-foreground: 18 21 23;
+
+    --danger: 255 122 113; /* #ff7a71 */
+    --danger-foreground: 18 21 23;
+
+    --ink: #eef2f1;
+    --ink-muted: #b0babd;
+    --ink-soft: #8d979a;
+    --ink-faint: #6c7679;
+
+    --shade: 0, 0, 0;
+    --line: rgba(255, 255, 255, 0.07);
+    --line-strong: rgba(255, 255, 255, 0.1);
+    --glass-line: rgba(255, 255, 255, 0.1);
+    --glass-line-soft: rgba(255, 255, 255, 0.07);
+
+    --e1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 5px 14px rgba(0, 0, 0, 0.2);
+    --e2: 0 1px 3px rgba(0, 0, 0, 0.32), 0 12px 30px rgba(0, 0, 0, 0.28);
+    --e3: 0 2px 6px rgba(0, 0, 0, 0.36), 0 22px 50px rgba(0, 0, 0, 0.42);
+    --e-accent: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 18px rgba(76, 141, 255, 0.26);
+    --e-accent-hover: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 24px rgba(76, 141, 255, 0.34);
+    --e-danger: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 18px rgba(255, 90, 80, 0.26);
+    --edge: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --edge-strong: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+
+    --stage: #090b0c;
+    --frame: #000;
+    --canvas: #121517;
+    --rail-bg: rgba(22, 26, 28, 0.94);
+    --pill-bg: linear-gradient(145deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.05));
+    --pill-inset: inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+    --float-bg: rgba(30, 34, 37, 0.9);
+    --float-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --surface: linear-gradient(145deg, rgba(29, 33, 36, 0.98), rgba(25, 29, 31, 0.96));
+    --surface-solid: #1b1f21;
+    --groove-bg: rgba(0, 0, 0, 0.22);
+    --groove-inset: inset 0 1px 2px rgba(0, 0, 0, 0.28);
+    --input-bg: rgba(255, 255, 255, 0.04);
+    --hover-bg: rgba(255, 255, 255, 0.05);
+    --press-bg: rgba(255, 255, 255, 0.08);
+    --overlay: rgba(0, 0, 0, 0.5);
+
+    --hatch-ink: rgba(255, 255, 255, 0.12);
+    --tick: rgba(255, 255, 255, 0.16);
+    --tick-strong: rgba(255, 255, 255, 0.42);
+    --plate-bg: rgba(8, 10, 11, 0.78);
+
+    --cat-1-bg: rgba(232, 190, 96, 0.16);
+    --cat-1-ink: #ecc779;
+    --cat-2-bg: rgba(100, 160, 240, 0.16);
+    --cat-2-ink: #92bdf5;
+    --cat-3-bg: rgba(160, 132, 236, 0.17);
+    --cat-3-ink: #bfaaf4;
+    --cat-4-bg: rgba(236, 120, 140, 0.16);
+    --cat-4-ink: #f2a3b1;
+    --cat-5-bg: rgba(110, 200, 130, 0.15);
+    --cat-5-ink: #94dca6;
+
+    --ambient-a: rgba(130, 221, 45, 0.05);
+    --ambient-b: rgba(76, 141, 255, 0.07);
   }
 }
 
+/* ============================================================
+   基础元素
+   ============================================================ */
 @layer base {
   * {
     @apply border-border;
@@ -100,9 +260,13 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background text-foreground antialiased;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
     min-height: 100dvh;
+    /* 画布上两团极淡的静态漫射光 */
+    background-image: radial-gradient(1200px 700px at 12% -8%, var(--ambient-a), transparent 62%),
+      radial-gradient(1000px 620px at 92% 4%, var(--ambient-b), transparent 58%);
+    background-attachment: fixed;
   }
 
   /* 数字统一使用等宽数字，避免跳动 */
@@ -145,18 +309,149 @@
   }
 }
 
+/* ============================================================
+   材质：四种玻璃配方 + 槽
+   差别只靠「背景不透明度 + 模糊 + 饱和度 + 白边强度」拉开，不换颜色。
+   ============================================================ */
 @layer components {
-  /* 卡片规范：rounded-2xl bg-card p-6 shadow-sm border border-border/50 */
+  /* 1. 导航轨：几乎实色的浅面，只留一点通透 */
+  .m-rail {
+    background: var(--rail-bg);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+  }
+
+  /* 2. 高亮玻璃块（导航选中、分段滑块、次级按钮）：白边最亮的一块 */
+  .m-pill {
+    border: 1px solid var(--glass-line);
+    background: var(--pill-bg);
+    box-shadow: var(--e2), var(--edge-strong), var(--pill-inset);
+    backdrop-filter: blur(22px) saturate(1.18);
+    -webkit-backdrop-filter: blur(22px) saturate(1.18);
+  }
+
+  /* 3. 浮层（下拉、弹窗、提示）：模糊最重，压住底下的一切 */
+  .m-float {
+    border: 1px solid var(--glass-line);
+    background: var(--float-bg);
+    box-shadow: var(--e3), var(--float-inset);
+    backdrop-filter: blur(28px) saturate(1.08);
+    -webkit-backdrop-filter: blur(28px) saturate(1.08);
+  }
+
+  /* 4. 阅读面（卡片、表格容器）：浅色态接近实色，保证正文可读 */
+  .m-surface {
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    box-shadow: var(--edge), var(--e1);
+  }
+
+  /* 槽：被滑块滑过的底，只有一道内高光，显得凹下去 */
+  .m-groove {
+    border: 1px solid var(--glass-line-soft);
+    background: var(--groove-bg);
+    box-shadow: var(--groove-inset);
+  }
+
+  /* 深色规格铭牌：两种主题下都是深色面 */
+  .m-plate {
+    background: var(--plate-bg);
+    border: 1px solid var(--plate-line);
+    color: var(--plate-ink);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  /* 卡片规范 */
   .card-base {
-    @apply rounded-2xl bg-card p-6 shadow-sm border border-border/50 transition-all duration-200;
+    @apply m-surface rounded-2xl p-6 transition-all duration-200;
   }
   .card-hover {
-    @apply hover:shadow-md hover:-translate-y-0.5;
+    @apply hover:-translate-y-0.5;
+  }
+  .card-hover:hover {
+    box-shadow: var(--edge), var(--e2);
   }
 
   /* 等宽地址/域名显示 */
   .mono-addr {
     @apply font-mono text-sm break-all;
+  }
+}
+
+/* ============================================================
+   仪器化语汇：眉标、读数、刻度、斜线填充
+   表达「读数、区间、当前位置」，不作装饰。
+   ============================================================ */
+@layer components {
+  /* 眉标：小节标题上方的小字，等宽 + 宽字距 */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    letter-spacing: var(--track-eyebrow);
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  /* 读数：显示级等宽数字，单位用小一号、弱一档 */
+  .readout {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+  .readout-xl {
+    font-size: var(--fs-display-xl);
+  }
+  .readout-l {
+    font-size: var(--fs-display-l);
+  }
+  .readout-m {
+    font-size: var(--fs-display-m);
+  }
+  .readout-unit {
+    font-family: var(--font-mono);
+    font-size: 0.45em;
+    letter-spacing: 0;
+    color: var(--ink-faint);
+    margin-left: 0.3em;
+    /* 单位跟随基线，不要浮到数字右上角 */
+    align-self: baseline;
+  }
+
+  /* 刻度尺：一排细竖线，主刻度略高 */
+  .tick-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 14px;
+  }
+  .tick-row > i {
+    display: block;
+    width: 1px;
+    height: 6px;
+    background: var(--tick);
+  }
+  .tick-row > i.strong {
+    height: 14px;
+    background: var(--tick-strong);
+  }
+
+  /* 斜线填充：只给「区间 / 目标 / 当前柱」 */
+  .hatch-fill {
+    background-image: var(--hatch);
+  }
+
+  /* 细边线分隔（比 Tailwind 的 border 更克制） */
+  .hairline-t {
+    border-top: 1px solid var(--line);
+  }
+  .hairline-b {
+    border-bottom: 1px solid var(--line);
+  }
+  .hairline-r {
+    border-right: 1px solid var(--line);
   }
 }
 
@@ -190,9 +485,22 @@
 }
 
 /* ============================================================
-   可访问性：尊重 prefers-reduced-motion
-   命中时禁用位移与缩放，仅保留透明度变化（设计文档 11.5）
+   降级与可访问性
    ============================================================ */
+@media (prefers-reduced-transparency: reduce) {
+  .m-rail,
+  .m-pill,
+  .m-float,
+  .m-plate {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .m-float,
+  .m-rail {
+    background: var(--surface-solid);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

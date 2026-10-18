@@ -38,7 +38,7 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        'fixed z-50 flex max-h-[92dvh] flex-col gap-4 overflow-y-auto border border-border bg-card p-6 shadow-lg',
+        'm-float fixed z-50 flex max-h-[92dvh] flex-col gap-4 overflow-y-auto p-6',
         // 移动端：底部抽屉
         'inset-x-0 bottom-0 rounded-t-2xl pb-[calc(1.5rem+env(safe-area-inset-bottom))]',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',

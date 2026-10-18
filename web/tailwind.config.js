@@ -68,19 +68,22 @@ export default {
         full: '9999px',
       },
       fontFamily: {
+        /* 珍珠玻璃：系统字体栈，无需联网下载字体 */
         sans: [
-          'Inter',
+          'SF Pro Display',
+          'SF Pro Text',
           'PingFang SC',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'Noto Sans SC',
           'Microsoft YaHei',
           'system-ui',
-          '-apple-system',
-          'Segoe UI',
           'sans-serif',
         ],
         mono: [
-          'JetBrains Mono',
           'ui-monospace',
-          'SFMono-Regular',
+          'SF Mono',
+          'JetBrains Mono',
           'Menlo',
           'Consolas',
           'monospace',
@@ -99,9 +102,16 @@ export default {
         '4xl': ['32px', { lineHeight: '1.1' }],
       },
       boxShadow: {
-        sm: '0 1px 2px rgba(0,0,0,.05)',
-        md: '0 4px 12px rgba(0,0,0,.08)',
-        lg: '0 12px 32px rgba(0,0,0,.12)',
+        /* 珍珠玻璃：接触阴影 + 环境阴影，统一由令牌驱动 */
+        sm: 'var(--e1)',
+        DEFAULT: 'var(--e1)',
+        md: 'var(--e2)',
+        lg: 'var(--e3)',
+        float: 'var(--e3)',
+        accent: 'var(--e-accent)',
+        'accent-hover': 'var(--e-accent-hover)',
+        danger: 'var(--e-danger)',
+        none: 'none',
       },
       spacing: {
         18: '4.5rem',

@@ -19,12 +19,12 @@ export function PageHeader({ title, description, icon, actions, className }: Pag
     >
       <div className="flex items-start gap-3">
         {icon && (
-          <div className="mt-0.5 flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <div className="m-pill mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl text-primary">
             {icon}
           </div>
         )}
         <div className="min-w-0">
-          <h1 className="text-3xl font-bold leading-tight tracking-tight">{title}</h1>
+          <h1 className="text-2xl font-semibold leading-tight tracking-tight">{title}</h1>
           {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
         </div>
       </div>

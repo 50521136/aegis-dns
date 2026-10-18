@@ -76,11 +76,12 @@ export default function Landing() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.05, ease: 'easeOut' }}
-          className="mt-6 max-w-3xl text-4xl font-bold leading-tight tracking-tight md:text-5xl"
+          className="mt-6 max-w-3xl text-4xl font-bold leading-tight tracking-tight [text-wrap:balance] md:text-5xl"
         >
           你的专属加密 DNS，
           <br className="hidden sm:block" />
-          <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+          {/* 渐变终点用 success 令牌：青柠原色 #82dd2d 作文字只有 1.60:1，不能用 */}
+          <span className="bg-gradient-to-r from-primary to-success bg-clip-text text-transparent">
             干净、快速、可控
           </span>
         </motion.h1>
@@ -89,7 +90,7 @@ export default function Landing() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.1, ease: 'easeOut' }}
-          className="mt-5 max-w-2xl text-base text-muted-foreground md:text-lg"
+          className="mt-5 max-w-2xl text-pretty text-base text-muted-foreground md:text-lg"
         >
           注册即获得一个专属子域名，通过 DoT / DoH / 普通 DNS 接入，自定义拦截规则与订阅列表，
           全平台加密解析，远离广告与追踪。
@@ -116,7 +117,7 @@ export default function Landing() {
                   <ArrowRight />
                 </Link>
               </Button>
-              <Button asChild size="lg" variant="outline">
+              <Button asChild size="lg" variant="secondary">
                 <Link to="/login">已有账号，登录</Link>
               </Button>
             </>

@@ -9,7 +9,7 @@ export function BottomTabBar() {
   const items = navItems.filter((i) => i.mobile && (!i.adminOnly || isAdmin)).slice(0, 5)
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-lg pb-safe md:hidden">
+    <nav className="m-rail hairline-t pb-safe fixed inset-x-0 bottom-0 z-40 md:hidden">
       <div className="grid grid-cols-5">
         {items.map((item) => {
           const Icon = item.icon

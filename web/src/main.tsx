@@ -1,14 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 
-// 本地打包字体，无需外部 CDN（离线可用）
-import '@fontsource/inter/400.css'
-import '@fontsource/inter/500.css'
-import '@fontsource/inter/600.css'
-import '@fontsource/inter/700.css'
-import '@fontsource/jetbrains-mono/400.css'
-import '@fontsource/jetbrains-mono/500.css'
-
+// 珍珠玻璃主题使用系统字体栈（SF Pro / 苹方 / Noto Sans SC / 微软雅黑），
+// 不再打包 Inter —— 少约 300KB 字体文件，且中文渲染更贴合系统。
 import './styles/globals.css'
 import App from './App'
 

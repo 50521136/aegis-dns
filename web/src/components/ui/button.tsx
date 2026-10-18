@@ -8,12 +8,15 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
-        secondary: 'bg-muted text-foreground hover:bg-muted/70',
+        /* 主操作：蓝底 + 强调色投影，是页面上唯一的「实心承诺」 */
+        primary:
+          'bg-primary text-primary-foreground shadow-accent hover:bg-primary/92 hover:shadow-accent-hover',
+        /* 次级：高亮玻璃块 */
+        secondary: 'm-pill text-foreground hover:brightness-[0.985]',
         outline: 'border border-border bg-transparent hover:bg-muted',
         ghost: 'hover:bg-muted',
-        danger: 'bg-danger text-danger-foreground shadow-sm hover:bg-danger/90',
-        success: 'bg-success text-success-foreground shadow-sm hover:bg-success/90',
+        danger: 'bg-danger text-danger-foreground shadow-danger hover:bg-danger/92',
+        success: 'bg-success text-success-foreground shadow-sm hover:bg-success/92',
         link: 'text-primary underline-offset-4 hover:underline',
       },
       size: {

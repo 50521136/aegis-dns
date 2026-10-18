@@ -34,7 +34,7 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur-lg md:px-6">
+    <header className="m-rail hairline-b sticky top-0 z-30 flex h-16 items-center gap-3 px-4 md:px-6">
       {onOpenNav && (
         <Button
           variant="ghost"

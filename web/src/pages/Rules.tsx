@@ -390,7 +390,7 @@ export default function Rules() {
                         aria-label="启用"
                       />
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
                       {formatDateTime(rule.created_at)}
                     </TableCell>
                     <TableCell>

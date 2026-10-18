@@ -87,38 +87,47 @@ export function StatCard({
   return (
     <div
       className={cn(
-        'group rounded-2xl border border-border/50 bg-card p-6 shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5',
+        'm-surface group flex flex-col rounded-2xl p-5 transition-all duration-200 hover:-translate-y-0.5',
         className,
       )}
     >
-      <div className="flex items-center gap-2.5">
+      {/* 眉标：等宽 + 宽字距的小节标题 */}
+      <div className="flex items-start justify-between gap-3">
+        <span className="eyebrow">{label}</span>
         {icon && (
-          <div className={cn('flex size-8 items-center justify-center rounded-lg', iconToneMap[tone])}>
+          <div className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg', iconToneMap[tone])}>
             {icon}
           </div>
         )}
-        <span className="text-sm text-muted-foreground">{label}</span>
       </div>
 
-      <div className={cn('mt-3 flex items-baseline gap-1.5', toneMap[tone])}>
-        <span className="text-4xl font-bold leading-none tabular-nums">{display}</span>
-        {suffix && <span className="text-lg font-semibold text-muted-foreground">{suffix}</span>}
+      {/* 读数：显示级等宽数字，单位小一号弱一档 */}
+      <div className={cn('mt-3 flex items-baseline', toneMap[tone])}>
+        <span className="readout readout-l">{display}</span>
+        {suffix && <span className="readout-unit">{suffix}</span>}
       </div>
 
       {delta !== undefined && (
-        <div className="mt-2 flex items-center gap-1 text-xs">
+        <div className="mt-2.5 flex items-center gap-1.5 text-xs">
           <span
             className={cn(
-              'inline-flex items-center gap-0.5 font-medium',
-              delta >= 0 ? 'text-success' : 'text-danger',
+              'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 font-mono font-medium tabular-nums',
+              delta >= 0 ? 'bg-success/12 text-success' : 'bg-danger/12 text-danger',
             )}
           >
-            {delta >= 0 ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
+            {delta >= 0 ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
             {Math.abs(delta * 100).toFixed(1)}%
           </span>
           {deltaLabel && <span className="text-muted-foreground">{deltaLabel}</span>}
         </div>
       )}
+
+      {/* 刻度尺贴底对齐：有/无环比行的卡片，刻度都在同一水平线上 */}
+      <div className="tick-row mt-auto pt-4" aria-hidden="true">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <i key={i} className={i % 4 === 0 ? 'strong' : undefined} />
+        ))}
+      </div>
     </div>
   )
 }

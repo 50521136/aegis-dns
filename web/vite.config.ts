@@ -32,8 +32,9 @@ export default defineConfig({
     host: true,
     proxy: {
       // 本地开发时把 /api 代理到 apid（默认 :8080）
+      // 可用 VITE_API_PROXY_TARGET 覆盖，便于指向临时实例（如 UI 预览用的 :18081）
       '/api': {
-        target: 'http://127.0.0.1:8080',
+        target: process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8080',
         changeOrigin: true,
       },
     },

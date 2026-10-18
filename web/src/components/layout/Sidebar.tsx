@@ -10,9 +10,9 @@ export function Sidebar() {
   const items = navItems.filter((i) => !i.adminOnly || isAdmin)
 
   return (
-    <aside className="hidden md:flex md:w-64 md:flex-col md:border-r md:border-border md:bg-card/50 md:backdrop-blur lg:w-64">
+    <aside className="m-rail hairline-r hidden md:flex md:w-64 md:flex-col lg:w-64">
       <div className="flex h-16 items-center gap-2.5 px-6">
-        <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+        <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-accent">
           <ShieldCheck className="size-5" />
         </div>
         <div className="leading-tight">
@@ -31,10 +31,10 @@ export function Sidebar() {
               end={item.end}
               className={({ isActive }) =>
                 cn(
-                  'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-150',
+                  'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150',
                   isActive
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                    ? 'm-pill text-foreground'
+                    : 'text-muted-foreground hover:bg-[var(--hover-bg)] hover:text-foreground',
                 )
               }
             >
@@ -43,11 +43,11 @@ export function Sidebar() {
                   {isActive && (
                     <motion.span
                       layoutId="sidebar-active"
-                      className="absolute inset-y-1 left-0 w-1 rounded-full bg-primary"
+                      className="absolute inset-y-2 left-1 w-1 rounded-full bg-primary"
                       transition={{ type: 'spring', stiffness: 500, damping: 34 }}
                     />
                   )}
-                  <Icon className="size-[18px] shrink-0" />
+                  <Icon className={cn('size-[18px] shrink-0', isActive && 'text-primary')} />
                   <span>{item.label}</span>
                 </>
               )}
@@ -56,8 +56,8 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t border-border p-4">
-        <div className="flex items-center gap-3 rounded-xl bg-muted/50 p-3">
+      <div className="hairline-t p-4">
+        <div className="m-groove flex items-center gap-3 rounded-xl p-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-semibold text-primary uppercase">
             {user?.username?.slice(0, 1) ?? '?'}
           </div>
