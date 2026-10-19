@@ -20,10 +20,14 @@ const MaxBodySize = 20 << 20
 // FetchTimeout 是单次拉取的默认超时。
 //
 // 不能设成 30s：国内机房到公共规则源（OISD、anti-AD 这类放在境外 CDN 后面的）
-// 实测只有 20~30 KB/s，OISD 的 domainswild 压缩后 1.7MB 也要 60s 左右才下完，
-// 30s 会让真实用户的订阅大面积超时。这里给到 120s，并且允许按部署环境覆盖
-// （NewFetcherWithTimeout），慢线路可以调更大。
-const FetchTimeout = 120 * time.Second
+// 实测只有 20~30 KB/s，OISD 的 domainswild 压缩后 1.7MB 也要 60~90s 才下完，
+// 而且波动很大（同一台机器两次实测，一次 62s 一次直接 i/o timeout）。
+// 30s / 120s 都会让真实用户的订阅间歇性失败，所以给到 300s。
+//
+// 拉长超时的代价很小：刷新跑在调度器的后台 goroutine 里，不阻塞任何请求；
+// 真正的坏 URL 由 fail_count 与下轮重试兜住。慢线路还可以用
+// NewFetcherWithTimeout 单独调。
+const FetchTimeout = 300 * time.Second
 
 // FetchResult 是一次拉取的结果。
 type FetchResult struct {
