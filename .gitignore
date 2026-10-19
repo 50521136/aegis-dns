@@ -34,11 +34,12 @@ server/internal/api/webdist/dist/*
 .release-cache/
 
 # 本地测试脚手架（起实例、造数据、临时二进制），不进仓库
-.admonly/
-.subui/
-.uicheck/
-.stat-check/
-.verify-global/
+# 本地测试脚手架：这些目录名不固定，用通配符兜住，避免 git add -A 误提交
+.[a-z]*ui/
+.[a-z]*check/
+.[a-z]*verify*/
+.aegis-*/
+
 .seed-*.sh
 .check-*.py
 .start-*.sh
