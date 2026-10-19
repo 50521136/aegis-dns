@@ -280,6 +280,18 @@ SUB=$(curl -s --max-time 120 -X POST "$API/api/v1/subscriptions" -H "Authorizati
   -H 'Content-Type: application/json' \
   -d '{"name":"OISD Basic","url":"https://big.oisd.nl/domainswild","list_type":"blocklist","format":"auto","enabled":true}')
 SUBCOUNT=$(echo "$SUB" | grep -o '"last_count":[0-9]*' | cut -d: -f2)
+# 拉取走后台任务（避免慢线路上被客户端断开砍掉），接口立刻回 pending。
+# 这里必须轮询等真实条目数，不能拿创建响应判断。
+if [[ "${SUBCOUNT:-0}" -le 1000 ]]; then
+  for _ in $(seq 1 300); do
+    SROW=$(curl -s --max-time 10 "$API/api/v1/subscriptions" -H "Authorization: Bearer $TOKEN")
+    SUBCOUNT=$(echo "$SROW" | grep -o '"last_count":[0-9]*' | head -1 | cut -d: -f2)
+    SUBSTAT=$(echo "$SROW" | grep -o '"last_status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    [[ "${SUBCOUNT:-0}" -gt 1000 ]] && break
+    [[ "$SUBSTAT" == error* ]] && break
+    sleep 1
+  done
+fi
 if [[ "${SUBCOUNT:-0}" -gt 1000 ]]; then
   ok "订阅拉取成功，条目数 $SUBCOUNT"
   # OISD 里确实存在的通配条目，验证「*.domain 也匹配根域自身」
