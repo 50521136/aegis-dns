@@ -108,9 +108,9 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
   const [pendingDelete, setPendingDelete] = useState<Rule | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
 
-  const pageSize = 20
+  const [pageSize, setPageSize] = useState(20)
 
-  const queryKey = ['rules', scope, page, search, kindFilter] as const
+  const queryKey = ['rules', scope, page, pageSize, search, kindFilter] as const
   const listQuery = useQuery({
     queryKey,
     queryFn: () =>
@@ -505,7 +505,13 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
             ))}
           </div>
 
-          <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} />
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
         </>
       )}
 

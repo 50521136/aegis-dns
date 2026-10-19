@@ -1,0 +1,2 @@
+time=2026-10-20T00:59:24.823+08:00 level=WARN msg="证书加载失败，dev_tls 已开启，改用自签证书" err="读取证书 /root/aegis-dns/.pagui/data/certs/fullchain.pem 失败: open /root/aegis-dns/.pagui/data/certs/fullchain.pem: no such file or directory"
+time=2026-10-20T00:59:24.827+08:00 level=WARN msg="快照文件尚不存在，dnsd 以空配置启动（等待 apid 首次写入）" path=/root/aegis-dns/.pagui/data/runtime/config.json

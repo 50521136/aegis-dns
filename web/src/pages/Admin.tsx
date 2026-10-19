@@ -62,10 +62,10 @@ function UsersPanel() {
   const [searchInput, setSearchInput] = useState('')
   const [q, setQ] = useState('')
   const [pendingDelete, setPendingDelete] = useState<User | null>(null)
-  const pageSize = 20
+  const [pageSize, setPageSize] = useState(20)
 
   const usersQuery = useQuery({
-    queryKey: ['admin', 'users', page, q],
+    queryKey: ['admin', 'users', page, pageSize, q],
     queryFn: () => listUsers({ page, page_size: pageSize, q: q || undefined }),
   })
 
@@ -210,7 +210,13 @@ function UsersPanel() {
                 </TableBody>
               </Table>
             </div>
-            <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} />
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
           </>
         )}
       </CardContent>

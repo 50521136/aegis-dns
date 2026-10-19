@@ -49,7 +49,8 @@ export default function AdminLogs() {
   const [domain, setDomain] = useState('')
   const [action, setAction] = useState('all')
   const [userId, setUserId] = useState('all')
-  const pageSize = 50
+  // 默认 20 条，避免一屏 50 行把页面拉得过长
+  const [pageSize, setPageSize] = useState(20)
 
   // 用户下拉：拉一页足够多的用户，管理员一般不会有成百上千个租户
   const usersQuery = useQuery({
@@ -59,7 +60,7 @@ export default function AdminLogs() {
   const users = usersQuery.data?.items ?? []
 
   const query = useQuery({
-    queryKey: ['admin', 'querylog', page, domain, action, userId],
+    queryKey: ['admin', 'querylog', page, pageSize, domain, action, userId],
     queryFn: () =>
       getAdminQueryLog({
         limit: pageSize,
@@ -247,7 +248,13 @@ export default function AdminLogs() {
             })}
           </div>
 
-          <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} />
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
         </>
       )}
     </div>

@@ -40,10 +40,11 @@ export default function QueryLog() {
   const [domainInput, setDomainInput] = useState('')
   const [domain, setDomain] = useState('')
   const [action, setAction] = useState('all')
-  const pageSize = 50
+  // 默认 20 条：50 条一页在手机上要划很久，需要更多可以在分页器里切
+  const [pageSize, setPageSize] = useState(20)
 
   const query = useQuery({
-    queryKey: ['stats', 'querylog', page, domain, action],
+    queryKey: ['stats', 'querylog', page, pageSize, domain, action],
     queryFn: () =>
       getQueryLog({
         limit: pageSize,
@@ -184,7 +185,13 @@ export default function QueryLog() {
             })}
           </div>
 
-          <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} />
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
         </>
       )}
     </div>
