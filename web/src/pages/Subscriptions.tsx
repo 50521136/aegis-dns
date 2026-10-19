@@ -244,16 +244,13 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
               <Plus />
               添加订阅
             </Button>
+            <Button variant="secondary" size="sm" onClick={() => setPresetsOpen(true)}>
+              <ListPlus />
+              推荐列表
+            </Button>
           </>
         }
       />
-
-      <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" size="sm" onClick={() => setPresetsOpen(true)}>
-          <ListPlus />
-          从推荐列表添加
-        </Button>
-      </div>
 
       {listQuery.isError ? (
         <ErrorState message={errorMessage(listQuery.error)} onRetry={() => listQuery.refetch()} />
@@ -280,7 +277,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
           {items.map((sub) => (
             <div
               key={sub.id}
-              className="flex flex-col rounded-2xl border border-border/50 bg-card p-5 shadow-sm transition-all duration-200 hover:shadow-md"
+              className="flex flex-col rounded-2xl border border-border/50 bg-card p-4 shadow-sm transition-all duration-200 hover:shadow-md sm:p-5"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -292,7 +289,10 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                       {sub.list_type === 'allowlist' ? '白名单' : '黑名单'}
                     </Badge>
                   </div>
-                  <p className="mt-1 truncate font-mono text-xs text-muted-foreground" title={sub.url}>
+                  <p
+                    className="mt-1 line-clamp-2 break-all font-mono text-xs leading-snug text-muted-foreground"
+                    title={sub.url}
+                  >
                     {sub.url}
                   </p>
                 </div>
@@ -303,24 +303,19 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                 />
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                <div className="flex items-center gap-2">
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                <span className="flex items-center gap-1.5">
                   <span className="text-muted-foreground">条目</span>
                   <span className="font-semibold tabular-nums">{formatNumber(sub.last_count)}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Clock className="size-3.5 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">
-                    {sub.last_fetched ? formatRelative(sub.last_fetched) : '从未同步'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="mt-3">
+                </span>
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Clock className="size-3.5" />
+                  {sub.last_fetched ? formatRelative(sub.last_fetched) : '从未同步'}
+                </span>
                 <StatusBadge status={sub.last_status} />
               </div>
 
-              <div className="mt-4 flex items-center justify-end gap-1 border-t border-border/60 pt-3">
+              <div className="mt-3 flex items-center justify-end gap-1 border-t border-border/60 pt-2.5">
                 <Button
                   variant="ghost"
                   size="sm"

@@ -1,0 +1,19 @@
+domain: "dns.vg.local"
+data_dir: "/root/aegis-dns/.subui/data"
+dns:
+  listen_udp: "127.0.0.1:15368"
+  listen_tcp: "127.0.0.1:15368"
+  listen_dot: "127.0.0.1:18868"
+  listen_doh: "127.0.0.1:14468"
+  listen_doh_plain: "127.0.0.1:18068"
+  dev_tls: true
+api:
+  listen: "127.0.0.1:18098"
+  tls_listen: ""
+  jwt_secret: "fb56c4a9aabd835a8c27aefa79e6de3d632b55c11588d2c9540731874862948d"
+  admin:
+    username: "admin"
+    password: "SubUiPass123"
+upstreams: ["223.5.5.5"]
+log:
+  level: "info"

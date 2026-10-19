@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -92,6 +93,35 @@ func (f *Fetcher) timeout() time.Duration {
 // 只对网络层错误重试；HTTP 4xx/5xx 与内容错误一律不重试（重试也不会变好）。
 const fetchAttempts = 3
 
+// githubMirrors 是 raw.githubusercontent.com 的镜像前缀。
+//
+// 国内机房直连该域名基本不通（实测 IPv4/IPv6 都是 45s 超时、HTTP 000），
+// 而推荐列表里的公共规则源大多托管在 GitHub raw —— 没有回退等于全都用不了。
+// 顺序按实测速度排；镜像只是公共规则列表的转发，不涉及用户隐私数据。
+var githubMirrors = []string{
+	"https://gh-proxy.com/",
+	"https://ghproxy.net/",
+}
+
+// isGitHubRaw 判断是否为 GitHub raw 地址。
+//
+// 必须按 host 判断而不是子串：已经套了代理的地址（如
+// https://cdn.example.com/https://raw.githubusercontent.com/...）里也含这个子串，
+// 用 Contains 会把它再套一层镜像，变成双重代理。
+func isGitHubRaw(u string) bool {
+	pu, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(pu.Host) {
+	case "raw.githubusercontent.com":
+		return true
+	case "github.com":
+		return strings.Contains(pu.Path, "/raw/")
+	}
+	return false
+}
+
 // retryBackoff 是第 n 次重试前的等待。
 func retryBackoff(n int) time.Duration {
 	switch n {
@@ -118,7 +148,24 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 	ctx, cancel := context.WithTimeout(ctx, f.timeout())
 	defer cancel()
 
-	// 网络层重试：只在请求还没拿到响应时重试，避免重复下载已经成功的内容。
+	// GitHub raw 先走镜像：直连在这类机房上是确定不通的，先试直连只会白等几分钟。
+	if isGitHubRaw(url) {
+		for _, m := range githubMirrors {
+			res, err := f.tryWithRetry(ctx, m+url, etag, lastModified)
+			if err == nil {
+				return res, nil
+			}
+			// 镜像返回 4xx/5xx 属于确定性失败，换下一个镜像
+		}
+	}
+	return f.tryWithRetry(ctx, url, etag, lastModified)
+}
+
+// tryWithRetry 带网络层重试地拉取一次。
+//
+// 只在请求没拿到响应时重试，避免重复下载已经成功的内容；
+// 带状态码的错误（HTTP 4xx/5xx）重试没有意义，直接返回。
+func (f *Fetcher) tryWithRetry(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
 	var lastErr error
 	for attempt := 1; attempt <= fetchAttempts; attempt++ {
 		res, err := f.fetchOnce(ctx, url, etag, lastModified)
@@ -126,7 +173,6 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 			return res, nil
 		}
 		lastErr = err
-		// 带状态码的错误（HTTP 4xx/5xx）重试没有意义，直接返回。
 		var se *statusError
 		if errors.As(err, &se) {
 			return nil, err
@@ -221,6 +267,18 @@ func DescribeStatus(err error) string {
 	msg := err.Error()
 	// 去掉可能很长的包装前缀，只留核心信息。
 	msg = strings.TrimPrefix(msg, "请求订阅失败: ")
+
+	// 超时/连接类错误换成人话：管理员看到 "context deadline exceeded"
+	// 根本判断不出是源站被墙、DNS 有问题还是自己网络抖动。
+	switch {
+	case strings.Contains(msg, "context deadline exceeded"),
+		strings.Contains(msg, "i/o timeout"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "no such host"):
+		msg = "拉取超时或连接失败，订阅源可能不可达（境外地址建议换成国内可达的镜像源）"
+	}
+
 	if len(msg) > 200 {
 		msg = msg[:200]
 	}

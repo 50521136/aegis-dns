@@ -198,6 +198,11 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 	// 请求立刻返回，前端靠轮询看进度。
 	if sub.Enabled {
 		sub.LastStatus = model.StatusPending
+		// 必须落库：前端创建完会重新拉列表，列表读数据库，
+		// 只改内存的话读回来是空状态，界面上显示成「未同步」。
+		if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
+			s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
+		}
 		s.refreshSubAsync(u.ID, sub, global)
 	}
 	writeJSON(w, http.StatusCreated, subToJSON(sub))
@@ -321,6 +326,9 @@ func (s *Server) refreshSub(w http.ResponseWriter, r *http.Request, global bool)
 		return
 	}
 	// 与新建同理：拉取慢且易被客户端断开，交给后台任务，接口立刻回 202。
+	if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
+		s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
+	}
 	s.refreshSubAsync(u.ID, sub, global)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id":          sub.ID,
@@ -356,6 +364,9 @@ func (s *Server) refreshAllSubs(w http.ResponseWriter, r *http.Request, global b
 			continue
 		}
 		sub.LastStatus = model.StatusPending
+		if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
+			s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
+		}
 		s.refreshSubAsync(u.ID, sub, global)
 		pending++
 	}

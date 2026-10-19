@@ -129,6 +129,18 @@ func (s *Store) DeleteSub(ctx context.Context, uid, sid string) error {
 }
 
 // UpdateSubStatus 更新订阅的抓取元信息。
+// SetSubStatus 只更新 last_status，不动 etag/条目数。
+//
+// 用途：把「同步中」这个瞬时状态落库。只放在内存里没用 —— 前端创建完会重新拉列表，
+// 列表读的是数据库，读回来是空状态就会显示成「未同步」，看着像坏了。
+func (s *Store) SetSubStatus(ctx context.Context, sid, status string) error {
+	if _, err := s.write.ExecContext(ctx,
+		`UPDATE subscriptions SET last_status=? WHERE id=?`, status, sid); err != nil {
+		return fmt.Errorf("更新订阅状态失败: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) UpdateSubStatus(ctx context.Context, sid, etag, lastMod, status string, fetchedAt int64, count, failCount int) error {
 	_, err := s.write.ExecContext(ctx,
 		`UPDATE subscriptions SET last_etag=?, last_modified=?, last_fetched=?, last_count=?, last_status=?, fail_count=?
