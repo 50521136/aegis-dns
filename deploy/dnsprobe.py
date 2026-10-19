@@ -17,6 +17,7 @@
 退出码：0 = 得到应答（任何 rcode 都算通），1 = 网络层失败，2 = 参数错误。
 """
 
+from typing import Tuple
 import argparse
 import base64
 import http.client
@@ -50,7 +51,7 @@ def encode_name(name: str) -> bytes:
     return out + b"\x00"
 
 
-def build_query(name: str, qtype: int, do: bool = False) -> tuple[bytes, int]:
+def build_query(name: str, qtype: int, do: bool = False) -> Tuple[bytes, int]:
     qid = random.randint(1, 0xFFFF)
     flags = 0x0100  # RD
     msg = struct.pack("!HHHHHH", qid, flags, 1, 0, 0, 0)
@@ -61,7 +62,7 @@ def build_query(name: str, qtype: int, do: bool = False) -> tuple[bytes, int]:
     return msg, qid
 
 
-def read_name(data: bytes, off: int, depth: int = 0) -> tuple[str, int]:
+def read_name(data: bytes, off: int, depth: int = 0) -> Tuple[str, int]:
     if depth > 20:
         raise ValueError("压缩指针成环")
     labels = []

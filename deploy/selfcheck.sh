@@ -97,7 +97,11 @@ check_listen() {
     # 回环绑定。否则 systemd-resolved 的 stub listener 会让 :53 检查假阳性 ——
     # 端口检查显示「监听中」，实际 dnsd 根本没绑上。
     local hits
-    hits=$(ss -lntu 2>/dev/null | awk '{print $1, $5}' | grep -E "^${proto}.*(\*|0\.0\.0\.0|\[::\]):${port}$" | wc -l)
+    # 通配绑定在不同 iproute2 版本下写法不同：
+    #   新版 → *:53 / 0.0.0.0:53 / [::]:53
+    #   CentOS 7 的旧版 → :::53
+    # 少写一个分支就会把「dnsd 正常监听」判成「被占用」，在完全正常的机器上报红。
+    hits=$(ss -lntu 2>/dev/null | awk '{print $1, $5}' | grep -E "^${proto}.*(\*|0\.0\.0\.0|\[::\]|::):${port}$" | wc -l)
     if [[ "$hits" -gt 0 ]]; then
       ok "$name (:${port}/${proto})" "监听中"
     else
@@ -120,12 +124,26 @@ check_listen() {
     wn "ss 命令" "不可用，跳过端口检查"
   fi
 }
+# 面板端口以 /opt/aegis/config.yaml 为准，不要写死。
+#
+# install.sh 生成的是 8080，但部署时经常要改（例如 8080 已被别的服务占用）。
+# 写死端口的自检会在一台完全正常的机器上报「API 无响应」，
+# 看起来像 apid 挂了，实际只是探错了端口。
+cfg_api_port=""; cfg_tls_port=""
+CFG_FILE="${CFG_FILE:-/opt/aegis/config.yaml}"
+if [[ -r "$CFG_FILE" ]]; then
+  cfg_api_port=$(sed -n 's/^  listen: ":\{0,1\}\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
+  cfg_tls_port=$(sed -n 's/^  tls_listen: ":\{0,1\}\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
+fi
+API_PORT="${API_PORT:-${cfg_api_port:-8080}}"
+TLS_PORT="${TLS_PORT:-${cfg_tls_port:-8443}}"
+
 check_listen udp 53 "UDP DNS"
 check_listen tcp 53 "TCP DNS"
 check_listen tcp 853 "DoT"
 check_listen tcp 443 "DoH"
-check_listen tcp 8443 "面板 HTTPS"
-check_listen tcp 8080 "API HTTP"
+check_listen tcp "$TLS_PORT" "面板 HTTPS"
+check_listen tcp "$API_PORT" "API HTTP"
 
 # --- 5. systemd ---
 echo
@@ -190,7 +208,7 @@ fi
 # --- 8. API ---
 echo
 echo "${DIM}[8/9] API${NC}"
-api_port=8080
+api_port="$API_PORT"
 if command -v curl >/dev/null 2>&1; then
   h=$(curl -fsS --max-time 5 "http://127.0.0.1:${api_port}/api/v1/healthz" 2>/dev/null || true)
   if [[ -n "$h" ]]; then
