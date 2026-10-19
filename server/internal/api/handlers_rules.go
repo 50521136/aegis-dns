@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -29,34 +30,19 @@ func validateRule(r *model.Rule) error {
 	return nil
 }
 
-func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	page, size, offset := pagination(r, 20)
-
-	kind := r.URL.Query().Get("kind")
-	q := r.URL.Query().Get("q")
-	enabled := parseBoolParam(r.URL.Query().Get("enabled"))
-
-	list, total, err := s.store.ListRules(r.Context(), u.ID, kind, q, enabled, size, offset)
-	if err != nil {
-		writeStoreError(w, err, "")
-		return
+// ruleJSON 是规则的对外表示。抽出来避免每个 handler 各写一份字段清单 ——
+// 之前漏过 is_global，前端因此分不清一条规则属于哪一层。
+func ruleJSON(rule *model.Rule) map[string]any {
+	return map[string]any{
+		"id":         rule.ID,
+		"kind":       rule.Kind,
+		"pattern":    rule.Pattern,
+		"value":      rule.Value,
+		"qtypes":     orEmptySlice(rule.QTypes),
+		"enabled":    rule.Enabled,
+		"is_global":  rule.IsGlobal,
+		"created_at": rfc3339OrEmpty(rule.CreatedAt),
 	}
-	items := make([]map[string]any, 0, len(list))
-	for _, rule := range list {
-		items = append(items, map[string]any{
-			"id":         rule.ID,
-			"kind":       rule.Kind,
-			"pattern":    rule.Pattern,
-			"value":      rule.Value,
-			"qtypes":     orEmptySlice(rule.QTypes),
-			"enabled":    rule.Enabled,
-			"created_at": rfc3339OrEmpty(rule.CreatedAt),
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items, "total": total, "page": page, "page_size": size,
-	})
 }
 
 func orEmptySlice(in []string) []string {
@@ -66,7 +52,95 @@ func orEmptySlice(in []string) []string {
 	return in
 }
 
+// ruleQuota 返回指定 scope 下该用户的规则配额上限。
+func (s *Server) ruleQuota(ctx context.Context, global bool) int {
+	set, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return 0 // 读不到设置就不拦，避免因为一次读库失败把用户锁死
+	}
+	if global {
+		return set.MaxRulesGlobal
+	}
+	return set.MaxRulesPerUser
+}
+
+// checkRuleQuota 在新增规则前检查配额。
+//
+// 配额是硬上限：个人层与全局层分开计数，管理员自己的个人规则不会挤占全局额度。
+// adding 是本批要新增的条数（导入时可能一次很多条）。
+func (s *Server) checkRuleQuota(ctx context.Context, uid string, global bool, adding int) error {
+	limit := s.ruleQuota(ctx, global)
+	if limit <= 0 {
+		return nil
+	}
+	cur, err := s.store.CountRules(ctx, uid, global)
+	if err != nil {
+		return err
+	}
+	if cur+adding > limit {
+		scope := "个人"
+		if global {
+			scope = "全局"
+		}
+		return errQuota(scope + "规则已达上限 " + itoa(limit) + " 条（当前 " + itoa(cur) +
+			"，本次需新增 " + itoa(adding) + "）。请先删除部分规则，或让管理员调整配额。")
+	}
+	return nil
+}
+
+// touched 触发快照重建。
+//
+// 个人层改动只需要重建该用户；**全局层改动必须全量重建** —— 全局规则对所有
+// 开启全局的用户生效，只把创建者标记为变更会让其他人的规则集停留在旧版本。
+func (s *Server) touched(ctx context.Context, uid string, global bool) error {
+	if global {
+		_, err := s.coord.Changed(ctx)
+		return err
+	}
+	_, err := s.coord.Changed(ctx, uid)
+	return err
+}
+
+func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
+	s.listRules(w, r, false)
+}
+
+func (s *Server) handleAdminListRules(w http.ResponseWriter, r *http.Request) {
+	s.listRules(w, r, true)
+}
+
+func (s *Server) listRules(w http.ResponseWriter, r *http.Request, global bool) {
+	u := currentUser(r)
+	page, size, offset := pagination(r, 20)
+
+	kind := r.URL.Query().Get("kind")
+	q := r.URL.Query().Get("q")
+	enabled := parseBoolParam(r.URL.Query().Get("enabled"))
+
+	list, total, err := s.store.ListRules(r.Context(), u.ID, global, kind, q, enabled, size, offset)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	items := make([]map[string]any, 0, len(list))
+	for _, rule := range list {
+		items = append(items, ruleJSON(rule))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "page": page, "page_size": size,
+		"limit": s.ruleQuota(r.Context(), global),
+	})
+}
+
 func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
+	s.createRule(w, r, false)
+}
+
+func (s *Server) handleAdminCreateRule(w http.ResponseWriter, r *http.Request) {
+	s.createRule(w, r, true)
+}
+
+func (s *Server) createRule(w http.ResponseWriter, r *http.Request, global bool) {
 	var req struct {
 		Kind    string   `json:"kind"`
 		Pattern string   `json:"pattern"`
@@ -80,18 +154,23 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 
 	rule := &model.Rule{
-		UserID:  u.ID,
-		Kind:    req.Kind,
-		Pattern: strings.TrimSpace(req.Pattern),
-		Value:   strings.TrimSpace(req.Value),
-		QTypes:  req.QTypes,
-		Enabled: true,
+		UserID:   u.ID,
+		Kind:     req.Kind,
+		Pattern:  strings.TrimSpace(req.Pattern),
+		Value:    strings.TrimSpace(req.Value),
+		QTypes:   req.QTypes,
+		Enabled:  true,
+		IsGlobal: global,
 	}
 	if req.Enabled != nil {
 		rule.Enabled = *req.Enabled
 	}
 	if err := validateRule(rule); err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidRule, err.Error(), map[string]any{"input": req.Pattern})
+		return
+	}
+	if err := s.checkRuleQuota(r.Context(), u.ID, global, 1); err != nil {
+		writeQuotaError(w, err)
 		return
 	}
 
@@ -101,23 +180,23 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	// 只有启用中的规则才需要重建快照；停用的规则不影响解析。
 	if rule.Enabled {
-		if _, err := s.coord.Changed(r.Context(), u.ID); err != nil {
+		if err := s.touched(r.Context(), u.ID, global); err != nil {
 			writeStoreError(w, err, "")
 			return
 		}
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":         rule.ID,
-		"kind":       rule.Kind,
-		"pattern":    rule.Pattern,
-		"value":      rule.Value,
-		"qtypes":     orEmptySlice(rule.QTypes),
-		"enabled":    rule.Enabled,
-		"created_at": rfc3339OrEmpty(rule.CreatedAt),
-	})
+	writeJSON(w, http.StatusCreated, ruleJSON(rule))
 }
 
 func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
+	s.updateRule(w, r, false)
+}
+
+func (s *Server) handleAdminUpdateRule(w http.ResponseWriter, r *http.Request) {
+	s.updateRule(w, r, true)
+}
+
+func (s *Server) updateRule(w http.ResponseWriter, r *http.Request, global bool) {
 	var req struct {
 		Kind    string   `json:"kind"`
 		Pattern string   `json:"pattern"`
@@ -134,6 +213,12 @@ func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.store.GetRule(r.Context(), u.ID, rid)
 	if err != nil {
 		writeStoreError(w, err, "规则不存在")
+		return
+	}
+	// 作用域必须与路由一致：拿个人路由去改一条全局规则应当 404，
+	// 否则普通用户就能通过 /rules/{id} 篡改管理员的全局规则。
+	if existing.IsGlobal != global {
+		writeError(w, http.StatusNotFound, CodeNotFound, "规则不存在", nil)
 		return
 	}
 
@@ -159,24 +244,40 @@ func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "规则不存在")
 		return
 	}
-	if _, err := s.coord.Changed(r.Context(), u.ID); err != nil {
+	if err := s.touched(r.Context(), u.ID, global); err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": existing.ID, "kind": existing.Kind, "pattern": existing.Pattern,
-		"value": existing.Value, "qtypes": orEmptySlice(existing.QTypes), "enabled": existing.Enabled,
-	})
+	writeJSON(w, http.StatusOK, ruleJSON(existing))
 }
 
 func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
+	s.deleteRule(w, r, false)
+}
+
+func (s *Server) handleAdminDeleteRule(w http.ResponseWriter, r *http.Request) {
+	s.deleteRule(w, r, true)
+}
+
+func (s *Server) deleteRule(w http.ResponseWriter, r *http.Request, global bool) {
 	u := currentUser(r)
 	rid := chi.URLParam(r, "id")
+
+	// 先取一次确认作用域，避免用个人路由删掉全局规则。
+	existing, err := s.store.GetRule(r.Context(), u.ID, rid)
+	if err != nil {
+		writeStoreError(w, err, "规则不存在")
+		return
+	}
+	if existing.IsGlobal != global {
+		writeError(w, http.StatusNotFound, CodeNotFound, "规则不存在", nil)
+		return
+	}
 	if err := s.store.DeleteRule(r.Context(), u.ID, rid); err != nil {
 		writeStoreError(w, err, "规则不存在")
 		return
 	}
-	if _, err := s.coord.Changed(r.Context(), u.ID); err != nil {
+	if err := s.touched(r.Context(), u.ID, global); err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
@@ -184,6 +285,14 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBulkDeleteRules(w http.ResponseWriter, r *http.Request) {
+	s.bulkDeleteRules(w, r, false)
+}
+
+func (s *Server) handleAdminBulkDeleteRules(w http.ResponseWriter, r *http.Request) {
+	s.bulkDeleteRules(w, r, true)
+}
+
+func (s *Server) bulkDeleteRules(w http.ResponseWriter, r *http.Request, global bool) {
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -199,13 +308,28 @@ func (s *Server) handleBulkDeleteRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
-	n, err := s.store.DeleteRules(r.Context(), u.ID, req.IDs)
+
+	// 只删本作用域的：逐条确认归属，把跨作用域的 ID 过滤掉而不是整体报错。
+	allowed := make([]string, 0, len(req.IDs))
+	for _, rid := range req.IDs {
+		rule, err := s.store.GetRule(r.Context(), u.ID, rid)
+		if err != nil || rule.IsGlobal != global {
+			continue
+		}
+		allowed = append(allowed, rid)
+	}
+	if len(allowed) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": 0})
+		return
+	}
+
+	n, err := s.store.DeleteRules(r.Context(), u.ID, allowed)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
 	if n > 0 {
-		if _, err := s.coord.Changed(r.Context(), u.ID); err != nil {
+		if err := s.touched(r.Context(), u.ID, global); err != nil {
 			writeStoreError(w, err, "")
 			return
 		}
@@ -258,8 +382,16 @@ func canonicalPattern(p *rules.Parsed) string {
 	}
 }
 
-// handleImportRules 批量导入规则文本（文档 9.4 POST /rules/import）。
 func (s *Server) handleImportRules(w http.ResponseWriter, r *http.Request) {
+	s.importRulesScoped(w, r, false)
+}
+
+func (s *Server) handleAdminImportRules(w http.ResponseWriter, r *http.Request) {
+	s.importRulesScoped(w, r, true)
+}
+
+// handleImportRules 批量导入规则文本（文档 9.4 POST /rules/import）。
+func (s *Server) importRulesScoped(w http.ResponseWriter, r *http.Request, global bool) {
 	var req struct {
 		Content string `json:"content"`
 		Format  string `json:"format"`
@@ -286,6 +418,12 @@ func (s *Server) handleImportRules(w http.ResponseWriter, r *http.Request) {
 			"单次导入上限 50000 条规则，更多内容请使用「订阅」功能", nil)
 		return
 	}
+	// 配额按本批实际要新增的条数检查，导入路径同样受限 ——
+	// 否则「逐条新建有配额、批量导入没有」就是一个明显的绕过口子。
+	if err := s.checkRuleQuota(r.Context(), u.ID, global, len(parsed)); err != nil {
+		writeQuotaError(w, err)
+		return
+	}
 
 	out := make([]*model.Rule, 0, len(parsed))
 	for _, p := range parsed {
@@ -295,10 +433,11 @@ func (s *Server) handleImportRules(w http.ResponseWriter, r *http.Request) {
 			// 规范化 pattern：解析器已经把 hosts / dnsmasq / 裸域名统一成
 			// 域名 + 通配标记，这里还原成 AdGuard 形式，便于用户在列表里
 			// 看到一致的写法（也避免把 `0.0.0.0 x` 这种 hosts 行原样存库）。
-			Pattern: canonicalPattern(p),
-			Value:   p.Value,
-			QTypes:  p.QTypes,
-			Enabled: enabled,
+			Pattern:  canonicalPattern(p),
+			Value:    p.Value,
+			QTypes:   p.QTypes,
+			Enabled:  enabled,
+			IsGlobal: global,
 		})
 	}
 
@@ -310,7 +449,7 @@ func (s *Server) handleImportRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		created = n
-		if _, err := s.coord.Changed(r.Context(), u.ID); err != nil {
+		if err := s.touched(r.Context(), u.ID, global); err != nil {
 			writeStoreError(w, err, "")
 			return
 		}

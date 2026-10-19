@@ -19,6 +19,8 @@ const (
 	PrefixUser = "usr_"
 	PrefixRule = "rul_"
 	PrefixSub  = "sub_"
+	// PrefixFeedback 用于用户反馈。
+	PrefixFeedback = "fb_"
 )
 
 var (

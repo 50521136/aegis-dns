@@ -41,17 +41,27 @@ type Store struct {
 // 关键 PRAGMA 在连接建立时通过 _pragma 注入，保证池里每一条新连接都带上，
 // 而不是只在启动时对某一条连接设置（后者是常见 bug：池扩容后新连接没有
 // busy_timeout，于是并发下又开始报 database is locked）。
-func dsn(path string) string {
-	return "file:" + path +
+func dsn(path string) string { return dsnMode(path, false) }
+
+// dsnMode 构造连接串，immediate 为真时事务以 BEGIN IMMEDIATE 开启。
+//
+// 只有写池要 immediate：读池用 immediate 会把每个读事务都变成写锁，
+// 8 条连接的并发读会被自己串行化。迁移必须走 immediate —— 见 migrate 的注释。
+func dsnMode(path string, immediate bool) string {
+	q := "file:" + path +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=foreign_keys(1)" +
 		"&_pragma=synchronous(NORMAL)" +
 		"&_pragma=journal_mode(WAL)"
+	if immediate {
+		q += "&_txlock=immediate"
+	}
+	return q
 }
 
 // Open 打开数据库、设置 PRAGMA 并执行迁移。
 func Open(path string) (*Store, error) {
-	write, err := sql.Open("sqlite", dsn(path))
+	write, err := sql.Open("sqlite", dsnMode(path, true))
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
@@ -139,9 +149,24 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("读取迁移 %s 失败: %w", name, err)
 		}
+		// BEGIN IMMEDIATE（写池 DSN 里带 _txlock=immediate）先把写锁拿到手，
+		// 再在事务内**重新确认一次版本**。
+		//
+		// 必要性：dnsd 与 apid 启动时都会 Open 同一个库并各自跑迁移。
+		// 0001 全是 CREATE TABLE IF NOT EXISTS，重复执行无害；而
+		// ALTER TABLE ADD COLUMN 没有 IF NOT EXISTS，重复执行直接报
+		// 「duplicate column name」，把先到的那个进程的启动搞挂。
+		// 拿锁后重读版本，后到的进程就会看到版本已推进并跳过。
 		tx, err := s.write.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("开启迁移事务失败: %w", err)
+		}
+		var applied string
+		if err := tx.QueryRowContext(ctx, `SELECT v FROM meta WHERE k = 'schema_version'`).Scan(&applied); err == nil {
+			if got, _ := strconv.Atoi(applied); got >= ver {
+				tx.Rollback()
+				continue
+			}
 		}
 		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
 			tx.Rollback()

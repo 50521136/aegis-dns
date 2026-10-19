@@ -102,6 +102,12 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.middlewareAuth)
 
 			r.Get("/me", s.handleMe)
+			r.Get("/me/preferences", s.handleGetPreferences)
+			r.Put("/me/preferences", s.handleUpdatePreferences)
+
+			// 用户反馈（误杀申诉）。管理员在 /admin/feedback 处理。
+			r.Post("/feedback", s.handleCreateFeedback)
+			r.Get("/feedback", s.handleListMyFeedback)
 			r.Put("/me/password", s.handleChangePassword)
 			r.Get("/me/dns-config", s.handleDNSConfig)
 			r.Get("/me/export", s.handleExport)
@@ -139,6 +145,31 @@ func (s *Server) Handler() http.Handler {
 			// --- 管理员 ---
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(s.middlewareAdmin)
+
+				// 全局层：管理员在这里维护作用于所有用户的规则与订阅。
+				r.Get("/rules", s.handleAdminListRules)
+				r.Post("/rules", s.handleAdminCreateRule)
+				r.Post("/rules/import", s.handleAdminImportRules)
+				r.Delete("/rules", s.handleAdminBulkDeleteRules)
+				r.Put("/rules/{id}", s.handleAdminUpdateRule)
+				r.Delete("/rules/{id}", s.handleAdminDeleteRule)
+
+				r.Get("/subscriptions", s.handleAdminListSubs)
+				r.Post("/subscriptions", s.handleAdminCreateSub)
+				r.Get("/subscriptions/presets", s.handlePresets)
+				r.Post("/subscriptions/refresh-all", s.handleAdminRefreshAllSubs)
+				r.Put("/subscriptions/{id}", s.handleAdminUpdateSub)
+				r.Delete("/subscriptions/{id}", s.handleAdminDeleteSub)
+				r.Post("/subscriptions/{id}/refresh", s.handleAdminRefreshSub)
+
+				// 证书管理：上传 PEM + 状态查看。
+				r.Get("/tls", s.handleAdminGetTLS)
+				r.Post("/tls", s.handleAdminUploadTLS)
+
+				// 反馈处理。
+				r.Get("/feedback", s.handleAdminListFeedback)
+				r.Put("/feedback/{id}", s.handleAdminReplyFeedback)
+
 				r.Get("/users", s.handleAdminListUsers)
 				r.Put("/users/{id}", s.handleAdminUpdateUser)
 				r.Delete("/users/{id}", s.handleAdminDeleteUser)

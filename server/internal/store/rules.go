@@ -12,17 +12,18 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
 
-const ruleCols = `id, user_id, kind, pattern, value, qtypes, enabled, created_at`
+const ruleCols = `id, user_id, kind, pattern, value, qtypes, enabled, is_global, created_at`
 
 func scanRule(sc interface{ Scan(...any) error }) (*model.Rule, error) {
 	var r model.Rule
 	var qtypes string
-	var enabled int
-	if err := sc.Scan(&r.ID, &r.UserID, &r.Kind, &r.Pattern, &r.Value, &qtypes, &enabled, &r.CreatedAt); err != nil {
+	var enabled, global int
+	if err := sc.Scan(&r.ID, &r.UserID, &r.Kind, &r.Pattern, &r.Value, &qtypes, &enabled, &global, &r.CreatedAt); err != nil {
 		return nil, err
 	}
 	r.QTypes = splitQTypes(qtypes)
 	r.Enabled = enabled != 0
+	r.IsGlobal = global != 0
 	return &r, nil
 }
 
@@ -66,9 +67,9 @@ func joinQTypes(q []string) string {
 // ListRules 分页列出某个用户的规则。
 //
 // kind 为空表示不筛选；q 为关键字模糊匹配 pattern 与 value。
-func (s *Store) ListRules(ctx context.Context, uid, kind, q string, enabled *bool, limit, offset int) ([]*model.Rule, int, error) {
-	where := []string{"user_id = ?"}
-	args := []any{uid}
+func (s *Store) ListRules(ctx context.Context, uid string, global bool, kind, q string, enabled *bool, limit, offset int) ([]*model.Rule, int, error) {
+	where := []string{"user_id = ?", "is_global = ?"}
+	args := []any{uid, boolInt(global)}
 	if kind != "" {
 		where = append(where, "kind = ?")
 		args = append(args, kind)
@@ -111,7 +112,7 @@ func (s *Store) ListRules(ctx context.Context, uid, kind, q string, enabled *boo
 // ListAllRules 返回某用户的全部启用规则（构建快照用）。
 func (s *Store) ListAllRules(ctx context.Context, uid string) ([]model.Rule, error) {
 	rows, err := s.read.QueryContext(ctx,
-		`SELECT `+ruleCols+` FROM rules WHERE user_id = ? AND enabled = 1 ORDER BY created_at`, uid)
+		`SELECT `+ruleCols+` FROM rules WHERE user_id = ? AND is_global = 0 AND enabled = 1 ORDER BY created_at`, uid)
 	if err != nil {
 		return nil, fmt.Errorf("读取规则失败: %w", err)
 	}
@@ -130,7 +131,7 @@ func (s *Store) ListAllRules(ctx context.Context, uid string) ([]model.Rule, err
 // AllRules 返回所有启用规则，按 user_id 分组（全量快照构建用）。
 func (s *Store) AllRules(ctx context.Context) (map[string][]model.Rule, error) {
 	rows, err := s.read.QueryContext(ctx,
-		`SELECT `+ruleCols+` FROM rules WHERE enabled = 1 ORDER BY user_id, created_at`)
+		`SELECT `+ruleCols+` FROM rules WHERE enabled = 1 AND is_global = 0 ORDER BY user_id, created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("读取全部规则失败: %w", err)
 	}
@@ -146,13 +147,34 @@ func (s *Store) AllRules(ctx context.Context) (map[string][]model.Rule, error) {
 	return out, rows.Err()
 }
 
+// AllGlobalRules 返回所有启用的全局规则（快照构建用）。
+//
+// 全局层是所有开启 UseGlobalRules 的用户共享的一份，因此不按用户分组。
+func (s *Store) AllGlobalRules(ctx context.Context) ([]model.Rule, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT `+ruleCols+` FROM rules WHERE enabled = 1 AND is_global = 1 ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("读取全局规则失败: %w", err)
+	}
+	defer rows.Close()
+	var out []model.Rule
+	for rows.Next() {
+		r, err := scanRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
 // CreateRule 新建一条规则。
 func (s *Store) CreateRule(ctx context.Context, r *model.Rule) error {
 	r.ID = id.New(id.PrefixRule)
 	r.CreatedAt = time.Now().Unix()
 	_, err := s.write.ExecContext(ctx,
-		`INSERT INTO rules (`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?)`,
-		r.ID, r.UserID, r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), r.CreatedAt)
+		`INSERT INTO rules (`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.UserID, r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), boolInt(r.IsGlobal), r.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("创建规则失败: %w", err)
 	}
@@ -171,7 +193,7 @@ func (s *Store) BulkCreateRules(ctx context.Context, rules []*model.Rule) (int, 
 	created := 0
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO rules (`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?)`)
+			`INSERT INTO rules (`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
@@ -180,7 +202,7 @@ func (s *Store) BulkCreateRules(ctx context.Context, rules []*model.Rule) (int, 
 			r.ID = id.New(id.PrefixRule)
 			r.CreatedAt = now
 			if _, err := stmt.ExecContext(ctx,
-				r.ID, r.UserID, r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), r.CreatedAt); err != nil {
+				r.ID, r.UserID, r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), boolInt(r.IsGlobal), r.CreatedAt); err != nil {
 				return err
 			}
 			created++
@@ -209,8 +231,8 @@ func (s *Store) GetRule(ctx context.Context, uid, rid string) (*model.Rule, erro
 // UpdateRule 全量更新一条规则的字段。
 func (s *Store) UpdateRule(ctx context.Context, r *model.Rule) error {
 	res, err := s.write.ExecContext(ctx,
-		`UPDATE rules SET kind=?, pattern=?, value=?, qtypes=?, enabled=? WHERE id=? AND user_id=?`,
-		r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), r.ID, r.UserID)
+		`UPDATE rules SET kind=?, pattern=?, value=?, qtypes=?, enabled=? WHERE id=? AND user_id=? AND is_global=?`,
+		r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), r.ID, r.UserID, boolInt(r.IsGlobal))
 	if err != nil {
 		return fmt.Errorf("更新规则失败: %w", err)
 	}
@@ -258,9 +280,13 @@ func (s *Store) DeleteRules(ctx context.Context, uid string, ids []string) (int,
 	return deleted, err
 }
 
-// CountRules 返回某用户的规则总数。
-func (s *Store) CountRules(ctx context.Context, uid string) (int, error) {
+// CountRules 返回某用户在指定 scope 下的规则总数（配额判定用）。
+//
+// global=false 数个人规则，global=true 数全局规则。两者分开计数，
+// 否则管理员自己的个人规则会被算进全局配额里。
+func (s *Store) CountRules(ctx context.Context, uid string, global bool) (int, error) {
 	var n int
-	err := s.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM rules WHERE user_id = ?`, uid).Scan(&n)
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM rules WHERE user_id = ? AND is_global = ?`, uid, boolInt(global)).Scan(&n)
 	return n, err
 }

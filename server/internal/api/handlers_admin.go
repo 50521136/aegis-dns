@@ -29,7 +29,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(users))
 	for _, u := range users {
-		ruleCount, _ := s.store.CountRules(r.Context(), u.ID)
+		ruleCount, _ := s.store.CountRules(r.Context(), u.ID, false)
 		ips, _ := s.store.ListUserIPs(r.Context(), u.ID)
 		items = append(items, map[string]any{
 			"id":         u.ID,
@@ -53,6 +53,9 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Enabled *bool  `json:"enabled"`
 		Role    string `json:"role"`
 		Email   string `json:"email"`
+		// UseGlobalRules 允许管理员为某个用户关闭全局规则层
+		// （典型场景：全局规则误伤了某个用户，先给他摘掉应急）。
+		UseGlobalRules *bool `json:"use_global_rules"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -90,7 +93,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Email != "" {
 		emailPtr = &req.Email
 	}
-	if err := s.store.UpdateUserFields(r.Context(), uid, req.Enabled, rolePtr, emailPtr); err != nil {
+	if err := s.store.UpdateUserFields(r.Context(), uid, req.Enabled, rolePtr, emailPtr, req.UseGlobalRules); err != nil {
 		writeStoreError(w, err, "用户不存在")
 		return
 	}
@@ -191,6 +194,13 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"invite_code":              set.InviteCode,
 		"update_repo":              set.UpdateRepo,
 		"update_channel":           set.UpdateChannel,
+
+		// 配额：前端据此显示「已用 x / 上限 y」并在新建时提前拦。
+		"max_rules_per_user": set.MaxRulesPerUser,
+		"max_subs_per_user":  set.MaxSubsPerUser,
+		"max_sub_entries":    set.MaxSubEntries,
+		"max_rules_global":   set.MaxRulesGlobal,
+		"max_subs_global":    set.MaxSubsGlobal,
 	}
 	// 配置文件的 domain 作为兜底提示：管理员可能改了设置却忘了改配置，
 	// 或反之。两个值不一致时前端要能看出来。
@@ -293,6 +303,23 @@ func mergeSettings(dst *model.GlobalSettings, src *model.GlobalSettings) {
 	if src.UpdateChannel != "" {
 		dst.UpdateChannel = src.UpdateChannel
 	}
+	// 配额：允许显式设成 0 表示「不限制」，因此不做非零判断。
+	// 但负数没有意义，直接忽略。
+	if src.MaxRulesPerUser >= 0 {
+		dst.MaxRulesPerUser = src.MaxRulesPerUser
+	}
+	if src.MaxSubsPerUser >= 0 {
+		dst.MaxSubsPerUser = src.MaxSubsPerUser
+	}
+	if src.MaxSubEntries >= 0 {
+		dst.MaxSubEntries = src.MaxSubEntries
+	}
+	if src.MaxRulesGlobal >= 0 {
+		dst.MaxRulesGlobal = src.MaxRulesGlobal
+	}
+	if src.MaxSubsGlobal >= 0 {
+		dst.MaxSubsGlobal = src.MaxSubsGlobal
+	}
 	// 布尔与字符串可能被显式设成零值，这里直接采用请求值。
 	dst.EnableQueryLog = src.EnableQueryLog
 	dst.AllowRegister = src.AllowRegister
@@ -332,6 +359,24 @@ func validateSettings(s *model.GlobalSettings) error {
 	}
 	if s.SubIntervalH < 1 || s.SubIntervalH > 720 {
 		return errValidation("sub_interval_hours 需在 1 到 720 之间")
+	}
+	// 配额上限：0 = 不限制，其余必须落在合理区间。
+	// 不设上限的话一个管理员把 max_sub_entries 写成 1000 万，
+	// 一次订阅就能把进程内存打爆 —— 这正是这个功能要防的事。
+	if s.MaxRulesPerUser < 0 || s.MaxRulesPerUser > 100000 {
+		return errValidation("max_rules_per_user 需在 0 到 100000 之间（0 = 不限制）")
+	}
+	if s.MaxSubsPerUser < 0 || s.MaxSubsPerUser > 200 {
+		return errValidation("max_subs_per_user 需在 0 到 200 之间（0 = 不限制）")
+	}
+	if s.MaxSubEntries < 0 || s.MaxSubEntries > 2000000 {
+		return errValidation("max_sub_entries 需在 0 到 2000000 之间（0 = 不限制）")
+	}
+	if s.MaxRulesGlobal < 0 || s.MaxRulesGlobal > 100000 {
+		return errValidation("max_rules_global 需在 0 到 100000 之间（0 = 不限制）")
+	}
+	if s.MaxSubsGlobal < 0 || s.MaxSubsGlobal > 200 {
+		return errValidation("max_subs_global 需在 0 到 200 之间（0 = 不限制）")
 	}
 	return nil
 }

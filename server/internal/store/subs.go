@@ -12,26 +12,29 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
 
-const subCols = `id, user_id, list_type, name, url, format, enabled, last_etag, last_modified,
+const subCols = `id, user_id, list_type, name, url, format, enabled, is_global, last_etag, last_modified,
 	last_fetched, last_count, last_status, fail_count, created_at`
 
 func scanSub(sc interface{ Scan(...any) error }) (*model.Subscription, error) {
 	var sub model.Subscription
-	var enabled int
+	var enabled, global int
 	err := sc.Scan(&sub.ID, &sub.UserID, &sub.ListType, &sub.Name, &sub.URL, &sub.Format,
-		&enabled, &sub.LastETag, &sub.LastModified, &sub.LastFetched, &sub.LastCount,
+		&enabled, &global, &sub.LastETag, &sub.LastModified, &sub.LastFetched, &sub.LastCount,
 		&sub.LastStatus, &sub.FailCount, &sub.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	sub.Enabled = enabled != 0
+	sub.IsGlobal = global != 0
 	return &sub, nil
 }
 
-// ListSubs 返回某用户的全部订阅。
-func (s *Store) ListSubs(ctx context.Context, uid string) ([]*model.Subscription, error) {
+// ListSubs 返回某用户在指定 scope 下的订阅。
+//
+// global=false 返回个人订阅，global=true 返回全局订阅（管理员的全局层）。
+func (s *Store) ListSubs(ctx context.Context, uid string, global bool) ([]*model.Subscription, error) {
 	rows, err := s.read.QueryContext(ctx,
-		`SELECT `+subCols+` FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC`, uid)
+		`SELECT `+subCols+` FROM subscriptions WHERE user_id = ? AND is_global = ? ORDER BY created_at DESC`, uid, boolInt(global))
 	if err != nil {
 		return nil, fmt.Errorf("列出订阅失败: %w", err)
 	}
@@ -84,8 +87,8 @@ func (s *Store) CreateSub(ctx context.Context, sub *model.Subscription) error {
 	sub.ID = id.New(id.PrefixSub)
 	sub.CreatedAt = time.Now().Unix()
 	_, err := s.write.ExecContext(ctx,
-		`INSERT INTO subscriptions (`+subCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sub.ID, sub.UserID, sub.ListType, sub.Name, sub.URL, sub.Format, boolInt(sub.Enabled),
+		`INSERT INTO subscriptions (`+subCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sub.ID, sub.UserID, sub.ListType, sub.Name, sub.URL, sub.Format, boolInt(sub.Enabled), boolInt(sub.IsGlobal),
 		sub.LastETag, sub.LastModified, sub.LastFetched, sub.LastCount, sub.LastStatus, sub.FailCount, sub.CreatedAt)
 	if err != nil {
 		if isUniqueViolation(err, "subscriptions.user_id") || isUniqueViolation(err, "subscriptions.url") {
@@ -102,8 +105,8 @@ var ErrSubExists = errors.New("该订阅 URL 已存在")
 // UpdateSub 更新订阅的可变字段。
 func (s *Store) UpdateSub(ctx context.Context, sub *model.Subscription) error {
 	res, err := s.write.ExecContext(ctx,
-		`UPDATE subscriptions SET name=?, url=?, list_type=?, format=?, enabled=? WHERE id=? AND user_id=?`,
-		sub.Name, sub.URL, sub.ListType, sub.Format, boolInt(sub.Enabled), sub.ID, sub.UserID)
+		`UPDATE subscriptions SET name=?, url=?, list_type=?, format=?, enabled=? WHERE id=? AND user_id=? AND is_global=?`,
+		sub.Name, sub.URL, sub.ListType, sub.Format, boolInt(sub.Enabled), sub.ID, sub.UserID, boolInt(sub.IsGlobal))
 	if err != nil {
 		return fmt.Errorf("更新订阅失败: %w", err)
 	}
@@ -196,7 +199,7 @@ func (s *Store) SubEntriesByUser(ctx context.Context, uid string) (block, allow 
 	rows, err := s.read.QueryContext(ctx,
 		`SELECT e.kind, e.domain FROM sub_entries e
 		 JOIN subscriptions s ON s.id = e.sub_id
-		 WHERE s.user_id = ? AND s.enabled = 1`, uid)
+		 WHERE s.user_id = ? AND s.enabled = 1 AND s.is_global = 0`, uid)
 	if err != nil {
 		return nil, nil, fmt.Errorf("读取订阅条目失败: %w", err)
 	}
@@ -220,7 +223,7 @@ func (s *Store) AllSubEntries(ctx context.Context) (map[string][2][]string, erro
 	rows, err := s.read.QueryContext(ctx,
 		`SELECT s.user_id, e.kind, e.domain FROM sub_entries e
 		 JOIN subscriptions s ON s.id = e.sub_id
-		 WHERE s.enabled = 1
+		 WHERE s.enabled = 1 AND s.is_global = 0
 		 ORDER BY s.user_id`)
 	if err != nil {
 		return nil, fmt.Errorf("读取全部订阅条目失败: %w", err)
@@ -242,6 +245,42 @@ func (s *Store) AllSubEntries(ctx context.Context) (map[string][2][]string, erro
 		out[uid] = v
 	}
 	return out, rows.Err()
+}
+
+// AllGlobalSubEntries 返回所有启用中的全局订阅条目，压平成 block / allow 两个数组。
+//
+// 全局层是全体用户共享的一份，不按用户分组 —— 这正是它能把内存压下来的原因：
+// 订阅条目在快照里只出现一次，而不是每个用户各存一份。
+func (s *Store) AllGlobalSubEntries(ctx context.Context) (block, allow []string, err error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT e.kind, e.domain FROM sub_entries e
+		 JOIN subscriptions s ON s.id = e.sub_id
+		 WHERE s.enabled = 1 AND s.is_global = 1
+		 ORDER BY e.kind, e.domain`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取全局订阅条目失败: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, domain string
+		if err := rows.Scan(&kind, &domain); err != nil {
+			return nil, nil, err
+		}
+		if kind == "allow" {
+			allow = append(allow, domain)
+		} else {
+			block = append(block, domain)
+		}
+	}
+	return block, allow, rows.Err()
+}
+
+// CountSubs 返回某用户在指定 scope 下的订阅数（配额判定用）。
+func (s *Store) CountSubs(ctx context.Context, uid string, global bool) (int, error) {
+	var n int
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM subscriptions WHERE user_id = ? AND is_global = ?`, uid, boolInt(global)).Scan(&n)
+	return n, err
 }
 
 // UserIDsWithSubs 返回所有拥有启用订阅的用户 ID（增量快照需要知道哪些用户受影响）。

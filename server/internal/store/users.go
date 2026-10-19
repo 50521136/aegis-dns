@@ -13,16 +13,18 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, created_at`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, created_at`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
-	var enabled int
-	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID, &enabled, &u.CreatedAt)
+	var enabled, useGlobal int
+	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
+		&enabled, &useGlobal, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	u.Enabled = enabled != 0
+	u.UseGlobalRules = useGlobal != 0
 	return &u, nil
 }
 
@@ -46,11 +48,14 @@ func (s *Store) CreateUser(ctx context.Context, username, email, passwordHash, r
 			Role:         role,
 			ClientID:     id.NewClientID(),
 			Enabled:      true,
-			CreatedAt:    now,
+			// 默认叠加全局规则层，用户可在设置里自行关闭。
+			UseGlobalRules: true,
+			CreatedAt:      now,
 		}
 		_, err := s.write.ExecContext(ctx,
-			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?)`,
-			u.ID, u.Username, u.Email, u.PasswordHash, u.Role, u.ClientID, boolInt(u.Enabled), u.CreatedAt)
+			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?)`,
+			u.ID, u.Username, u.Email, u.PasswordHash, u.Role, u.ClientID,
+			boolInt(u.Enabled), boolInt(u.UseGlobalRules), u.CreatedAt)
 		if err == nil {
 			return u, nil
 		}
@@ -188,7 +193,7 @@ func (s *Store) ListUsersAll(ctx context.Context) ([]*model.User, error) {
 }
 
 // UpdateUserFields 更新用户的可变字段。传 nil 表示不改该字段。
-func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool, role *string, email *string) error {
+func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool, role *string, email *string, useGlobalRules *bool) error {
 	sets := []string{}
 	args := []any{}
 	if enabled != nil {
@@ -202,6 +207,10 @@ func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool,
 	if email != nil {
 		sets = append(sets, "email = ?")
 		args = append(args, *email)
+	}
+	if useGlobalRules != nil {
+		sets = append(sets, "use_global_rules = ?")
+		args = append(args, boolInt(*useGlobalRules))
 	}
 	if len(sets) == 0 {
 		return nil

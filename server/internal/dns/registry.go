@@ -207,10 +207,21 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 			}
 		}
 
-		rs, err := rules.Build(us.Rules, us.SubAllow, us.SubBlock)
+		// 全局层只在该用户开启时才挂上；关掉全局的用户拿到的是纯个人规则集。
+		var globalLayer *model.GlobalSnap
+		if us.UseGlobalRules {
+			g := snap.Global
+			globalLayer = &g
+		}
+		rs, err := rules.Build(rules.Layers{
+			UserRules: us.Rules,
+			SubAllow:  us.SubAllow,
+			SubBlock:  us.SubBlock,
+			Global:    globalLayer,
+		})
 		if err != nil {
 			// 单用户构建失败不影响其他用户（文档 P4 优雅降级）。
-			rs, _ = rules.Build(nil, nil, nil)
+			rs, _ = rules.Build(rules.Layers{})
 		}
 
 		ur := &UserRuntime{
@@ -243,7 +254,7 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 	// 默认策略集：未识别请求使用。
 	fallbackRules, err := buildFallbackRules(snap)
 	if err != nil {
-		fallbackRules, _ = rules.Build(nil, nil, nil)
+		fallbackRules, _ = rules.Build(rules.Layers{})
 	}
 	fallbackPool, err := r.pools.Get(snap.Defaults.Upstreams)
 	if err != nil {
@@ -287,7 +298,7 @@ func upstreamsFor(user []string, def model.Defaults) []string {
 //	blocklist_only—— 合并所有租户的订阅黑名单，作为「全局黑名单」
 func buildFallbackRules(snap *model.Snapshot) (*rules.RuleSet, error) {
 	if snap.Defaults.FallbackPolicy != model.FallbackBlocklistOnly {
-		return rules.Build(nil, nil, nil)
+		return rules.Build(rules.Layers{})
 	}
 	var global []string
 	seen := map[string]struct{}{}
@@ -303,7 +314,7 @@ func buildFallbackRules(snap *model.Snapshot) (*rules.RuleSet, error) {
 			global = append(global, d)
 		}
 	}
-	return rules.Build(nil, nil, global)
+	return rules.Build(rules.Layers{SubBlock: global})
 }
 
 // poolStats 汇总所有池的上游地址（系统状态展示用）。

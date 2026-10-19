@@ -84,6 +84,15 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 	if err != nil {
 		return nil, err
 	}
+	// 全局层：管理员的 is_global 规则与订阅，全体开启全局的用户共享同一份。
+	globalRules, err := st.AllGlobalRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	globalBlock, globalAllow, err := st.AllGlobalSubEntries(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	snap := &model.Snapshot{
 		Version:      version,
@@ -105,15 +114,21 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 			QueryLogSize:   settings.QueryLogSize,
 			EnableQueryLog: settings.EnableQueryLog,
 		},
+		Global: model.GlobalSnap{
+			Rules:    globalRules,
+			SubBlock: globalBlock,
+			SubAllow: globalAllow,
+		},
 		Users: make([]model.UserSnap, 0, len(users)),
 	}
 
 	for _, u := range users {
 		us := model.UserSnap{
-			UserID:   u.ID,
-			ClientID: u.ClientID,
-			Enabled:  u.Enabled,
-			IPs:      ipsByUser[u.ID],
+			UserID:         u.ID,
+			ClientID:       u.ClientID,
+			Enabled:        u.Enabled,
+			UseGlobalRules: u.UseGlobalRules,
+			IPs:            ipsByUser[u.ID],
 		}
 		if rules, ok := rulesByUser[u.ID]; ok {
 			us.Rules = rules

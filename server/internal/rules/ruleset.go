@@ -26,10 +26,20 @@ type RuleSet struct {
 	userRewrite *trie
 	// 优先级 3：用户自定义 block
 	userBlock *trie
-	// 优先级 4：订阅 allowlist
+	// 优先级 4：全局 allow（管理员，用户可用自己的 allow 覆盖）
+	globalAllow *trie
+	// 优先级 5：全局 rewrite
+	globalRewrite *trie
+	// 优先级 6：全局 block
+	globalBlock *trie
+	// 优先级 7：用户自己的订阅 allowlist
 	subAllow *trie
-	// 优先级 5：订阅 blocklist
+	// 优先级 8：用户自己的订阅 blocklist
 	subBlock *trie
+	// 优先级 9：全局订阅 allowlist
+	gsubAllow *trie
+	// 优先级 10：全局订阅 blocklist
+	gsubBlock *trie
 
 	// Stats 是规则条数统计，供 UI 展示。
 	Stats Stats
@@ -42,11 +52,19 @@ type Stats struct {
 	UserRewrite int `json:"user_rewrite"`
 	SubAllow    int `json:"sub_allow"`
 	SubBlock    int `json:"sub_block"`
+
+	// 全局层计数（UseGlobalRules 为真时才会计入）。
+	GlobalAllow   int `json:"global_allow"`
+	GlobalBlock   int `json:"global_block"`
+	GlobalRewrite int `json:"global_rewrite"`
+	GSubAllow     int `json:"global_sub_allow"`
+	GSubBlock     int `json:"global_sub_block"`
 }
 
 // Total 返回规则总条数。
 func (s Stats) Total() int {
-	return s.UserAllow + s.UserBlock + s.UserRewrite + s.SubAllow + s.SubBlock
+	return s.UserAllow + s.UserBlock + s.UserRewrite + s.SubAllow + s.SubBlock +
+		s.GlobalAllow + s.GlobalBlock + s.GlobalRewrite + s.GSubAllow + s.GSubBlock
 }
 
 // Decision 是一次规则匹配的结论。
@@ -58,39 +76,57 @@ type Decision struct {
 	// Value 是改写目标的原文，用于日志。
 	Value string
 	// Source 标识命中来源，便于调试与 UI 展示：
-	// user_allow | user_rewrite | user_block | sub_allow | sub_block
+	// user_allow | user_rewrite | user_block
+	// global_allow | global_rewrite | global_block
+	// sub_allow | sub_block | global_sub_allow | global_sub_block
 	Source string
 }
 
-// Build 从规则与订阅条目构建规则集。
+// Layers 是构建一个用户规则集所需的全部输入。
+//
+// 分层的意义在于优先级：用户自己写的规则压过管理员的全局规则，
+// 而两者的显式规则都压过订阅条目（订阅是批量导入的，误杀概率最高）。
+type Layers struct {
+	// UserRules 是该用户自己的规则（is_global = 0）。
+	UserRules []model.Rule
+	// SubAllow / SubBlock 是该用户自己的订阅条目。
+	SubAllow []string
+	SubBlock []string
+	// Global 是全局层。nil 表示该用户关闭了全局规则（UseGlobalRules = false）。
+	Global *model.GlobalSnap
+}
+
+// Build 从分层输入构建规则集。
 //
 // 非法规则被跳过而不是让整个构建失败：一条坏规则不该让用户完全失去防护
 // （文档 5.4「非法规则跳过并记录，不中断构建」）。
-func Build(userRules []model.Rule, subAllow, subBlock []string) (*RuleSet, error) {
+func Build(l Layers) (*RuleSet, error) {
 	rs := &RuleSet{
-		userAllow:   newTrie(),
-		userRewrite: newTrie(),
-		userBlock:   newTrie(),
-		subAllow:    newTrie(),
-		subBlock:    newTrie(),
+		userAllow:     newTrie(),
+		userRewrite:   newTrie(),
+		userBlock:     newTrie(),
+		globalAllow:   newTrie(),
+		globalRewrite: newTrie(),
+		globalBlock:   newTrie(),
+		subAllow:      newTrie(),
+		subBlock:      newTrie(),
+		gsubAllow:     newTrie(),
+		gsubBlock:     newTrie(),
 	}
 
-	for _, r := range userRules {
-		if err := rs.addUserRule(r); err != nil {
-			// 记录型错误不影响其它规则；这里不返回错误，只跳过。
-			continue
-		}
+	for _, r := range l.UserRules {
+		// 记录型错误不影响其它规则；这里不返回错误，只跳过。
+		_ = rs.addRule(r, rs.userAllow, rs.userRewrite, rs.userBlock)
 	}
+	insertDomains(rs.subAllow, l.SubAllow)
+	insertDomains(rs.subBlock, l.SubBlock)
 
-	for _, d := range subAllow {
-		if dom, err := normalizeDomain(d); err == nil {
-			rs.subAllow.insert(dom, false, nil, nil, "")
+	if l.Global != nil {
+		for _, r := range l.Global.Rules {
+			_ = rs.addRule(r, rs.globalAllow, rs.globalRewrite, rs.globalBlock)
 		}
-	}
-	for _, d := range subBlock {
-		if dom, err := normalizeDomain(d); err == nil {
-			rs.subBlock.insert(dom, false, nil, nil, "")
-		}
+		insertDomains(rs.gsubAllow, l.Global.SubAllow)
+		insertDomains(rs.gsubBlock, l.Global.SubBlock)
 	}
 
 	rs.Stats = Stats{
@@ -99,12 +135,29 @@ func Build(userRules []model.Rule, subAllow, subBlock []string) (*RuleSet, error
 		UserRewrite: rs.userRewrite.size,
 		SubAllow:    rs.subAllow.size,
 		SubBlock:    rs.subBlock.size,
+
+		GlobalAllow:   rs.globalAllow.size,
+		GlobalBlock:   rs.globalBlock.size,
+		GlobalRewrite: rs.globalRewrite.size,
+		GSubAllow:     rs.gsubAllow.size,
+		GSubBlock:     rs.gsubBlock.size,
 	}
 	return rs, nil
 }
 
-// addUserRule 把一条用户规则插入对应的 Trie。
-func (rs *RuleSet) addUserRule(r model.Rule) error {
+// insertDomains 把一批域名插进指定的 Trie，非法域名跳过。
+func insertDomains(t *trie, domains []string) {
+	for _, d := range domains {
+		if dom, err := normalizeDomain(d); err == nil {
+			t.insert(dom, false, nil, nil, "")
+		}
+	}
+}
+
+// addRule 把一条规则插入给定的一组 Trie（按 kind 分派）。
+//
+// 用传入而非写死 rs.userXxx，是为了让同一套解析逻辑同时服务用户层与全局层。
+func (rs *RuleSet) addRule(r model.Rule, allow, rewrite, block *trie) error {
 	domain, wildcard, err := splitPattern(r.Pattern)
 	if err != nil {
 		return err
@@ -113,15 +166,15 @@ func (rs *RuleSet) addUserRule(r model.Rule) error {
 
 	switch r.Kind {
 	case model.KindAllow:
-		rs.userAllow.insert(domain, wildcard, qtypes, nil, "")
+		allow.insert(domain, wildcard, qtypes, nil, "")
 	case model.KindBlock:
-		rs.userBlock.insert(domain, wildcard, qtypes, nil, "")
+		block.insert(domain, wildcard, qtypes, nil, "")
 	case model.KindRewriteA, model.KindRewriteAAAA, model.KindRewriteCNAME:
 		rrs, err := buildRewriteRR(domain, r.Value, r.Kind)
 		if err != nil {
 			return err
 		}
-		rs.userRewrite.insert(domain, wildcard, qtypes, rrs, r.Value)
+		rewrite.insert(domain, wildcard, qtypes, rrs, r.Value)
 	default:
 		return fmt.Errorf("未知规则类型 %q", r.Kind)
 	}
@@ -195,38 +248,70 @@ func buildRewriteRR(domain, target, kind string) ([]dns.RR, error) {
 	}}, nil
 }
 
-// Match 按文档 5.3 的优先级顺序匹配域名。
+// Match 按优先级顺序匹配域名，first-match-wins，不做多规则聚合。
 //
-// 顺序：用户 allow > 用户 rewrite > 用户 block > 订阅 allow > 订阅 block > 未命中。
-// 采用 first-match-wins，不做多规则聚合。
+// 顺序（数字越小越优先）：
+//
+//	1  user_allow          用户显式放行
+//	2  user_rewrite        用户显式改写
+//	3  user_block          用户显式拦截
+//	4  global_allow        管理员放行（用户可用自己的 allow 覆盖）
+//	5  global_rewrite      管理员改写
+//	6  global_block        管理员拦截
+//	7  sub_allow           用户订阅白名单
+//	8  sub_block           用户订阅黑名单
+//	9  global_sub_allow    全局订阅白名单
+//	10 global_sub_block    全局订阅黑名单
+//
+// 关键设计：**显式规则一律压过订阅条目**。订阅是整份导入的、误杀概率最高，
+// 所以「管理员加的白名单」必须能盖住「用户订阅里的黑名单」，否则用户随便
+// 订一份大列表就能把管理员的放行规则冲掉。反过来，用户自己写的 allow
+// 排在最前面，所以「全局拦了某个域名、用户自己加白名单」是生效的。
 func (rs *RuleSet) Match(qname string, qtype uint16) Decision {
+	if rs == nil {
+		return Decision{Action: ActionNone}
+	}
 	domain := strings.ToLower(strings.TrimSuffix(qname, "."))
 	if domain == "" {
 		return Decision{Action: ActionNone}
 	}
-	if rs == nil {
-		return Decision{Action: ActionNone}
-	}
 
-	// 优先级 1：白名单必须绝对优先，用户显式放行的域名不能被任何订阅规则拦住。
+	// 1-3：用户自己的规则。
 	if ok, _, _ := rs.userAllow.lookup(domain, qtype); ok {
 		return Decision{Action: ActionAllow, Source: "user_allow"}
 	}
-	// 优先级 2：改写优先于拦截（改写是更具体的意图）。
 	if ok, rrs, val := rs.userRewrite.lookup(domain, qtype); ok {
 		return Decision{Action: ActionRewrite, Rewrite: rrs, Value: val, Source: "user_rewrite"}
 	}
-	// 优先级 3：用户自定义拦截。
 	if ok, _, _ := rs.userBlock.lookup(domain, qtype); ok {
 		return Decision{Action: ActionBlock, Source: "user_block"}
 	}
-	// 优先级 4：订阅白名单。
+
+	// 4-6：全局规则层。
+	if ok, _, _ := rs.globalAllow.lookup(domain, qtype); ok {
+		return Decision{Action: ActionAllow, Source: "global_allow"}
+	}
+	if ok, rrs, val := rs.globalRewrite.lookup(domain, qtype); ok {
+		return Decision{Action: ActionRewrite, Rewrite: rrs, Value: val, Source: "global_rewrite"}
+	}
+	if ok, _, _ := rs.globalBlock.lookup(domain, qtype); ok {
+		return Decision{Action: ActionBlock, Source: "global_block"}
+	}
+
+	// 7-8：用户自己的订阅。
 	if ok, _, _ := rs.subAllow.lookup(domain, qtype); ok {
 		return Decision{Action: ActionAllow, Source: "sub_allow"}
 	}
-	// 优先级 5：订阅黑名单。
 	if ok, _, _ := rs.subBlock.lookup(domain, qtype); ok {
 		return Decision{Action: ActionBlock, Source: "sub_block"}
+	}
+
+	// 9-10：全局订阅。
+	if ok, _, _ := rs.gsubAllow.lookup(domain, qtype); ok {
+		return Decision{Action: ActionAllow, Source: "global_sub_allow"}
+	}
+	if ok, _, _ := rs.gsubBlock.lookup(domain, qtype); ok {
+		return Decision{Action: ActionBlock, Source: "global_sub_block"}
 	}
 	return Decision{Action: ActionNone}
 }

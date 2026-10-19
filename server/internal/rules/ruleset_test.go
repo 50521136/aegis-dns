@@ -124,12 +124,16 @@ func TestParseLine(t *testing.T) {
 
 // TestMatchPriority 验证文档 5.3 的优先级顺序。
 func TestMatchPriority(t *testing.T) {
-	rs, err := Build([]model.Rule{
-		{Kind: model.KindBlock, Pattern: "||ads.example.com^", Enabled: true},
-		{Kind: model.KindAllow, Pattern: "||safe.ads.example.com^", Enabled: true},
-		{Kind: model.KindRewriteA, Pattern: "||nas.home^", Value: "192.168.1.10", Enabled: true},
-		{Kind: model.KindBlock, Pattern: "||blocked-by-sub.com^", Enabled: true},
-	}, []string{"allowed-by-sub.com"}, []string{"tracker.example.net", "blocked-by-sub.com"})
+	rs, err := Build(Layers{
+		UserRules: []model.Rule{
+			{Kind: model.KindBlock, Pattern: "||ads.example.com^", Enabled: true},
+			{Kind: model.KindAllow, Pattern: "||safe.ads.example.com^", Enabled: true},
+			{Kind: model.KindRewriteA, Pattern: "||nas.home^", Value: "192.168.1.10", Enabled: true},
+			{Kind: model.KindBlock, Pattern: "||blocked-by-sub.com^", Enabled: true},
+		},
+		SubAllow: []string{"allowed-by-sub.com"},
+		SubBlock: []string{"tracker.example.net", "blocked-by-sub.com"},
+	})
 	if err != nil {
 		t.Fatalf("构建规则集失败: %v", err)
 	}
@@ -169,9 +173,9 @@ func TestMatchPriority(t *testing.T) {
 
 // TestRewriteQTypeScoping 验证 $dnstype 与「部分改写」语义（文档 5.5）。
 func TestRewriteQTypeScoping(t *testing.T) {
-	rs, err := Build([]model.Rule{
+	rs, err := Build(Layers{UserRules: []model.Rule{
 		{Kind: model.KindRewriteA, Pattern: "||only-a.test^", Value: "10.0.0.1", QTypes: []string{"A"}, Enabled: true},
-	}, nil, nil)
+	}})
 	if err != nil {
 		t.Fatalf("构建失败: %v", err)
 	}
@@ -191,9 +195,9 @@ func TestRewriteQTypeScoping(t *testing.T) {
 // 「*.example.com should block access to "example.com" and "subdomain.example.com"」。
 // 若按子域-only 处理，这些列表的条目几乎全部失效。
 func TestWildcardRule(t *testing.T) {
-	rs, err := Build([]model.Rule{
+	rs, err := Build(Layers{UserRules: []model.Rule{
 		{Kind: model.KindBlock, Pattern: "*.dev.local", Enabled: true},
-	}, nil, nil)
+	}})
 	if err != nil {
 		t.Fatalf("构建失败: %v", err)
 	}
@@ -220,11 +224,11 @@ func TestWildcardRule(t *testing.T) {
 func TestWildcardEqualsAdblockForm(t *testing.T) {
 	cases := []string{"dev.local", "a.dev.local", "a.b.dev.local", "other.com"}
 
-	star, err := Build([]model.Rule{{Kind: model.KindBlock, Pattern: "*.dev.local", Enabled: true}}, nil, nil)
+	star, err := Build(Layers{UserRules: []model.Rule{{Kind: model.KindBlock, Pattern: "*.dev.local", Enabled: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pipe, err := Build([]model.Rule{{Kind: model.KindBlock, Pattern: "||dev.local^", Enabled: true}}, nil, nil)
+	pipe, err := Build(Layers{UserRules: []model.Rule{{Kind: model.KindBlock, Pattern: "||dev.local^", Enabled: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,12 +243,12 @@ func TestWildcardEqualsAdblockForm(t *testing.T) {
 
 // TestBuildSkipsInvalidRules 验证非法规则不会中断构建（文档 5.4）。
 func TestBuildSkipsInvalidRules(t *testing.T) {
-	rs, err := Build([]model.Rule{
+	rs, err := Build(Layers{UserRules: []model.Rule{
 		{Kind: model.KindBlock, Pattern: "||^", Enabled: true},                    // 非法
 		{Kind: "unknown_kind", Pattern: "||x.com^", Enabled: true},                // 未知类型
 		{Kind: model.KindRewriteA, Pattern: "||y.com^", Value: "", Enabled: true}, // 缺目标
 		{Kind: model.KindBlock, Pattern: "||good.com^", Enabled: true},            // 合法
-	}, nil, nil)
+	}})
 	if err != nil {
 		t.Fatalf("构建不应返回错误: %v", err)
 	}
@@ -276,5 +280,81 @@ func TestParseContentStats(t *testing.T) {
 	}
 	if len(errs) != 1 {
 		t.Errorf("期望 1 条错误，实际 %d: %v", len(errs), errs)
+	}
+}
+
+// TestGlobalLayerPrecedence 验证全局规则层与用户规则的优先级。
+//
+// 这是「管理员设全局、用户在全局基础上增量覆盖」的核心语义，规则如下：
+//
+//  1. 用户显式 allow 能覆盖全局 block
+//  2. 全局显式规则压过用户的订阅条目（订阅是批量导入的，误杀概率最高）
+//  3. Global 为 nil（用户关闭了全局层）时全局规则完全不生效
+func TestGlobalLayerPrecedence(t *testing.T) {
+	global := &model.GlobalSnap{
+		Rules: []model.Rule{
+			{Kind: model.KindBlock, Pattern: "||ads.global.test^", Enabled: true},
+			{Kind: model.KindAllow, Pattern: "||ok.global.test^", Enabled: true},
+		},
+		SubBlock: []string{"tracker.globalsub.test"},
+	}
+
+	rs, err := Build(Layers{
+		UserRules: []model.Rule{
+			// 用户为全局拦截的域名加白名单
+			{Kind: model.KindAllow, Pattern: "||ads.global.test^", Enabled: true},
+			// 用户订阅里恰好有全局放行的域名
+			{Kind: model.KindBlock, Pattern: "||own.test^", Enabled: true},
+		},
+		SubBlock: []string{"ok.global.test"},
+		Global:   global,
+	})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+
+	cases := []struct {
+		qname  string
+		want   Action
+		source string
+		desc   string
+	}{
+		{"ads.global.test", ActionAllow, "user_allow", "用户 allow 覆盖全局 block"},
+		{"x.ads.global.test", ActionAllow, "user_allow", "用户 allow 覆盖全局 block（子域）"},
+		{"ok.global.test", ActionAllow, "global_allow", "全局 allow 压过用户订阅里的 block"},
+		{"tracker.globalsub.test", ActionBlock, "global_sub_block", "全局订阅黑名单生效"},
+		{"own.test", ActionBlock, "user_block", "用户自己的规则正常生效"},
+		{"nothing.test", ActionNone, "", "未命中任何规则"},
+	}
+	for _, c := range cases {
+		d := rs.Match(c.qname, dns.TypeA)
+		if d.Action != c.want {
+			t.Errorf("%s: %s 期望 %v 实际 %v (source=%s)", c.desc, c.qname, c.want, d.Action, d.Source)
+			continue
+		}
+		if c.source != "" && d.Source != c.source {
+			t.Errorf("%s: %s 来源期望 %q 实际 %q", c.desc, c.qname, c.source, d.Source)
+		}
+	}
+
+	// 关闭全局层：同样的用户规则，全局那几条不该再生效。
+	off, err := Build(Layers{
+		UserRules: []model.Rule{
+			{Kind: model.KindAllow, Pattern: "||ads.global.test^", Enabled: true},
+		},
+		Global: nil,
+	})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	if d := off.Match("tracker.globalsub.test", dns.TypeA); d.Action != ActionNone {
+		t.Errorf("关闭全局层后全局订阅不该生效，实际 %v (source=%s)", d.Action, d.Source)
+	}
+	if d := off.Match("ok.global.test", dns.TypeA); d.Action != ActionNone {
+		t.Errorf("关闭全局层后全局 allow 不该生效，实际 %v (source=%s)", d.Action, d.Source)
+	}
+	// 用户自己的规则不受影响。
+	if d := off.Match("ads.global.test", dns.TypeA); d.Action != ActionAllow {
+		t.Errorf("关闭全局层后用户 allow 仍应生效，实际 %v", d.Action)
 	}
 }

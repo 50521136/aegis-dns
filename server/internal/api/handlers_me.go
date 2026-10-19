@@ -82,7 +82,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "")
 		return
 	}
-	subs, err := s.store.ListSubs(r.Context(), u.ID)
+	subs, err := s.store.ListSubs(r.Context(), u.ID, false)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return

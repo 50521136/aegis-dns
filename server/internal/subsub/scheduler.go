@@ -123,6 +123,16 @@ func (m *Manager) Refresh(ctx context.Context, sub *model.Subscription) (*Refres
 		domains = allow
 	}
 
+	// 条目上限：一次订阅拉进来 23 万条是常态，而这些条目会被**按用户压平**进
+	// 快照，几个用户订同一份就成倍膨胀。超限时截断并告警，而不是拒绝整份订阅 ——
+	// 截断至少还能提供前 N 条防护，拒绝等于用户什么都没得到。
+	if set, serr := m.st.GetSettings(ctx); serr == nil && set.MaxSubEntries > 0 && len(domains) > set.MaxSubEntries {
+		m.log.Warn("订阅条目超过上限，已截断",
+			"sub", sub.ID, "url", sub.URL,
+			"got", len(domains), "limit", set.MaxSubEntries)
+		domains = domains[:set.MaxSubEntries]
+	}
+
 	if err := m.st.ReplaceSubEntries(ctx, sub.ID, kind, domains); err != nil {
 		res.LastStatus = DescribeStatus(err)
 		res.DurationMS = time.Since(start).Milliseconds()

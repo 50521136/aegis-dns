@@ -51,10 +51,15 @@ type User struct {
 	Role         string `json:"role"`
 	ClientID     string `json:"client_id"`
 	Enabled      bool   `json:"enabled"`
-	CreatedAt    int64  `json:"-"` // 对外由 handler 转成 RFC3339
+	// UseGlobalRules 决定该用户的规则集是否叠加全局层。默认 true。
+	UseGlobalRules bool  `json:"use_global_rules"`
+	CreatedAt      int64 `json:"-"` // 对外由 handler 转成 RFC3339
 }
 
 // Rule 是一条自定义规则。
+//
+// IsGlobal 为真表示这条规则由管理员创建、作用于所有开启了全局层的用户；
+// 此时 UserID 记的是创建者（管理员），不参与「本人规则」的过滤。
 type Rule struct {
 	ID        string   `json:"id"`
 	UserID    string   `json:"user_id,omitempty"`
@@ -63,10 +68,11 @@ type Rule struct {
 	Value     string   `json:"value"`
 	QTypes    []string `json:"qtypes"`
 	Enabled   bool     `json:"enabled"`
+	IsGlobal  bool     `json:"is_global,omitempty"`
 	CreatedAt int64    `json:"-"`
 }
 
-// Subscription 是一个订阅源。
+// Subscription 是一个订阅源。IsGlobal 语义同 Rule.IsGlobal。
 type Subscription struct {
 	ID           string `json:"id"`
 	UserID       string `json:"user_id,omitempty"`
@@ -75,6 +81,7 @@ type Subscription struct {
 	URL          string `json:"url"`
 	Format       string `json:"format"`
 	Enabled      bool   `json:"enabled"`
+	IsGlobal     bool   `json:"is_global,omitempty"`
 	LastETag     string `json:"-"`
 	LastModified string `json:"-"`
 	LastFetched  int64  `json:"-"`
@@ -83,6 +90,31 @@ type Subscription struct {
 	FailCount    int    `json:"fail_count"`
 	CreatedAt    int64  `json:"-"`
 }
+
+// Feedback 是一条用户反馈（通常是误杀申诉）。
+type Feedback struct {
+	ID         string `json:"id"`
+	UserID     string `json:"user_id"`
+	Username   string `json:"username"`
+	Domain     string `json:"domain"`
+	Kind       string `json:"kind"`
+	Message    string `json:"message"`
+	Status     string `json:"status"`
+	AdminReply string `json:"admin_reply"`
+	CreatedAt  int64  `json:"created_at"`
+	UpdatedAt  int64  `json:"updated_at"`
+}
+
+// 反馈类型与状态。
+const (
+	FeedbackWrongBlock = "wrong_block" // 被误拦
+	FeedbackWrongAllow = "wrong_allow" // 该拦没拦
+	FeedbackOther      = "other"
+
+	FeedbackOpen    = "open"
+	FeedbackReplied = "replied"
+	FeedbackClosed  = "closed"
+)
 
 // UserIP 是一条来源 IP 归属记录。
 type UserIP struct {
@@ -109,6 +141,14 @@ type Defaults struct {
 	EnableQueryLog bool `json:"enable_query_log"`
 }
 
+// GlobalSnap 是快照里的全局层：管理员的规则与订阅条目，对所有
+// UseGlobalRules 为真的用户生效。
+type GlobalSnap struct {
+	Rules    []Rule   `json:"rules,omitempty"`
+	SubBlock []string `json:"sub_block,omitempty"`
+	SubAllow []string `json:"sub_allow,omitempty"`
+}
+
 // UserSnap 是快照里的单个用户。
 type UserSnap struct {
 	UserID    string   `json:"user_id"`
@@ -117,6 +157,8 @@ type UserSnap struct {
 	Upstreams []string `json:"upstreams,omitempty"`
 	IPs       []string `json:"ips,omitempty"`
 	Rules     []Rule   `json:"rules,omitempty"`
+	// UseGlobalRules 为假时，dnsd 不为该用户挂全局层。
+	UseGlobalRules bool `json:"use_global_rules"`
 	// 订阅条目在这里被「压平」成纯域名数组：数十万条时 JSON 体积最小。
 	SubAllow []string `json:"sub_allow,omitempty"`
 	SubBlock []string `json:"sub_block,omitempty"`
@@ -128,6 +170,8 @@ type Snapshot struct {
 	Schema      int       `json:"schema"`
 	GeneratedAt time.Time `json:"generated_at"`
 	Defaults    Defaults  `json:"defaults"`
+	// Global 是全局规则层，由管理员的 is_global 条目压平而成。
+	Global GlobalSnap `json:"global"`
 	// ChangedUsers 非空时表示增量快照：dnsd 只重建这些用户的 RuleSet，
 	// 其余复用旧对象。为空表示全量。
 	ChangedUsers []string   `json:"changed_users,omitempty"`
@@ -138,7 +182,10 @@ type Snapshot struct {
 //
 // dnsd 遇到比自己支持的大版本更高的快照会拒绝加载并保留旧配置，
 // 避免「apid 升级后写出的新格式把老 dnsd 喂坏」。
-const SnapshotSchema = 1
+//
+// v2 新增 Global 全局层与 UserSnap.UseGlobalRules。必须升版本：老 dnsd 会
+// 忽略 global 字段，于是全局规则静默失效 —— 这比拒绝加载更难排查。
+const SnapshotSchema = 2
 
 // GlobalSettings 是管理员可改的全局设置（存 meta 表，前缀 setting.）。
 type GlobalSettings struct {
@@ -161,6 +208,16 @@ type GlobalSettings struct {
 	InviteCode     string   `json:"invite_code"`
 	UpdateRepo     string   `json:"update_repo"`
 	UpdateChannel  string   `json:"update_channel"`
+
+	// --- 配额：不限制的话单个用户就能把内存打爆 ---
+	//
+	// 一次订阅拉进来 23 万条是常态，而订阅条目是**按用户压平**进快照的，
+	// 几个用户订阅同一份列表就会成倍膨胀。默认取严格档。
+	MaxRulesPerUser int `json:"max_rules_per_user"` // 单个用户的个人规则上限
+	MaxSubsPerUser  int `json:"max_subs_per_user"`  // 单个用户的个人订阅上限
+	MaxSubEntries   int `json:"max_sub_entries"`    // 单个订阅解析后的条目上限（超出截断）
+	MaxRulesGlobal  int `json:"max_rules_global"`   // 全局规则上限
+	MaxSubsGlobal   int `json:"max_subs_global"`    // 全局订阅上限
 }
 
 // DefaultSettings 返回一套合理的出厂设置。
@@ -186,6 +243,12 @@ func DefaultSettings() GlobalSettings {
 		AllowRegister:  true,
 		InviteCode:     "",
 		UpdateChannel:  "stable",
+
+		MaxRulesPerUser: 50,
+		MaxSubsPerUser:  3,
+		MaxSubEntries:   50000,
+		MaxRulesGlobal:  500,
+		MaxSubsGlobal:   20,
 	}
 }
 
