@@ -35,6 +35,7 @@ server/internal/api/webdist/dist/*
 
 # 本地测试脚手架（起实例、造数据、临时二进制），不进仓库
 .admonly/
+.subui/
 .uicheck/
 .stat-check/
 .verify-global/

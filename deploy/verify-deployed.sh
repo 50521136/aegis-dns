@@ -19,7 +19,9 @@ set -uo pipefail
 # CentOS 7 默认 locale 常常不是 UTF-8，探针一打印中文就 UnicodeEncodeError 崩掉；
 # 崩掉的输出里自然没有 "0.0.0.0"，会让「不该被拦」这类断言假通过。
 export PYTHONIOENCODING=utf-8
-export LC_ALL=${LC_ALL:-C.UTF-8}
+# CentOS 7 不一定装了 C.UTF-8，硬设会刷 setlocale 警告；挑一个真实存在的。
+_utf8_locale=$(locale -a 2>/dev/null | grep -iE '^(C\.utf-?8|en_US\.utf-?8)$' | head -1)
+[[ -n "$_utf8_locale" ]] && export LC_ALL="$_utf8_locale"
 
 # 默认值不要写死端口：这套服务在别的机器上可能配 8080，也可能 3000（本机 8080 常被
 # docker 占用）。优先 --api 参数，其次 AEGIS_API 环境变量，最后从 config.yaml 读。

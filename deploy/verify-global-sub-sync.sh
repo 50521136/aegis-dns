@@ -4,6 +4,9 @@
 set -uo pipefail
 # 老机器 locale 常常不是 UTF-8，内联 python 打印中文会 UnicodeEncodeError 直接崩
 export PYTHONIOENCODING=utf-8
+# CentOS 7 不一定装了 C.UTF-8，硬设会刷 setlocale 警告；挑一个真实存在的。
+_utf8_locale=$(locale -a 2>/dev/null | grep -iE '^(C\.utf-?8|en_US\.utf-?8)$' | head -1)
+[[ -n "$_utf8_locale" ]] && export LC_ALL="$_utf8_locale"
 API=http://127.0.0.1:3000/api/v1
 
 ADM_PASS=$(grep -E '^ADMIN_PASSWORD=' /opt/aegis/.env | cut -d= -f2-)
@@ -24,7 +27,7 @@ curl -s "$API/admin/subscriptions" -H "Authorization: Bearer $TOK" | python3 -c 
 import sys,json
 items = json.load(sys.stdin).get("items", [])
 if not items:
-    print("  (无全局订阅)")
+    print("  (none)")
 for x in items:
     print("  %-22s enabled=%s count=%-6s status=%s" % (x["name"], x["enabled"], x["last_count"], (x["last_status"] or "")[:50]))
     print("    url:", x["url"])
