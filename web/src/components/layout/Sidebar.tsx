@@ -7,7 +7,8 @@ import { GROUP_LABEL, navItems, type NavItem } from './navItems'
 
 export function Sidebar() {
   const { user, isAdmin } = useAuth()
-  const items = navItems.filter((i) => !i.adminOnly || isAdmin)
+  // 管理员是控制面角色：既看不到租户功能（userOnly），也独占管理功能（adminOnly）
+  const items = navItems.filter((i) => (i.adminOnly ? isAdmin : !(i.userOnly && isAdmin)))
   const mainItems = items.filter((i) => i.group === 'main')
   const adminItems = items.filter((i) => i.group === 'admin')
 

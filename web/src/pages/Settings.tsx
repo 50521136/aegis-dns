@@ -476,7 +476,7 @@ function UpdateCard() {
 /* ---------- 主页面 ---------- */
 
 export default function Settings() {
-  const { user, logout } = useAuth()
+  const { user, logout, isAdmin } = useAuth()
   const { theme, setTheme } = useTheme()
   const toast = useToast()
 
@@ -502,9 +502,9 @@ export default function Settings() {
       <Tabs defaultValue="account">
         <TabsList className="flex-wrap">
           <TabsTrigger value="account">账号</TabsTrigger>
-          <TabsTrigger value="rules">规则</TabsTrigger>
+          {!isAdmin && <TabsTrigger value="rules">规则</TabsTrigger>}
           <TabsTrigger value="security">安全</TabsTrigger>
-          <TabsTrigger value="data">数据</TabsTrigger>
+          {!isAdmin && <TabsTrigger value="data">数据</TabsTrigger>}
           <TabsTrigger value="update">更新</TabsTrigger>
         </TabsList>
 
@@ -560,7 +560,7 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="rules" className="space-y-6">
+        <TabsContent value="rules" className="space-y-6" hidden={isAdmin}>
           <GlobalRulesCard />
         </TabsContent>
 
@@ -584,7 +584,7 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="data">
+        <TabsContent value="data" hidden={isAdmin}>
           <ImportExportCard />
         </TabsContent>
 

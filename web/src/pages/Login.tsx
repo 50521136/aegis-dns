@@ -35,9 +35,11 @@ export default function Login() {
 
   const onSubmit = async (values: FormValues) => {
     try {
-      await login(values.username, values.password)
+      const u = await login(values.username, values.password)
       toast.success('登录成功', `欢迎回来，${values.username}`)
-      navigate(from, { replace: true })
+      // 管理员默认进管理后台：他没有租户侧功能，落到 /app 会被 UserOnlyRoute 再弹一次
+      const fallback = u.role === 'admin' ? '/admin' : '/app'
+      navigate(from === '/app' ? fallback : from, { replace: true })
     } catch (err) {
       toast.error('登录失败', errorMessage(err))
     }

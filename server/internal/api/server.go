@@ -179,6 +179,11 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/system", s.handleAdminSystem)
 				r.Post("/update/apply", s.handleAdminApplyUpdate)
 				r.Get("/audit", s.handleAdminAudit)
+
+			// 管理员的全局统计与日志：普通用户只能看自己的，
+			// 横向对比和全站排查必须走这里。
+			r.Get("/stats/users", s.handleAdminStatsUsers)
+			r.Get("/stats/querylog", s.handleAdminQueryLog)
 			})
 		})
 	})

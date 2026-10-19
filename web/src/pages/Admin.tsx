@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
   Activity,
+  BarChart3,
   Cpu,
   Database,
   HardDriveDownload,
@@ -24,7 +25,9 @@ import {
   updateUser,
 } from '@/api/admin'
 import { errorMessage } from '@/api/client'
+import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
+import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -48,7 +51,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { formatDateTime, formatUptime } from '@/lib/format'
+import { formatDateTime, formatNumber, formatUptime } from '@/lib/format'
 
 /* ---------- 用户管理 ---------- */
 
@@ -574,8 +577,12 @@ export default function Admin() {
         icon={<ShieldCheck className="size-5" />}
       />
 
-      <Tabs defaultValue="users">
+      <Tabs defaultValue="traffic">
         <TabsList className="flex-wrap">
+          <TabsTrigger value="traffic">
+            <BarChart3 className="size-4" />
+            流量排行
+          </TabsTrigger>
           <TabsTrigger value="users">
             <Users className="size-4" />
             用户
@@ -590,6 +597,9 @@ export default function Admin() {
           </TabsTrigger>
         </TabsList>
 
+        <TabsContent value="traffic">
+          <TrafficPanel />
+        </TabsContent>
         <TabsContent value="users">
           <UsersPanel />
         </TabsContent>
@@ -601,5 +611,127 @@ export default function Admin() {
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+/* ---------- 流量排行 ---------- */
+
+const TRAFFIC_RANGES: { value: AdminStatsRange; label: string }[] = [
+  { value: '1h', label: '近 1 小时' },
+  { value: '24h', label: '近 24 小时' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' },
+]
+
+/**
+ * TrafficPanel 展示每个用户的请求量排行。
+ *
+ * 数据来自 query_rollup 按 user_id 聚合，管理员用它判断谁在重度使用、
+ * 谁的拦截率异常（拦截率接近 1 说明规则把它全拦了，八成是配错了）。
+ */
+function TrafficPanel() {
+  const [range, setRange] = useState<AdminStatsRange>('24h')
+
+  const q = useQuery({
+    queryKey: ['admin', 'stats', 'users', range],
+    queryFn: () => getAdminUserTraffic(range, 20),
+    refetchInterval: 30000,
+  })
+
+  const items = q.data?.items ?? []
+  const grandTotal = items.reduce((a, b) => a + b.total, 0)
+  const max = items.length > 0 ? items[0].total : 0
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <BarChart3 className="size-5 text-primary" />
+          用户请求量排行
+        </CardTitle>
+        <CardDescription>
+          {q.data ? `共 ${items.length} 个用户有流量，合计 ${formatNumber(grandTotal)} 次查询` : '按解析请求量排序'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="m-groove inline-flex flex-wrap gap-1 rounded-xl p-1">
+          {TRAFFIC_RANGES.map((r) => (
+            <button
+              key={r.value}
+              onClick={() => setRange(r.value)}
+              className={cn(
+                'rounded-lg px-3 py-1.5 text-sm transition-colors',
+                range === r.value
+                  ? 'm-pill font-medium text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+
+        {q.isError ? (
+          <ErrorState message={errorMessage(q.error)} onRetry={() => q.refetch()} />
+        ) : q.isLoading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 rounded-xl" />
+            ))}
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState
+            icon={<BarChart3 className="size-6" />}
+            title="还没有流量数据"
+            description="用户产生解析请求后，排行会显示在这里。"
+          />
+        ) : (
+          <ol className="space-y-2">
+            {items.map((u, i) => {
+              const pct = max > 0 ? Math.round((u.total / max) * 100) : 0
+              return (
+                <li
+                  key={u.user_id}
+                  className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2.5"
+                >
+                  {/* 名次：前三名用主色强调 */}
+                  <span
+                    className={cn(
+                      'readout w-7 shrink-0 text-center text-sm',
+                      i === 0 ? 'text-primary' : i < 3 ? 'text-foreground' : 'text-muted-foreground',
+                    )}
+                  >
+                    {i + 1}
+                  </span>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-sm font-medium">
+                        {u.username || '已删除用户'}
+                      </span>
+                      <span className="shrink-0 font-mono text-sm tabular-nums">
+                        {formatNumber(u.total)}
+                      </span>
+                    </div>
+                    {/* 占比条 + 拦截率 */}
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className="shrink-0 text-2xs text-muted-foreground">
+                        拦截 {Math.round(u.block_rate * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
+          </ol>
+        )}
+      </CardContent>
+    </Card>
   )
 }

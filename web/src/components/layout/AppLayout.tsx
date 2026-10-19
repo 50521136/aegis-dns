@@ -12,7 +12,7 @@ import { navItems } from './navItems'
 
 function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { isAdmin } = useAuth()
-  const items = navItems.filter((i) => !i.adminOnly || isAdmin)
+  const items = navItems.filter((i) => (i.adminOnly ? isAdmin : !(i.userOnly && isAdmin)))
   return (
     <AnimatePresence>
       {open && (

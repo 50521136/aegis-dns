@@ -56,3 +56,27 @@ export function AdminRoute() {
 
   return <Outlet />
 }
+
+/**
+ * 仅普通用户可用的路由守卫。
+ *
+ * 管理员是控制面角色，不该出现在租户侧（规则/订阅/日志/我的DNS 都按 user_id 隔离，
+ * 管理员进去看到的是自己那份空数据，只会误导）。直接访问就送回管理后台。
+ */
+export function UserOnlyRoute() {
+  const { isAdmin, initializing } = useAuth()
+
+  if (initializing) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center">
+        <FullPageSpinner />
+      </div>
+    )
+  }
+
+  if (isAdmin) {
+    return <Navigate to="/admin" replace />
+  }
+
+  return <Outlet />
+}

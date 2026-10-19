@@ -304,6 +304,22 @@ echo "  rebuild: $(curl -fsS -X POST "$API/admin/snapshot/rebuild" -H "Authoriza
 echo "  audit:   $(curl -fsS "$API/admin/audit?limit=3" -H "Authorization: Bearer $ADMTOK" | head -c 260)"
 echo "  update:  $(curl -fsS "$API/update/check" -H "Authorization: Bearer $ADMTOK" | head -c 300)"
 
+hdr "管理员全局统计与日志"
+UT=$(curl -fsS "$API/admin/stats/users?range=24h" -H "Authorization: Bearer $ADMTOK")
+echo "$UT" | grep -q '"username"' && ok "排行榜带用户名" || bad "排行榜缺少 username: $(echo "$UT" | head -c 200)"
+echo "$UT" | grep -q '"total"' && ok "排行榜带请求量" || bad "排行榜缺少 total"
+echo "$UT" | grep -q '"block_rate"' && ok "排行榜带拦截率" || bad "排行榜缺少 block_rate"
+
+GL=$(curl -fsS "$API/admin/stats/querylog?limit=5" -H "Authorization: Bearer $ADMTOK")
+echo "$GL" | grep -q '"username"' && ok "全局日志带用户名" || bad "全局日志缺少 username"
+echo "$GL" | grep -q '"user_id"' && ok "全局日志带 user_id" || bad "全局日志缺少 user_id"
+
+# 这两个接口是管理员专属，普通租户必须拿不到
+for p in /admin/stats/users /admin/stats/querylog; do
+  c=$(curl -s -o /dev/null -w '%{http_code}' "$API$p" -H "Authorization: Bearer $TOKEN")
+  [[ "$c" == "403" ]] && ok "普通用户访问 $p → 403" || bad "越权 $p：$c"
+done
+
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——
 # 真实 index.html 开头是一段内联主题脚本，assets/ 引用在后面，

@@ -257,29 +257,32 @@ type QueryLogFilter struct {
 func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryLogRow, int, error) {
 	where := []string{"1=1"}
 	args := []any{}
+	// UserID 为空表示查全站（管理员视角），非空则限定到单个用户。
 	if f.UserID != "" {
-		where = append(where, "user_id = ?")
+		where = append(where, "l.user_id = ?")
 		args = append(args, f.UserID)
 	}
 	if f.Domain != "" {
-		where = append(where, "domain LIKE ?")
+		where = append(where, "l.domain LIKE ?")
 		args = append(args, "%"+f.Domain+"%")
 	}
 	if f.Action != "" {
-		where = append(where, "action = ?")
+		where = append(where, "l.action = ?")
 		args = append(args, f.Action)
 	}
 	clause := " WHERE " + strings.Join(where, " AND ")
 
 	var total int
-	if err := s.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM query_log`+clause, args...).Scan(&total); err != nil {
+	if err := s.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM query_log l`+clause, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计查询日志失败: %w", err)
 	}
 
 	args = append(args, f.Limit, f.Offset)
+	// LEFT JOIN 而不是 JOIN：用户被删后日志仍保留，要能看到历史行。
 	rows, err := s.read.QueryContext(ctx,
-		`SELECT id, user_id, ts, domain, qtype, rcode, action, client, latency_ms
-		 FROM query_log`+clause+` ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, args...)
+		`SELECT l.id, l.user_id, COALESCE(u.username,''), l.ts, l.domain, l.qtype, l.rcode, l.action, l.client, l.latency_ms
+		 FROM query_log l LEFT JOIN users u ON u.id = l.user_id`+clause+
+			` ORDER BY l.ts DESC, l.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询日志失败: %w", err)
 	}
@@ -287,7 +290,7 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 	var out []model.QueryLogRow
 	for rows.Next() {
 		var l model.QueryLogRow
-		if err := rows.Scan(&l.ID, &l.UserID, &l.TS, &l.Domain, &l.QType, &l.RCode, &l.Action, &l.Client, &l.LatencyMS); err != nil {
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Username, &l.TS, &l.Domain, &l.QType, &l.RCode, &l.Action, &l.Client, &l.LatencyMS); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, l)
@@ -456,4 +459,55 @@ func (s *Store) LookupPAT(ctx context.Context, hash string) (string, error) {
 	// 更新使用时间是「尽力而为」：失败不影响鉴权结果。
 	_, _ = s.write.ExecContext(ctx, `UPDATE pat_tokens SET last_used = ? WHERE token_hash = ?`, time.Now().Unix(), hash)
 	return uid, nil
+}
+
+// UserTrafficRow 是某个用户在时间区间内的请求量汇总，用于管理员排行榜。
+type UserTrafficRow struct {
+	UserID    string  `json:"user_id"`
+	Username  string  `json:"username"`
+	Total     int64   `json:"total"`
+	Blocked   int64   `json:"blocked"`
+	Allowed   int64   `json:"allowed"`
+	Cached    int64   `json:"cached"`
+	BlockRate float64 `json:"block_rate"`
+}
+
+// UserTraffic 按用户汇总请求量，供管理员排行榜使用。
+//
+// 用 LEFT JOIN 而不是 JOIN：用户被删后 rollup 里仍有历史数据，
+// 直接内连会让这些行从排行榜里消失，看起来像「总请求量对不上」。
+func (s *Store) UserTraffic(ctx context.Context, since int64, limit int) ([]UserTrafficRow, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT r.user_id, COALESCE(u.username,''),
+		        COALESCE(SUM(r.total),0), COALESCE(SUM(r.blocked),0),
+		        COALESCE(SUM(r.allowed),0), COALESCE(SUM(r.cached),0)
+		 FROM query_rollup r
+		 LEFT JOIN users u ON u.id = r.user_id
+		 WHERE r.ts >= ?
+		 GROUP BY r.user_id, u.username
+		 ORDER BY SUM(r.total) DESC
+		 LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("按用户汇总失败: %w", err)
+	}
+	defer rows.Close()
+
+	out := []UserTrafficRow{}
+	for rows.Next() {
+		var it UserTrafficRow
+		if err := rows.Scan(&it.UserID, &it.Username, &it.Total, &it.Blocked, &it.Allowed, &it.Cached); err != nil {
+			return nil, err
+		}
+		if it.Total > 0 {
+			it.BlockRate = float64(it.Blocked) / float64(it.Total)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
 }

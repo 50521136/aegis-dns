@@ -6,7 +6,7 @@ import { AuthProvider } from '@/hooks/useAuth'
 import { ToastProvider, useToast } from '@/components/ui/toast'
 import { PublicLayout } from '@/components/layout/PublicLayout'
 import { AppLayout } from '@/components/layout/AppLayout'
-import { ProtectedRoute, AdminRoute } from '@/components/ProtectedRoute'
+import { ProtectedRoute, AdminRoute, UserOnlyRoute } from '@/components/ProtectedRoute'
 import { getVersion } from '@/api/system'
 
 import Landing from '@/pages/Landing'
@@ -20,6 +20,7 @@ import Stats from '@/pages/Stats'
 import QueryLog from '@/pages/QueryLog'
 import Settings from '@/pages/Settings'
 import Admin from '@/pages/Admin'
+import AdminLogs from '@/pages/AdminLogs'
 import AdminFeedback from '@/pages/AdminFeedback'
 import AdminTls from '@/pages/AdminTls'
 import Feedback from '@/pages/Feedback'
@@ -93,14 +94,19 @@ export default function App() {
                 {/* 需要登录 */}
                 <Route element={<ProtectedRoute />}>
                   <Route element={<AppLayout />}>
-                    <Route path="/app" element={<Dashboard />} />
-                    <Route path="/app/setup" element={<DnsSetup />} />
-                    <Route path="/app/rules" element={<Rules />} />
-                    <Route path="/app/subscriptions" element={<Subscriptions />} />
-                    <Route path="/app/stats" element={<Stats />} />
-                    <Route path="/app/logs" element={<QueryLog />} />
+                    {/* 租户功能：管理员进来会被送回 /admin（他是控制面角色，不参与租户侧） */}
+                    <Route element={<UserOnlyRoute />}>
+                      <Route path="/app" element={<Dashboard />} />
+                      <Route path="/app/setup" element={<DnsSetup />} />
+                      <Route path="/app/rules" element={<Rules />} />
+                      <Route path="/app/subscriptions" element={<Subscriptions />} />
+                      <Route path="/app/stats" element={<Stats />} />
+                      <Route path="/app/logs" element={<QueryLog />} />
+                      <Route path="/app/feedback" element={<Feedback />} />
+                    </Route>
+
+                    {/* 账号设置两边都要：管理员也要改密码、管令牌 */}
                     <Route path="/app/settings" element={<Settings />} />
-                    <Route path="/app/feedback" element={<Feedback />} />
 
                     {/* 仅管理员 */}
                     <Route element={<AdminRoute />}>
@@ -110,6 +116,7 @@ export default function App() {
                       <Route path="/admin/subscriptions" element={<Subscriptions scope="global" />} />
                       <Route path="/admin/tls" element={<AdminTls />} />
                       <Route path="/admin/feedback" element={<AdminFeedback />} />
+                      <Route path="/admin/logs" element={<AdminLogs />} />
                     </Route>
                   </Route>
                 </Route>

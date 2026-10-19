@@ -6,7 +6,9 @@ import { navItems } from './navItems'
 /** 移动端底部 TabBar（< 768px），最多 5 个主入口 */
 export function BottomTabBar() {
   const { isAdmin } = useAuth()
-  const items = navItems.filter((i) => i.mobile && (!i.adminOnly || isAdmin)).slice(0, 5)
+  const items = navItems
+    .filter((i) => i.mobile && (i.adminOnly ? isAdmin : !(i.userOnly && isAdmin)))
+    .slice(0, 5)
 
   return (
     <nav className="m-rail hairline-t pb-safe fixed inset-x-0 bottom-0 z-40 md:hidden">

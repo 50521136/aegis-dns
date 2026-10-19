@@ -290,8 +290,11 @@ type TopDomainRow struct {
 
 // QueryLogRow 是一条查询日志。
 type QueryLogRow struct {
-	ID        int64  `json:"id"`
-	UserID    string `json:"user_id"`
+	ID     int64  `json:"id"`
+	UserID string `json:"user_id"`
+	// Username 只在查询时通过 LEFT JOIN 填充，用于管理员全局日志；
+	// 用户看自己的日志时不需要，为空即可。
+	Username  string `json:"username,omitempty"`
 	TS        int64  `json:"ts"`
 	Domain    string `json:"domain"`
 	QType     string `json:"qtype"`

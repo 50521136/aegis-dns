@@ -164,3 +164,90 @@ func orDefault(s, def string) string {
 	}
 	return s
 }
+
+// handleAdminStatsUsers 返回按用户汇总的请求量排行榜。
+//
+// 这是管理员看全局流量的入口：谁的解析量最大、拦截率多少。
+// 只给管理员，普通用户拿到的是自己那一行，没有横向比较的意义。
+func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	since := timeRange(q.Get("range"), time.Now())
+	limit := atoiDefault(q.Get("limit"), 20)
+
+	rows, err := s.store.UserTraffic(r.Context(), since.Unix(), limit)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, it := range rows {
+		items = append(items, map[string]any{
+			"user_id":    it.UserID,
+			"username":   it.Username,
+			"total":      it.Total,
+			"blocked":    it.Blocked,
+			"allowed":    it.Allowed,
+			"cached":     it.Cached,
+			"block_rate": it.BlockRate,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range": orDefault(q.Get("range"), "24h"),
+		"items": items,
+		"total_users": len(items),
+	})
+}
+
+// handleAdminQueryLog 返回全站查询日志（可指定 user_id 过滤）。
+//
+// 与用户版 handleQueryLog 的区别：不强制按当前用户过滤，
+// 所以能看到所有租户的解析记录，用于排查投诉和滥用。
+func (s *Server) handleAdminQueryLog(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	limit := atoiDefault(q.Get("limit"), 100)
+	if limit < 1 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := atoiDefault(q.Get("offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+
+	logs, total, err := s.store.QueryLogs(r.Context(), store.QueryLogFilter{
+		UserID: q.Get("user_id"), // 空 = 全部用户
+		Domain: q.Get("domain"),
+		Action: q.Get("action"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	items := make([]map[string]any, 0, len(logs))
+	for _, l := range logs {
+		items = append(items, map[string]any{
+			"id":         l.ID,
+			"user_id":    l.UserID,
+			"username":   l.Username,
+			"ts":         l.TS,
+			"time":       time.Unix(l.TS, 0).UTC().Format(time.RFC3339),
+			"domain":     l.Domain,
+			"qtype":      l.QType,
+			"rcode":      l.RCode,
+			"action":     l.Action,
+			"client":     l.Client,
+			"latency_ms": l.LatencyMS,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
