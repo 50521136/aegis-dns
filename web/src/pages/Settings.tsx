@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Settings as SettingsIcon,
+  Shield,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -26,6 +27,7 @@ import {
 } from '@/api/me'
 import { checkUpdate, applyUpdate } from '@/api/admin'
 import { errorMessage } from '@/api/client'
+import { getPreferences, updatePreferences } from '@/api/scope'
 import type { ApiToken, ExportPayload } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
@@ -47,6 +49,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogContent,
@@ -499,6 +502,7 @@ export default function Settings() {
       <Tabs defaultValue="account">
         <TabsList className="flex-wrap">
           <TabsTrigger value="account">账号</TabsTrigger>
+          <TabsTrigger value="rules">规则</TabsTrigger>
           <TabsTrigger value="security">安全</TabsTrigger>
           <TabsTrigger value="data">数据</TabsTrigger>
           <TabsTrigger value="update">更新</TabsTrigger>
@@ -556,6 +560,10 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="rules" className="space-y-6">
+          <GlobalRulesCard />
+        </TabsContent>
+
         <TabsContent value="security" className="space-y-6">
           <PasswordCard />
           <TokensCard />
@@ -594,5 +602,74 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={mono ? 'break-all font-mono text-sm' : 'text-sm font-medium'}>{value}</p>
     </div>
+  )
+}
+
+/* ---------- 全局规则开关 ---------- */
+
+/**
+ * GlobalRulesCard 让用户自己决定是否叠加管理员的全局规则层。
+ *
+ * 这是「全局规则误伤我」时的自助逃生门：关掉之后只用自己的规则与订阅，
+ * 不需要找管理员。注意它不影响订阅 —— 自己的订阅照常生效。
+ */
+function GlobalRulesCard() {
+  const qc = useQueryClient()
+  const toast = useToast()
+
+  const prefQuery = useQuery({ queryKey: ['me', 'preferences'], queryFn: getPreferences })
+
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => updatePreferences({ use_global_rules: next }),
+    onSuccess: (res) => {
+      toast.success(
+        res.use_global_rules ? '已启用全局规则' : '已关闭全局规则',
+        res.use_global_rules ? '管理员的规则将重新生效' : '只使用你自己的规则与订阅',
+      )
+      qc.invalidateQueries({ queryKey: ['me', 'preferences'] })
+    },
+    onError: (err) => toast.error('保存失败', errorMessage(err)),
+  })
+
+  const on = prefQuery.data?.use_global_rules ?? true
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Shield className="size-5 text-primary" />
+          全局规则
+        </CardTitle>
+        <CardDescription>
+          管理员设置的全局规则与订阅，默认对所有用户生效。关掉后只使用你自己的规则。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {prefQuery.isLoading ? (
+          <Skeleton className="h-12 rounded-xl" />
+        ) : (
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-border p-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">叠加全局规则</p>
+              <p className="text-xs text-muted-foreground">
+                {on
+                  ? '当前启用：管理员的拦截会作用于你的解析'
+                  : '当前关闭：管理员的规则对你无效'}
+              </p>
+            </div>
+            <Switch
+              checked={on}
+              disabled={toggle.isPending}
+              onCheckedChange={(v) => toggle.mutate(v)}
+              aria-label="叠加全局规则"
+            />
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">
+          提示：关闭全局规则不会删掉你自己的规则与订阅，也不会影响其他用户。
+          如果只是某个域名被误拦，更推荐在「规则」里加一条白名单。
+        </p>
+      </CardContent>
+    </Card>
   )
 }

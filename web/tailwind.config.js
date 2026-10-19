@@ -9,6 +9,16 @@ export default {
       screens: { '2xl': '1400px' },
     },
     extend: {
+      // Tailwind 默认 opacity 刻度是 0/5/10/20/25/30/40/... 没有 8 和 12，
+      // 而组件里用了 bg-success/12、bg-primary/8 这类写法 —— 类名不会生成，
+      // 背景静默变成全透明（不报错，所以很容易漏）。补齐刻度一次修掉所有调用点。
+      opacity: {
+        8: '0.08',
+        12: '0.12',
+        18: '0.18',
+        35: '0.35',
+        65: '0.65',
+      },
       colors: {
         border: 'rgb(var(--border) / <alpha-value>)',
         input: 'rgb(var(--input) / <alpha-value>)',

@@ -1,10 +1,12 @@
 import { api } from './client'
+import { scopePrefix } from './scope'
 import type {
   Rule,
   RuleImportResponse,
   RuleInput,
   RuleListResponse,
   RuleValidateResponse,
+  Scope,
 } from './types'
 
 export interface RuleQuery {
@@ -15,31 +17,45 @@ export interface RuleQuery {
   enabled?: boolean
 }
 
-export async function listRules(params: RuleQuery = {}): Promise<RuleListResponse> {
-  const { data } = await api.get<RuleListResponse>('/rules', { params })
+// 所有函数都带 scope：'user' 走 /rules，'global' 走 /admin/rules。
+// 页面组件只传 scope，不用知道路径怎么拼。
+
+export async function listRules(
+  params: RuleQuery = {},
+  scope: Scope = 'user',
+): Promise<RuleListResponse> {
+  const { data } = await api.get<RuleListResponse>(`${scopePrefix(scope)}/rules`, { params })
   return data
 }
 
-export async function createRule(input: RuleInput): Promise<Rule> {
-  const { data } = await api.post<Rule>('/rules', input)
+export async function createRule(input: RuleInput, scope: Scope = 'user'): Promise<Rule> {
+  const { data } = await api.post<Rule>(`${scopePrefix(scope)}/rules`, input)
   return data
 }
 
-export async function updateRule(id: string, input: Partial<RuleInput>): Promise<Rule> {
-  const { data } = await api.put<Rule>(`/rules/${id}`, input)
+export async function updateRule(
+  id: string,
+  input: Partial<RuleInput>,
+  scope: Scope = 'user',
+): Promise<Rule> {
+  const { data } = await api.put<Rule>(`${scopePrefix(scope)}/rules/${id}`, input)
   return data
 }
 
-export async function deleteRule(id: string): Promise<void> {
-  await api.delete(`/rules/${id}`)
+export async function deleteRule(id: string, scope: Scope = 'user'): Promise<void> {
+  await api.delete(`${scopePrefix(scope)}/rules/${id}`)
 }
 
-export async function deleteRules(ids: string[]): Promise<void> {
-  await api.delete('/rules', { data: { ids } })
+export async function deleteRules(ids: string[], scope: Scope = 'user'): Promise<void> {
+  await api.delete(`${scopePrefix(scope)}/rules`, { data: { ids } })
 }
 
-export async function importRules(content: string, enabled = true): Promise<RuleImportResponse> {
-  const { data } = await api.post<RuleImportResponse>('/rules/import', {
+export async function importRules(
+  content: string,
+  enabled = true,
+  scope: Scope = 'user',
+): Promise<RuleImportResponse> {
+  const { data } = await api.post<RuleImportResponse>(`${scopePrefix(scope)}/rules/import`, {
     content,
     format: 'auto',
     enabled,

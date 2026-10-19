@@ -61,6 +61,8 @@ export interface Rule {
   value: string
   qtypes: string[]
   enabled: boolean
+  /** 为真表示这是管理员创建的全局规则 */
+  is_global?: boolean
   created_at: string
 }
 
@@ -69,6 +71,8 @@ export interface RuleListResponse {
   total: number
   page: number
   page_size: number
+  /** 当前作用域的规则配额上限，0 或缺省表示不限制 */
+  limit?: number
 }
 
 export interface RuleInput {
@@ -102,6 +106,8 @@ export interface Subscription {
   list_type: ListType
   format: SubFormat
   enabled: boolean
+  /** 为真表示这是管理员创建的全局订阅 */
+  is_global?: boolean
   last_count: number
   last_fetched: number | string | null
   last_status: string
@@ -286,4 +292,54 @@ export interface HealthResponse {
   status?: string
   version?: string
   [key: string]: unknown
+}
+
+/** 规则/订阅的作用域：个人层或管理员的全局层。 */
+export type Scope = 'user' | 'global'
+
+/** 证书状态（GET /admin/tls）。 */
+export interface TlsStatus {
+  available: boolean
+  self_signed: boolean
+  subject: string
+  issuer: string
+  dns_names: string[]
+  not_before: number
+  not_after: number
+  days_left: number
+  fingerprint: string
+  cert_file: string
+  key_file: string
+  dot_doh_enabled: boolean
+}
+
+/** 用户反馈。 */
+export interface Feedback {
+  id: string
+  user_id: string
+  username: string
+  domain: string
+  kind: FeedbackKind
+  message: string
+  status: FeedbackStatus
+  admin_reply: string
+  created_at: string
+  updated_at: string
+}
+
+export type FeedbackKind = 'wrong_block' | 'wrong_allow' | 'other'
+export type FeedbackStatus = 'open' | 'replied' | 'closed'
+
+export interface FeedbackListResponse {
+  items: Feedback[]
+  total: number
+  page: number
+  page_size: number
+  /** 仅管理员接口返回：待处理条数 */
+  open_count?: number
+}
+
+/** 用户偏好。 */
+export interface Preferences {
+  use_global_rules: boolean
 }

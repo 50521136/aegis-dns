@@ -20,6 +20,9 @@ import Stats from '@/pages/Stats'
 import QueryLog from '@/pages/QueryLog'
 import Settings from '@/pages/Settings'
 import Admin from '@/pages/Admin'
+import AdminFeedback from '@/pages/AdminFeedback'
+import AdminTls from '@/pages/AdminTls'
+import Feedback from '@/pages/Feedback'
 import NotFound from '@/pages/NotFound'
 
 const queryClient = new QueryClient({
@@ -97,10 +100,16 @@ export default function App() {
                     <Route path="/app/stats" element={<Stats />} />
                     <Route path="/app/logs" element={<QueryLog />} />
                     <Route path="/app/settings" element={<Settings />} />
+                    <Route path="/app/feedback" element={<Feedback />} />
 
                     {/* 仅管理员 */}
                     <Route element={<AdminRoute />}>
                       <Route path="/admin" element={<Admin />} />
+                      {/* 全局层与个人层共用同一份页面组件，只换 scope */}
+                      <Route path="/admin/rules" element={<Rules scope="global" />} />
+                      <Route path="/admin/subscriptions" element={<Subscriptions scope="global" />} />
+                      <Route path="/admin/tls" element={<AdminTls />} />
+                      <Route path="/admin/feedback" element={<AdminFeedback />} />
                     </Route>
                   </Route>
                 </Route>

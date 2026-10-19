@@ -16,10 +16,12 @@ export function CopyField({ value, label, mono = true, className }: CopyFieldPro
   return (
     <div className={cn('space-y-1.5', className)}>
       {label && <p className="text-xs font-medium text-muted-foreground">{label}</p>}
-      <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1 pl-3.5">
+      {/* min-w-0 必须有：Grid/Flex 子项默认 min-width:auto，长地址会把容器撑爆、
+          把右侧复制按钮挤出卡片。地址用 break-all 换行，不截断 —— 截断后用户没法核对。 */}
+      <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border bg-background p-1 pl-3.5">
         <code
           className={cn(
-            'min-w-0 flex-1 truncate text-sm',
+            'min-w-0 flex-1 break-all text-sm leading-snug',
             mono ? 'font-mono text-[13px]' : 'font-sans',
           )}
           title={value}

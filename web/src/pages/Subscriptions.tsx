@@ -24,7 +24,13 @@ import {
   updateSubscription,
 } from '@/api/subscriptions'
 import { errorMessage } from '@/api/client'
-import type { ListType, SubFormat, Subscription, SubscriptionInput } from '@/api/types'
+import type {
+  ListType,
+  Scope,
+  SubFormat,
+  Subscription,
+  SubscriptionInput,
+} from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -89,7 +95,9 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
-export default function Subscriptions() {
+// 与 Rules 同理：scope='global' 时就是管理员的「全局订阅」页。
+export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
+  const isGlobal = scope === 'global'
   const qc = useQueryClient()
   const toast = useToast()
 
@@ -99,7 +107,10 @@ export default function Subscriptions() {
   const [pendingDelete, setPendingDelete] = useState<Subscription | null>(null)
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
 
-  const listQuery = useQuery({ queryKey: ['subscriptions'], queryFn: listSubscriptions })
+  const listQuery = useQuery({
+    queryKey: ['subscriptions', scope],
+    queryFn: () => listSubscriptions(scope),
+  })
   const presetsQuery = useQuery({
     queryKey: ['subscriptions', 'presets'],
     queryFn: listPresets,
@@ -142,7 +153,9 @@ export default function Subscriptions() {
   const saveMutation = useMutation({
     mutationFn: (values: SubForm) => {
       const payload: SubscriptionInput = values
-      return editing ? updateSubscription(editing.id, payload) : createSubscription(payload)
+      return editing
+        ? updateSubscription(editing.id, payload, scope)
+        : createSubscription(payload, scope)
     },
     onSuccess: () => {
       toast.success(editing ? '订阅已更新' : '订阅已添加')
@@ -153,7 +166,7 @@ export default function Subscriptions() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteSubscription(id),
+    mutationFn: (id: string) => deleteSubscription(id, scope),
     onSuccess: () => {
       toast.success('订阅已删除')
       setPendingDelete(null)
@@ -163,7 +176,7 @@ export default function Subscriptions() {
   })
 
   const refreshMutation = useMutation({
-    mutationFn: (id: string) => refreshSubscription(id),
+    mutationFn: (id: string) => refreshSubscription(id, scope),
     onMutate: (id) => setRefreshingId(id),
     onSettled: () => setRefreshingId(null),
     onSuccess: (res) => {
@@ -178,7 +191,7 @@ export default function Subscriptions() {
   })
 
   const refreshAllMutation = useMutation({
-    mutationFn: refreshAllSubscriptions,
+    mutationFn: () => refreshAllSubscriptions(scope),
     onSuccess: (res) => {
       toast.success('全部刷新完成', `成功 ${res.refreshed} 个，失败 ${res.failed} 个`)
       invalidate()
@@ -188,7 +201,7 @@ export default function Subscriptions() {
 
   const toggleEnabled = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      updateSubscription(id, { enabled }),
+      updateSubscription(id, { enabled }, scope),
     onSuccess: () => invalidate(),
     onError: (err) => toast.error('更新失败', errorMessage(err)),
   })
@@ -196,7 +209,7 @@ export default function Subscriptions() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="订阅管理"
+        title={isGlobal ? '全局订阅' : '订阅管理'}
         description="订阅外部规则列表，系统定时自动更新，失败时保留上次规则"
         icon={<Shield className="size-5" />}
         actions={

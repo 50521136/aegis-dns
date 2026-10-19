@@ -21,7 +21,7 @@ import {
   updateRule,
 } from '@/api/rules'
 import { errorMessage } from '@/api/client'
-import type { Rule, RuleInput, RuleKind } from '@/api/types'
+import type { Rule, RuleInput, RuleKind, Scope } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -88,7 +88,10 @@ const ruleSchema = z
 
 type RuleForm = z.infer<typeof ruleSchema>
 
-export default function Rules() {
+// scope='global' 时这一页就是「全局规则」：同一份组件、同一套交互，
+// 只是 API 走 /admin/rules、文案与配额不同。复制一份页面会让两边越改越不一致。
+export default function Rules({ scope = 'user' }: { scope?: Scope }) {
+  const isGlobal = scope === 'global'
   const qc = useQueryClient()
   const toast = useToast()
 
@@ -107,20 +110,24 @@ export default function Rules() {
 
   const pageSize = 20
 
-  const queryKey = ['rules', page, search, kindFilter] as const
+  const queryKey = ['rules', scope, page, search, kindFilter] as const
   const listQuery = useQuery({
     queryKey,
     queryFn: () =>
-      listRules({
-        page,
-        page_size: pageSize,
-        q: search || undefined,
-        kind: kindFilter === 'all' ? undefined : kindFilter,
-      }),
+      listRules(
+        {
+          page,
+          page_size: pageSize,
+          q: search || undefined,
+          kind: kindFilter === 'all' ? undefined : kindFilter,
+        },
+        scope,
+      ),
   })
 
   const items = listQuery.data?.items ?? []
   const total = listQuery.data?.total ?? 0
+  const limit = listQuery.data?.limit ?? 0
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['rules'] })
@@ -161,7 +168,9 @@ export default function Rules() {
         qtypes: values.qtypes,
         enabled: values.enabled,
       }
-      return editing ? updateRule(editing.id, payload) : createRule(payload)
+      return editing
+        ? updateRule(editing.id, payload, scope)
+        : createRule(payload, scope)
     },
     onSuccess: () => {
       toast.success(editing ? '规则已更新' : '规则已创建')
@@ -172,7 +181,7 @@ export default function Rules() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteRule(id),
+    mutationFn: (id: string) => deleteRule(id, scope),
     onSuccess: () => {
       toast.success('规则已删除')
       setPendingDelete(null)
@@ -183,7 +192,7 @@ export default function Rules() {
   })
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: (ids: string[]) => deleteRules(ids),
+    mutationFn: (ids: string[]) => deleteRules(ids, scope),
     onSuccess: () => {
       toast.success('已批量删除')
       setBulkDeleteOpen(false)
@@ -194,7 +203,7 @@ export default function Rules() {
   })
 
   const importMutation = useMutation({
-    mutationFn: (content: string) => importRules(content, true),
+    mutationFn: (content: string) => importRules(content, true, scope),
     onSuccess: (res) => {
       toast.success('导入完成', `新增 ${res.created} 条，跳过 ${res.skipped} 条`)
       if (res.errors?.length) {
@@ -208,7 +217,8 @@ export default function Rules() {
   })
 
   const toggleEnabled = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => updateRule(id, { enabled }),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      updateRule(id, { enabled }, scope),
     onSuccess: () => invalidate(),
     onError: (err) => toast.error('更新失败', errorMessage(err)),
   })
@@ -244,8 +254,12 @@ export default function Rules() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="规则管理"
-        description="拦截、放行与改写规则，优先级：放行 > 改写 > 拦截"
+        title={isGlobal ? '全局规则' : '规则管理'}
+        description={
+          isGlobal
+            ? '对所有用户生效；用户可用自己的白名单覆盖这里的拦截'
+            : '拦截、放行与改写规则，优先级：放行 > 改写 > 拦截'
+        }
         icon={<ListFilter className="size-5" />}
         actions={
           <>
@@ -260,6 +274,28 @@ export default function Rules() {
           </>
         }
       />
+
+      {/* 配额读数：仪器化风格，用尽时变红提醒，而不是等到提交才报错 */}
+      {limit > 0 && (
+        <div className="flex items-center gap-3 text-xs">
+          <span className="eyebrow">配额</span>
+          <span
+            className={cn(
+              'readout text-sm',
+              total >= limit ? 'text-danger' : 'text-foreground',
+            )}
+          >
+            {total}
+          </span>
+          <span className="font-mono text-muted-foreground">/ {limit}</span>
+          <div className="h-1 w-24 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn('h-full rounded-full', total >= limit ? 'bg-danger' : 'bg-primary')}
+              style={{ width: `${Math.min(100, Math.round((total / limit) * 100))}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* 工具条 */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

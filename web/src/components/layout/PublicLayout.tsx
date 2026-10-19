@@ -1,8 +1,11 @@
 import { Link, Outlet } from 'react-router-dom'
-import { ShieldCheck } from 'lucide-react'
+import { ArrowRight, ShieldCheck } from 'lucide-react'
+import { useAuth } from '@/hooks/useAuth'
 import { ThemeToggle } from './ThemeToggle'
 
 export function PublicLayout() {
+  // 已登录时不能再显示「登录 / 免费注册」—— 刚注册完的用户看到这两个按钮会以为没登上。
+  const { isAuthenticated } = useAuth()
   return (
     <div className="flex min-h-[100dvh] flex-col bg-background">
       <header className="sticky top-0 z-30 border-b border-border/60 bg-background/85 backdrop-blur-lg">
@@ -15,18 +18,30 @@ export function PublicLayout() {
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <Link
-              to="/login"
-              className="rounded-xl px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              登录
-            </Link>
-            <Link
-              to="/register"
-              className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
-            >
-              免费注册
-            </Link>
+            {isAuthenticated ? (
+              <Link
+                to="/app"
+                className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+              >
+                进入控制台
+                <ArrowRight className="size-4" />
+              </Link>
+            ) : (
+              <>
+                <Link
+                  to="/login"
+                  className="rounded-xl px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  登录
+                </Link>
+                <Link
+                  to="/register"
+                  className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+                >
+                  免费注册
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>

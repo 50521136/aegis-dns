@@ -79,7 +79,7 @@ export default function Register() {
             <div className="mx-auto rounded-xl border border-border bg-white p-3">
               <QRCodeSVG value={dnsConfig.doh_url} size={132} level="M" />
             </div>
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               <CopyField label="DoH 地址" value={dnsConfig.doh_url} />
               <CopyField label="DoT 主机" value={`${dnsConfig.dot_host}:${dnsConfig.dot_port}`} />
               {dnsConfig.plain_dns && <CopyField label="普通 DNS" value={dnsConfig.plain_dns} />}
