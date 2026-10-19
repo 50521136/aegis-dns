@@ -122,17 +122,23 @@ export interface SubscriptionInput {
   enabled: boolean
 }
 
+/** 刷新现在走后台任务，接口立刻回 202，只有 pending 与 last_status。 */
 export interface SubscriptionRefreshResult {
   id: string
-  last_count: number
-  last_fetched: string
   last_status: string
-  duration_ms: number
+  pending?: boolean
+  // 同步模式下才会带上（保留字段，便于以后改回同步）
+  last_count?: number
+  last_fetched?: string
+  duration_ms?: number
 }
 
 export interface RefreshAllResult {
-  refreshed: number
-  failed: number
+  pending?: number
+  queued?: boolean
+  // 同步模式的旧字段，保留以兼容
+  refreshed?: number
+  failed?: number
 }
 
 export interface SubscriptionPreset {

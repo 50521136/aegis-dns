@@ -243,10 +243,23 @@ SUB=$(curl -s -X POST "$API/subscriptions" -H "Authorization: Bearer $TOKEN" -H 
   -d '{"name":"OISD Basic","url":"https://big.oisd.nl/domainswild","list_type":"blocklist","format":"auto","enabled":true}')
 SUBID=$(echo "$SUB" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 SUBCOUNT=$(echo "$SUB" | grep -o '"last_count":[0-9]*' | cut -d: -f2)
+# 新建订阅后的拉取走后台任务（避免慢线路上下载 60~90 秒时被客户端断开砍掉），
+# 接口立刻返回 pending。这里要轮询等它真正同步完，不能拿第一次响应判断。
+if [[ -n "$SUBID" && "${SUBCOUNT:-0}" -le 1000 ]]; then
+  for _ in $(seq 1 240); do
+    SROW=$(curl -s "$API/subscriptions" -H "Authorization: Bearer $TOKEN")
+    SUBCOUNT=$(echo "$SROW" | grep -o '"last_count":[0-9]*' | head -1 | cut -d: -f2)
+    SUBSTAT=$(echo "$SROW" | grep -o '"last_status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    [[ "${SUBCOUNT:-0}" -gt 1000 ]] && break
+    [[ "$SUBSTAT" == error* ]] && break
+    sleep 1
+  done
+fi
 if [[ -n "$SUBID" && "${SUBCOUNT:-0}" -gt 1000 ]]; then
   ok "订阅拉取成功，条目数 $SUBCOUNT"
 else
-  bad "订阅拉取异常: $(echo "$SUB" | head -c 300)"
+  # 报错要打轮询后的真实状态，而不是创建时的响应（那样看不出到底卡在哪）
+  bad "订阅拉取异常: 条目=${SUBCOUNT:-0} 状态=${SUBSTAT:-未知} 响应=$(echo "${SROW:-$SUB}" | head -c 240)"
 fi
 if [[ -n "$SUBID" ]]; then
   # OISD 的列表里没有 *.doubleclick.net（只有具体子域），所以挑一条确实存在的

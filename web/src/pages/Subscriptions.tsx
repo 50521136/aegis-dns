@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Clock,
   ListPlus,
+  Loader2,
   Pencil,
   Plus,
   RefreshCw,
@@ -80,6 +81,15 @@ const FORMAT_LABEL: Record<SubFormat, string> = {
 
 function StatusBadge({ status }: { status: string }) {
   if (!status) return <Badge variant="secondary">未同步</Badge>
+  // 后台拉取中：公共规则源在慢线路上要 60~90 秒，必须让用户看到「在下载」，
+  // 否则会以为是坏了、反复点刷新。
+  if (status.startsWith('pending'))
+    return (
+      <Badge variant="default">
+        <Loader2 className="size-3 animate-spin" />
+        同步中
+      </Badge>
+    )
   if (status === 'ok' || status.startsWith('ok'))
     return (
       <Badge variant="success">
@@ -110,6 +120,10 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
   const listQuery = useQuery({
     queryKey: ['subscriptions', scope],
     queryFn: () => listSubscriptions(scope),
+    // 后台同步期间每 3 秒轮询一次，全部同步完自动停止 —— 否则用户得手动刷新
+    // 才知道下载好了没有。
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((x) => x.last_status?.startsWith('pending')) ? 3000 : false,
   })
   const presetsQuery = useQuery({
     queryKey: ['subscriptions', 'presets'],
@@ -180,8 +194,11 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
     onMutate: (id) => setRefreshingId(id),
     onSettled: () => setRefreshingId(null),
     onSuccess: (res) => {
-      if (res.last_status === 'ok' || res.last_status.startsWith('ok')) {
-        toast.success('刷新完成', `拉取 ${formatNumber(res.last_count)} 条，耗时 ${res.duration_ms}ms`)
+      // 后台拉取，接口立刻回 202，结果靠列表轮询体现
+      if (res.pending || res.last_status?.startsWith('pending')) {
+        toast.info('已开始同步', '后台下载中，条目数会自动更新')
+      } else if (res.last_status === 'ok' || res.last_status?.startsWith('ok')) {
+        toast.success('刷新完成', `拉取 ${formatNumber(res.last_count ?? 0)} 条`)
       } else {
         toast.warning('刷新未成功', res.last_status || '未知状态')
       }
@@ -193,7 +210,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
   const refreshAllMutation = useMutation({
     mutationFn: () => refreshAllSubscriptions(scope),
     onSuccess: (res) => {
-      toast.success('全部刷新完成', `成功 ${res.refreshed} 个，失败 ${res.failed} 个`)
+      toast.info('已开始同步', `${res.pending ?? 0} 个订阅在后台下载中`)
       invalidate()
     },
     onError: (err) => toast.error('刷新失败', errorMessage(err)),

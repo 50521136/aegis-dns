@@ -4,12 +4,41 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
 	"github.com/50521136/aegis-dns/server/internal/subsub"
 )
+
+
+// refreshSubAsync 在后台拉取订阅，成功后重建快照。
+//
+// 关键点：不能用 r.Context()。拉取在这条线路上要 60~90 秒，浏览器/代理先断开时
+// 请求上下文被取消，下载直接中断（日志里是 context canceled），订阅就永远停在
+// 「0 条目 / 未同步」。拉取是用户已经确认过的后台任务，应当脱离请求生命周期。
+func (s *Server) refreshSubAsync(userID string, sub *model.Subscription, global bool) {
+	go func() {
+		// 比单次拉取超时多留一截，给解析和入库用。
+		fctx, cancel := context.WithTimeout(context.Background(), subsub.FetchTimeout+60*time.Second)
+		defer cancel()
+
+		res, err := s.subs.Refresh(fctx, sub)
+		if err != nil {
+			s.log.Warn("订阅刷新失败（后台）", "sub", sub.ID, "url", sub.URL, "err", err)
+			return
+		}
+		s.log.Info("订阅刷新完成（后台）", "sub", sub.ID, "entries", res.LastCount, "status", res.LastStatus)
+
+		// 条目变了必须重建快照，否则新拉下来的规则不会生效。
+		tctx, tcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer tcancel()
+		if err := s.touched(tctx, userID, global); err != nil {
+			s.log.Warn("刷新订阅后重建快照失败", "sub", sub.ID, "err", err)
+		}
+	}()
+}
 
 // validateSub 校验订阅字段。
 func validateSub(sub *model.Subscription) error {
@@ -162,23 +191,14 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 		return
 	}
 
-	// 新建后立即拉一次，让用户马上看到条目数，而不是等 24 小时。
-	// 拉取失败不算创建失败：订阅已经建好了，状态里会写明原因。
+	// 新建后拉一次，但不能同步跑在请求里：
+	// 这条线路上公共规则源要 60~90 秒才下完，浏览器/代理往往先断开，
+	// r.Context() 被取消后下载直接中断（日志里表现为 context canceled），
+	// 订阅就永远停在「0 条目 / 未同步」。改成后台任务 + 独立上下文，
+	// 请求立刻返回，前端靠轮询看进度。
 	if sub.Enabled {
-		if res, err := s.subs.Refresh(r.Context(), sub); err != nil {
-			s.log.Warn("新建订阅首次拉取失败", "sub", sub.ID, "err", err)
-			sub.LastStatus = subsub.DescribeStatus(err)
-		} else {
-			sub.LastCount = res.LastCount
-			sub.LastStatus = res.LastStatus
-			sub.LastFetched = res.FetchedAt
-		}
-	}
-	// 拉取完才有条目，这里重建快照；全局订阅要全量重建。
-	if sub.Enabled {
-		if err := s.touched(r.Context(), u.ID, global); err != nil {
-			s.log.Warn("新建订阅后重建快照失败", "sub", sub.ID, "err", err)
-		}
+		sub.LastStatus = model.StatusPending
+		s.refreshSubAsync(u.ID, sub, global)
 	}
 	writeJSON(w, http.StatusCreated, subToJSON(sub))
 }
@@ -300,31 +320,12 @@ func (s *Server) refreshSub(w http.ResponseWriter, r *http.Request, global bool)
 		writeError(w, http.StatusNotFound, CodeNotFound, "订阅不存在", nil)
 		return
 	}
-	res, err := s.subs.Refresh(r.Context(), sub)
-	if err != nil {
-		// 刷新失败仍然返回 200 + last_status：这是「操作已执行但结果失败」，
-		// 前端要展示的是订阅状态而不是一个红色 toast。
-		writeJSON(w, http.StatusOK, map[string]any{
-			"id":           sub.ID,
-			"last_count":   res.LastCount,
-			"last_fetched": rfc3339OrEmpty(res.FetchedAt),
-			"last_status":  res.LastStatus,
-			"duration_ms":  res.DurationMS,
-			"error":        err.Error(),
-		})
-		return
-	}
-	// 条目变了，必须重建快照，否则新拉下来的规则不会生效。
-	if err := s.touched(r.Context(), u.ID, global); err != nil {
-		s.log.Warn("刷新订阅后重建快照失败", "sub", sub.ID, "err", err)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id":           sub.ID,
-		"last_count":   res.LastCount,
-		"last_fetched": rfc3339OrEmpty(res.FetchedAt),
-		"last_status":  res.LastStatus,
-		"duration_ms":  res.DurationMS,
-		"not_modified": res.NotModified,
+	// 与新建同理：拉取慢且易被客户端断开，交给后台任务，接口立刻回 202。
+	s.refreshSubAsync(u.ID, sub, global)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"id":          sub.ID,
+		"last_status": model.StatusPending,
+		"pending":     true,
 	})
 }
 
@@ -346,23 +347,19 @@ func (s *Server) refreshAllSubs(w http.ResponseWriter, r *http.Request, global b
 		writeStoreError(w, err, "")
 		return
 	}
-	refreshed, failed := 0, 0
+	// 批量刷新同样不能跑在请求里：几份订阅串起来要好几十分钟，
+	// 请求早就超时了，而每次客户端断开都会把正在下的那份砍掉。
+	// 这里全部交给后台任务，接口立刻返回，用户去列表看进度。
+	pending := 0
 	for _, sub := range subs {
 		if !sub.Enabled {
 			continue
 		}
-		if _, err := s.subs.Refresh(r.Context(), sub); err != nil {
-			failed++
-			continue
-		}
-		refreshed++
+		sub.LastStatus = model.StatusPending
+		s.refreshSubAsync(u.ID, sub, global)
+		pending++
 	}
-	if refreshed > 0 {
-		if err := s.touched(r.Context(), u.ID, global); err != nil {
-			s.log.Warn("批量刷新订阅后重建快照失败", "err", err)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed, "failed": failed})
+	writeJSON(w, http.StatusAccepted, map[string]any{"pending": pending, "queued": true})
 }
 
 func (s *Server) handlePresets(w http.ResponseWriter, r *http.Request) {

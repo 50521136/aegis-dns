@@ -185,6 +185,12 @@ type Snapshot struct {
 //
 // v2 新增 Global 全局层与 UserSnap.UseGlobalRules。必须升版本：老 dnsd 会
 // 忽略 global 字段，于是全局规则静默失效 —— 这比拒绝加载更难排查。
+// StatusPending 表示订阅正在后台拉取，条目数还没更新。
+//
+// 前缀 "pending" 是给前端判断用的：看到它就该轮询，而不是显示成「未同步」这种
+// 看起来像出错的状态。公共规则源在慢线路上要 60~90 秒，必须让用户知道在下载中。
+const StatusPending = "pending: 同步中"
+
 const SnapshotSchema = 2
 
 // GlobalSettings 是管理员可改的全局设置（存 meta 表，前缀 setting.）。
