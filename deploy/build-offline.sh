@@ -15,8 +15,9 @@ npm run build >/dev/null 2>&1 || { echo "前端构建失败"; exit 1; }
 echo "    dist: $(find dist -type f | wc -l) 个文件"
 
 echo "==> 2/5 内嵌前端到 apid"
-rm -rf "$ROOT/server/internal/api/webdist/dist"
+# 保留 .gitkeep，否则构建后 git 会认为该目录被删除
 mkdir -p "$ROOT/server/internal/api/webdist/dist"
+find "$ROOT/server/internal/api/webdist/dist" -mindepth 1 ! -name .gitkeep -delete
 cp -r dist/* "$ROOT/server/internal/api/webdist/dist/"
 
 echo "==> 3/5 交叉编译"
