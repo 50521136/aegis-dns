@@ -151,8 +151,10 @@ echo "${DIM}[5/9] systemd 服务${NC}"
 if command -v systemctl >/dev/null 2>&1; then
   for u in aegis-dnsd aegis-apid; do
     if systemctl is-active --quiet "$u"; then
-      since=$(systemctl show "$u" -p ActiveEnterTimestamp --value)
-      restarts=$(systemctl show "$u" -p NRestarts --value)
+      # CentOS 7 的 systemctl 没有 --value，会直接报错并让两个值都为空；
+      # 用 cut 自己切 KEY=VALUE，老版本也能拿到。
+      since=$(systemctl show "$u" -p ActiveEnterTimestamp | cut -d= -f2-)
+      restarts=$(systemctl show "$u" -p NRestarts | cut -d= -f2-)
       ok "$u" "active（自 ${since}，重启 ${restarts} 次）"
     else
       bad "$u" "$(systemctl is-failed "$u" 2>/dev/null || echo inactive)"

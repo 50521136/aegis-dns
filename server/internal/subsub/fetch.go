@@ -17,8 +17,13 @@ import (
 // 超过就截断并告警，避免一个恶意/异常 URL 把内存吃光。
 const MaxBodySize = 20 << 20
 
-// FetchTimeout 是单次拉取的超时。
-const FetchTimeout = 30 * time.Second
+// FetchTimeout 是单次拉取的默认超时。
+//
+// 不能设成 30s：国内机房到公共规则源（OISD、anti-AD 这类放在境外 CDN 后面的）
+// 实测只有 20~30 KB/s，OISD 的 domainswild 压缩后 1.7MB 也要 60s 左右才下完，
+// 30s 会让真实用户的订阅大面积超时。这里给到 120s，并且允许按部署环境覆盖
+// （NewFetcherWithTimeout），慢线路可以调更大。
+const FetchTimeout = 120 * time.Second
 
 // FetchResult 是一次拉取的结果。
 type FetchResult struct {
@@ -43,11 +48,19 @@ type Fetcher struct {
 	client *http.Client
 }
 
-// NewFetcher 创建拉取器。
+// NewFetcher 用默认超时创建拉取器。
 func NewFetcher() *Fetcher {
+	return NewFetcherWithTimeout(FetchTimeout)
+}
+
+// NewFetcherWithTimeout 用指定超时创建拉取器；d <= 0 时退回默认值。
+func NewFetcherWithTimeout(d time.Duration) *Fetcher {
+	if d <= 0 {
+		d = FetchTimeout
+	}
 	return &Fetcher{
 		client: &http.Client{
-			Timeout: FetchTimeout,
+			Timeout: d,
 			// 不自动跟随无限重定向，最多 5 跳。
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
@@ -59,6 +72,14 @@ func NewFetcher() *Fetcher {
 	}
 }
 
+// timeout 返回本拉取器的超时，供 ctx 复用。
+func (f *Fetcher) timeout() time.Duration {
+	if f.client != nil && f.client.Timeout > 0 {
+		return f.client.Timeout
+	}
+	return FetchTimeout
+}
+
 // Fetch 拉取一个订阅。
 //
 // etag / lastModified 非空时会带上条件请求头，服务端返回 304 就跳过解析
@@ -68,7 +89,9 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 		return nil, fmt.Errorf("订阅地址必须以 http:// 或 https:// 开头")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	// 与 client.Timeout 保持一致：client 的超时是整轮（含重定向），
+	// ctx 的超时覆盖单次请求，两者取小更安全。
+	ctx, cancel := context.WithTimeout(ctx, f.timeout())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

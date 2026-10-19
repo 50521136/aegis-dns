@@ -16,7 +16,36 @@
 # ============================================================================
 set -uo pipefail
 
-API="http://127.0.0.1:8080"
+# CentOS 7 默认 locale 常常不是 UTF-8，探针一打印中文就 UnicodeEncodeError 崩掉；
+# 崩掉的输出里自然没有 "0.0.0.0"，会让「不该被拦」这类断言假通过。
+export PYTHONIOENCODING=utf-8
+export LC_ALL=${LC_ALL:-C.UTF-8}
+
+# 默认值不要写死端口：这套服务在别的机器上可能配 8080，也可能 3000（本机 8080 常被
+# docker 占用）。优先 --api 参数，其次 AEGIS_API 环境变量，最后从 config.yaml 读。
+_cfg_api_listen() {
+  local cfg="${AEGIS_CONFIG:-/opt/aegis/config.yaml}"
+  [[ -f "$cfg" ]] || return 1
+  # 只取 api: 段下的 listen，避免误抓 dns.listen
+  awk '
+    /^api:/        { inapi=1; next }
+    /^[a-zA-Z]/    { inapi=0 }
+    inapi && /^[[:space:]]+listen:/ {
+      sub(/^[[:space:]]*listen:[[:space:]]*/, ""); gsub(/["'"'"']/, ""); print; exit
+    }
+  ' "$cfg"
+}
+
+_port_of() { local a="$1"; [[ "$a" == *:* ]] && echo "${a##*:}" || echo "$a"; }
+
+if [[ -n "${AEGIS_API:-}" ]]; then
+  API="$AEGIS_API"
+elif _api_l=$(_cfg_api_listen); then
+  API="http://127.0.0.1:$(_port_of "$_api_l")"
+else
+  API="http://127.0.0.1:8080"
+fi
+
 DOMAIN=""
 UDP_TARGET="127.0.0.1:53"
 TCP_TARGET="127.0.0.1:53"
@@ -302,9 +331,15 @@ if [[ -n "$DOMAIN" && -n "$CID2" ]]; then
     || bad "路径式 DoH 未解析出租户 2（路径段被短路）→ $OUT"
 
   OUT=$($PROBE doh "$DOH_URL" --path "/dns-query/$CID2" --insecure verify-block.test 2>&1 | tail -1)
-  [[ "$OUT" != *"0.0.0.0"* ]] \
-    && ok "租户 2 不受租户 1 规则影响 → $OUT" \
-    || bad "跨租户规则泄漏：租户 2 命中了租户 1 的拦截 → $OUT"
+  # 只有拿到真正的解析结果才能判定；探针自己报错时输出里没有 0.0.0.0，
+  # 直接比字符串会假通过（这条曾经就这么漏过一次）。
+  if [[ "$OUT" != *"OK"* ]]; then
+    bad "探针未返回有效结果，无法判定隔离性 → $OUT"
+  elif [[ "$OUT" == *"0.0.0.0"* ]]; then
+    bad "跨租户规则泄漏：租户 2 命中了租户 1 的拦截 → $OUT"
+  else
+    ok "租户 2 不受租户 1 规则影响 → $OUT"
+  fi
 
   # 路径段是垃圾时不应被当成租户 id 认领，应回退到来源 IP（租户 1）
   OUT=$($PROBE doh "$DOH_URL" --path "/dns-query/notacliid" --insecure verify-block.test 2>&1 | tail -1)
