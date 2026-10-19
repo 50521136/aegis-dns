@@ -2,6 +2,7 @@ package subsub
 
 import (
 	"compress/gzip"
+	"errors"
 	"context"
 	"fmt"
 	"io"
@@ -84,6 +85,25 @@ func (f *Fetcher) timeout() time.Duration {
 	return FetchTimeout
 }
 
+// fetchAttempts 是网络层失败的重试次数。
+//
+// 境外公共规则源的 CDN 会间歇性重置连接（实测 read: connection reset by peer），
+// 单次失败不重试的话，用户要等下一个 24 小时周期才可能成功 —— 体感就是「订阅坏了」。
+// 只对网络层错误重试；HTTP 4xx/5xx 与内容错误一律不重试（重试也不会变好）。
+const fetchAttempts = 3
+
+// retryBackoff 是第 n 次重试前的等待。
+func retryBackoff(n int) time.Duration {
+	switch n {
+	case 1:
+		return 2 * time.Second
+	case 2:
+		return 6 * time.Second
+	default:
+		return 15 * time.Second
+	}
+}
+
 // Fetch 拉取一个订阅。
 //
 // etag / lastModified 非空时会带上条件请求头，服务端返回 304 就跳过解析
@@ -98,6 +118,39 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 	ctx, cancel := context.WithTimeout(ctx, f.timeout())
 	defer cancel()
 
+	// 网络层重试：只在请求还没拿到响应时重试，避免重复下载已经成功的内容。
+	var lastErr error
+	for attempt := 1; attempt <= fetchAttempts; attempt++ {
+		res, err := f.fetchOnce(ctx, url, etag, lastModified)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		// 带状态码的错误（HTTP 4xx/5xx）重试没有意义，直接返回。
+		var se *statusError
+		if errors.As(err, &se) {
+			return nil, err
+		}
+		if attempt < fetchAttempts {
+			select {
+			case <-time.After(retryBackoff(attempt)):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("请求订阅失败: %w", ctx.Err())
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// statusError 表示订阅源返回了非 200 状态码，属于确定性失败，不应重试。
+type statusError struct {
+	Code int
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("订阅返回 HTTP %d", e.Code) }
+
+// fetchOnce 是一次完整的拉取尝试。
+func (f *Fetcher) fetchOnce(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("构造请求失败: %w", err)
@@ -131,7 +184,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 	}
 	if resp.StatusCode != http.StatusOK {
 		// 4xx/5xx 一律视为失败，让调用方保留旧数据（文档 6.4）。
-		return nil, fmt.Errorf("订阅返回 HTTP %d", resp.StatusCode)
+		return nil, &statusError{Code: resp.StatusCode}
 	}
 
 	var reader io.Reader = resp.Body
