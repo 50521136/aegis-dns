@@ -32,3 +32,12 @@ server/internal/api/webdist/dist/*
 
 # 发布产物缓存（离线部署用，不入库）
 .release-cache/
+
+# 本地测试脚手架（起实例、造数据、临时二进制），不进仓库
+.admonly/
+.uicheck/
+.stat-check/
+.verify-global/
+.seed-*.sh
+.check-*.py
+.start-*.sh

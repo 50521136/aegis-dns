@@ -1,3 +1,0 @@
-time=2026-10-19T18:30:09.555+08:00 level=WARN msg=已创建初始管理员账号，请登录后立即修改密码 username=admin
-time=2026-10-19T18:30:09.555+08:00 level=WARN msg="密码已入库，建议从 config.yaml 中删除 api.admin.password，并保留 .env 里的 ADMIN_PASSWORD 作为应急"
-time=2026-10-19T18:30:09.557+08:00 level=WARN msg="证书加载失败，dev_tls 已开启，改用自签证书" err="读取证书 /root/aegis-dns/.admonly/data/certs/fullchain.pem 失败: open /root/aegis-dns/.admonly/data/certs/fullchain.pem: no such file or directory"
