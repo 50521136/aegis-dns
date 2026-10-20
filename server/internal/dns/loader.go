@@ -98,8 +98,9 @@ func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
 	// 一个字节都没动。按 ChangedUsers 判断的结果是缓存被反复整体清空
 	// （线上实测 24 小时 33 次），命中率从理论 86% 掉到 12%。
 	if prev.GlobalFingerprint != snap.GlobalFingerprint {
+		before := c.Len()
 		c.Flush()
-		l.log.Info("全局层或默认值变更，缓存已整体清空")
+		l.log.Info("全局层或默认值变更，缓存已整体清空", "entries_dropped", before)
 		return
 	}
 
@@ -122,13 +123,14 @@ func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
 	}
 
 	if len(changed) == 0 {
-		// 什么都没变：不清缓存。这是绝大多数重建的真实情况。
-		l.log.Debug("配置重建但规则无变化，保留缓存")
+		// 什么都没变：不清缓存。这是绝大多数重建的真实情况 ——
+		// 订阅刷新、配额调整、会员天数变动都会走到这里。
+		l.log.Info("配置重建但规则无变化，保留缓存", "cache_entries", c.Len())
 		return
 	}
 	changed = append(changed, "") // fallback 的条目也要一起清
 	c.FlushUsers(changed)
-	l.log.Info("规则变更，已定向失效缓存", "users", len(changed)-1)
+	l.log.Info("规则变更，已定向失效缓存", "users", len(changed)-1, "cache_entries", c.Len())
 }
 
 // LoadOnce 读取并应用一次快照。
