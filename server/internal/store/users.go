@@ -13,13 +13,13 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, created_at`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, created_at`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
-	var enabled, useGlobal, rulesOn, subsOn int
+	var enabled, useGlobal, rulesOn, subsOn, customUsed int
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
-		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &u.CreatedAt)
+		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -27,6 +27,7 @@ func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	u.UseGlobalRules = useGlobal != 0
 	u.RulesEnabled = rulesOn != 0
 	u.SubsEnabled = subsOn != 0
+	u.CustomIDUsed = customUsed != 0
 	return &u, nil
 }
 
@@ -58,10 +59,10 @@ func (s *Store) CreateUser(ctx context.Context, username, email, passwordHash, r
 			CreatedAt:    now,
 		}
 		_, err := s.write.ExecContext(ctx,
-			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			u.ID, u.Username, u.Email, u.PasswordHash, u.Role, u.ClientID,
 			boolInt(u.Enabled), boolInt(u.UseGlobalRules), u.IDResetCount,
-			boolInt(u.RulesEnabled), boolInt(u.SubsEnabled), u.CreatedAt)
+			boolInt(u.RulesEnabled), boolInt(u.SubsEnabled), boolInt(u.CustomIDUsed), u.CreatedAt)
 		if err == nil {
 			return u, nil
 		}
@@ -359,6 +360,59 @@ func (s *Store) ResetClientID(ctx context.Context, uid string) (string, error) {
 		return "", fmt.Errorf("重置 client_id 失败: %w", err)
 	}
 	return "", fmt.Errorf("重置 client_id 失败: 多次冲突")
+}
+
+// SetCustomClientID 把用户的 client_id 改成他自己指定的值，并标记这一次机会已用。
+//
+// 并发安全靠 SQL 里的 `custom_id_used = 0` 条件：两个请求同时提交时只有一个
+// 能更新到行（RowsAffected 为 1），另一个拿到 ErrNotFound —— 在 Go 侧先查后写
+// 挡不住这种竞争，而「只能一次」恰恰是最容易被连点两下绕过的地方。
+func (s *Store) SetCustomClientID(ctx context.Context, uid, cid string) error {
+	res, err := s.write.ExecContext(ctx,
+		`UPDATE users SET client_id = ?, custom_id_used = 1 WHERE id = ? AND custom_id_used = 0`,
+		cid, uid)
+	if err != nil {
+		if isUniqueViolation(err, "users.client_id") {
+			return ErrClientIDTaken
+		}
+		return fmt.Errorf("设置 client_id 失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// 要么用户不存在，要么机会已经用过了；由调用方再查一次区分。
+		return ErrNotFound
+	}
+	return nil
+}
+
+// AdminSetClientID 由管理员改 client_id，不受「只能一次」限制，也不消耗用户的机会。
+//
+// 管理员是兜底手段：用户填错、或者机会用完之后还想换，只能走这里。
+func (s *Store) AdminSetClientID(ctx context.Context, uid, cid string) error {
+	res, err := s.write.ExecContext(ctx,
+		`UPDATE users SET client_id = ? WHERE id = ?`, cid, uid)
+	if err != nil {
+		if isUniqueViolation(err, "users.client_id") {
+			return ErrClientIDTaken
+		}
+		return fmt.Errorf("设置 client_id 失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClientIDTaken 判断某个 client_id 是否已被别人占用。
+//
+// excludeUID 用于「改自己的」场景：用户提交和当前相同的值时不该判成撞车。
+func (s *Store) ClientIDTaken(ctx context.Context, cid, excludeUID string) (bool, error) {
+	var n int
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE client_id = ? AND id <> ?`, cid, excludeUID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("检查 client_id 是否占用失败: %w", err)
+	}
+	return n > 0, nil
 }
 
 // BulkDeleteUsers 批量删除用户，返回实际删除数量。

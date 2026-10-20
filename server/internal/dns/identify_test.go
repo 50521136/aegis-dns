@@ -26,9 +26,9 @@ import (
 //
 // 所以下面既测纯函数，也测完整的线索解析顺序。
 //
-// 注意测试里用的 client_id 都是 [a-z2-7]{10} 形状的合法值。
-// 设计文档里的示例 "k7m2p9xq4a" 含字符 '9'，与它自己的字符集规则矛盾
-// （字符集排除 0/1/8/9），照抄那个示例会让测试对不上实现 —— 以字符集为准。
+// 注意：系统**生成**的 client_id 是 [a-z2-7]{10}（排除易混的 0/1/8/9），
+// 但**校验**接受 [a-z0-9]{4,32} —— 用户自定义 client_id 时不该被内部字符集绑住。
+// 所以下面既覆盖生成形态，也覆盖含 0/1/8/9 的自定义形态。
 
 func TestFirstLabelOnlyAcceptsClientIDShape(t *testing.T) {
 	cases := []struct {
@@ -42,13 +42,17 @@ func TestFirstLabelOnlyAcceptsClientIDShape(t *testing.T) {
 		{"k7m2pqx4ab", "k7m2pqx4ab", "裸 client_id"},
 		{"dns.example.com", "", "裸域名：首段 'dns' 太短，不是 client_id，必须放空"},
 		{"www.example.com", "", "常见子域不是 client_id"},
-		{"520342.xyz", "", "数字域名：含字符集外的 '0'"},
+		// 纯数字域名：校验放宽到 0-9 之后 "520342" 形状合法，会被当成 client_id 候选。
+		// 查不到就自然回落到来源 IP，所以放行是安全的；真正的风险是
+		// 有人抢注这个 id 把裸域认领走，那在 API 层拦（见 CheckCustomClientID 的调用方）。
+		{"520342.xyz", "520342", "纯数字首段：形状合法（0-9 已放开）"},
+		{"my-ns.example.com", "", "含连字符：不在字符集内"},
 		{"127.0.0.1", "", "IPv4 字面量"},
 		{"127.0.0.1:443", "", "带端口"},
 		{"[::1]:443", "", "IPv6 字面量"},
 		{"", "", "空 Host"},
 		{"ab", "", "长度不足 4"},
-		{"k7m2p9xq4a.dns.example.com", "", "文档示例含 '9'，按字符集规则应判为非法"},
+		{"k7m2p9xq4a.dns.example.com", "k7m2p9xq4a", "含 '9'：自定义 id 已允许 0-9"},
 	}
 	for _, c := range cases {
 		if got := firstLabel(c.host); got != c.want {
@@ -69,7 +73,7 @@ func TestDoHPathClientID(t *testing.T) {
 		{"/dns-query/", ""},
 		{"/dns-query", ""},
 		{"/dns-query/ab", ""},     // 太短
-		{"/dns-query/520342", ""}, // 含字符集外的 '0'
+		{"/dns-query/520342", "520342"}, // 含 '0'：自定义 id 已允许 0-9
 		{"/other/k7m2pqx4ab", ""}, // 不是 DoH 路径，绝不能把 "other" 当租户
 		{"/", ""},
 		{"", ""},

@@ -4,11 +4,13 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
+  Check,
   CheckCircle2,
   Copy,
   Download,
   KeyRound,
   LogOut,
+  Pencil,
   Plus,
   RefreshCw,
   Settings as SettingsIcon,
@@ -25,6 +27,7 @@ import {
   importConfig,
   listTokens,
   resetMyClientID,
+  setMyClientID,
 } from '@/api/me'
 import { checkUpdate, applyUpdate } from '@/api/admin'
 import { errorMessage } from '@/api/client'
@@ -716,6 +719,35 @@ function ResetIDRow() {
   })
 
   const used = meQuery.data?.id_reset_count ?? 0
+  const customUsed = meQuery.data?.custom_id_used ?? false
+
+  // 自定义 ID：只在还没用过时展开输入框，用过之后直接显示状态，
+  // 免得用户填完才被后端拒一次。
+  const [custom, setCustom] = useState('')
+  const [editing, setEditing] = useState(false)
+  const customMutation = useMutation({
+    mutationFn: () => setMyClientID(custom.trim().toLowerCase()),
+    onSuccess: (r) => {
+      toast.success('接入 ID 已更新', `新 ID：${r.client_id}，请到「我的 DNS」重新获取地址。`)
+      setEditing(false)
+      setCustom('')
+      qc.invalidateQueries({ queryKey: ['me'] })
+      qc.invalidateQueries({ queryKey: ['dns-config'] })
+    },
+    onError: (err) => toast.error('设置失败', errorMessage(err)),
+  })
+
+  // 前端先做一遍和后端一致的校验，只为让用户边打边看到问题；
+  // 真正的判定仍在后端（长度、字符集、占用、次数）。
+  const customError = (() => {
+    const v = custom.trim().toLowerCase()
+    if (!v) return ''
+    if (v.length < 6) return `至少 6 位，当前 ${v.length} 位`
+    if (!/^[a-z0-9]+$/.test(v)) return '只能用小写字母和数字'
+    if (v === meQuery.data?.client_id) return '这就是你当前的接入 ID'
+    return ''
+  })()
+  const canSubmit = custom.trim().length > 0 && !customError
 
   return (
     <>
@@ -730,6 +762,66 @@ function ResetIDRow() {
           <RefreshCw />
           重置接入 ID
         </Button>
+      </div>
+
+      <div className="rounded-xl border border-border p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">自定义接入 ID</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {customUsed
+                ? '已使用过，只能设置一次。如需再改请联系管理员。'
+                : '可以自己指定，6 位以上，仅小写字母和数字。只能设置一次。'}
+            </p>
+          </div>
+          {!customUsed && !editing && (
+            <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+              <Pencil />
+              自定义
+            </Button>
+          )}
+          {customUsed && <Badge variant="secondary">已使用</Badge>}
+        </div>
+
+        {!customUsed && editing && (
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <Input
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+                placeholder="例如 shenzhen01"
+                className="font-mono"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            {customError && <p className="text-xs text-danger">{customError}</p>}
+            <p className="text-xs text-muted-foreground">
+              设置后旧的接入地址会立刻失效，所有设备都要重新配置。
+            </p>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                loading={customMutation.isPending}
+                disabled={!canSubmit}
+                onClick={() => customMutation.mutate()}
+              >
+                <Check />
+                保存
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setEditing(false)
+                  setCustom('')
+                }}
+              >
+                取消
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

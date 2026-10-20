@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, KeyRound, RefreshCw, Search, Trash2, Users } from 'lucide-react'
+import { AtSign, Check, KeyRound, RefreshCw, Search, Trash2, Users } from 'lucide-react'
 import {
   bulkDeleteUsers,
   deleteUser,
   getUsersUsage,
   listUsers,
   resetUserClientID,
+  setUserClientID,
   setUserPassword,
   updateUser,
 } from '@/api/admin'
@@ -67,6 +68,8 @@ export function UsersPanel() {
   const [pwUser, setPwUser] = useState<User | null>(null)
   const [pwValue, setPwValue] = useState('')
   const [resetUser, setResetUser] = useState<User | null>(null)
+  const [cidUser, setCidUser] = useState<User | null>(null)
+  const [cidValue, setCidValue] = useState('')
 
   const usersQuery = useQuery({
     queryKey: ['admin', 'users', page, pageSize, q],
@@ -163,6 +166,17 @@ export function UsersPanel() {
       setPwValue('')
     },
     onError: (err) => toast.error('修改密码失败', errorMessage(err)),
+  })
+
+  const cidMutation = useMutation({
+    mutationFn: () => setUserClientID(cidUser!.id, cidValue.trim().toLowerCase()),
+    onSuccess: (r) => {
+      toast.success('接入 ID 已设置', `新 ID：${r.client_id}`)
+      setCidUser(null)
+      setCidValue('')
+      invalidate()
+    },
+    onError: (err) => toast.error('设置失败', errorMessage(err)),
   })
 
   const resetMutation = useMutation({
@@ -389,6 +403,18 @@ export function UsersPanel() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              onClick={() => {
+                                setCidUser(u)
+                                setCidValue(u.client_id)
+                              }}
+                              aria-label="自定义接入 ID"
+                              title="自定义接入 ID（不消耗用户的次数）"
+                            >
+                              <AtSign />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
                               onClick={() => setResetUser(u)}
                               aria-label="重置接入 ID"
                               title="重置接入 ID"
@@ -466,6 +492,60 @@ export function UsersPanel() {
         loading={resetMutation.isPending}
         onConfirm={() => resetMutation.mutate()}
       />
+
+      {/* 自定义接入 ID */}
+      <Dialog
+        open={Boolean(cidUser)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setCidUser(null)
+            setCidValue('')
+          }
+        }}
+      >
+        <DialogContent className="md:max-w-md">
+          <DialogHeader>
+            <DialogTitle>自定义接入 ID</DialogTitle>
+            <DialogDescription>
+              直接指定「{cidUser?.username}」的子域名前缀。6 位以上，仅小写字母和数字。
+              这不消耗用户那一次自助机会。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="cid-input">接入 ID</Label>
+            <Input
+              id="cid-input"
+              value={cidValue}
+              onChange={(e) => setCidValue(e.target.value)}
+              className="font-mono"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {cidValue.trim() && !/^[a-z0-9]{6,32}$/.test(cidValue.trim().toLowerCase()) && (
+              <p className="text-xs text-danger">需要 6-32 位，只能用小写字母和数字</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setCidUser(null)
+                setCidValue('')
+              }}
+            >
+              取消
+            </Button>
+            <Button
+              loading={cidMutation.isPending}
+              disabled={!/^[a-z0-9]{6,32}$/.test(cidValue.trim().toLowerCase())}
+              onClick={() => cidMutation.mutate()}
+            >
+              <Check />
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 改密码 */}
       <Dialog

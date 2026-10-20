@@ -46,6 +46,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 			"id_reset_count":   u.IDResetCount,
 			"rules_enabled":    u.RulesEnabled,
 			"subs_enabled":     u.SubsEnabled,
+			"custom_id_used":   u.CustomIDUsed,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

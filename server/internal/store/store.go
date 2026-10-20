@@ -29,6 +29,12 @@ import (
 // ErrNotFound 表示目标记录不存在。
 var ErrNotFound = errors.New("记录不存在")
 
+// ErrClientIDTaken 表示目标 client_id 已被其他用户占用。
+//
+// 单独一个错误值是为了让 handler 能回 409 而不是笼统的 500 ——
+// 「这个 ID 被占了」是用户能自己解决的，得让他看到。
+var ErrClientIDTaken = errors.New("该接入 ID 已被占用")
+
 // Store 是数据访问入口。
 type Store struct {
 	read  *sql.DB

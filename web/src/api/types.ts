@@ -17,6 +17,8 @@ export interface User {
   /** 管理员对该用户的规则/订阅开关 */
   rules_enabled?: boolean
   subs_enabled?: boolean
+  /** 是否已用掉「自定义接入 ID」那一次机会 */
+  custom_id_used?: boolean
 }
 
 export interface Tokens {

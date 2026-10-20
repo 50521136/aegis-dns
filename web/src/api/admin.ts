@@ -87,6 +87,16 @@ export async function resetUserClientID(
   return data
 }
 
+/**
+ * 管理员直接指定某个用户的接入 ID。
+ *
+ * 不消耗该用户「自定义一次」的机会 —— 用户填错字或机会用完之后想再改都靠这里。
+ */
+export async function setUserClientID(id: string, clientID: string): Promise<{ client_id: string }> {
+  const { data } = await api.post(`/admin/users/${id}/client-id`, { client_id: clientID })
+  return data
+}
+
 export async function setUserPassword(id: string, password: string): Promise<void> {
   await api.post(`/admin/users/${id}/password`, { password })
 }

@@ -41,6 +41,17 @@ export async function resetMyClientID(): Promise<ResetClientIDResult> {
   return data
 }
 
+/**
+ * 自定义接入 ID。
+ *
+ * 每个用户只有一次机会，后端会在已用过时返回 403 CUSTOM_ID_USED。
+ * 成功后返回新的 DNS 接入配置，旧子域名立刻失效。
+ */
+export async function setMyClientID(clientID: string): Promise<ResetClientIDResult> {
+  const { data } = await api.post<ResetClientIDResult>('/me/client-id', { client_id: clientID })
+  return data
+}
+
 export async function downloadMobileConfig(clientID: string): Promise<void> {
   const { data } = await api.get('/me/mobileconfig', { responseType: 'blob' })
   const url = URL.createObjectURL(data as Blob)

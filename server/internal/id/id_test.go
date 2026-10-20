@@ -35,13 +35,18 @@ func TestClientIDUniqueness(t *testing.T) {
 }
 
 func TestValidClientID(t *testing.T) {
-	// 注意：设计文档 3.1 的「示例 k7m2p9xq4a」与同表给出的字符集
-	// （a-z + 2-7，即 ^[a-z2-7]{10}$）自相矛盾 —— 该示例含 '9'，按字符集
-	// 规则本应非法。实现以显式的字符集规则为准，示例仅视为笔误。
-	valid := []string{"k7m2pqx4ab", "abcd", "a2345672345672345672345672345672"}
+	// 校验接受 a-z0-9，长度 4-32。
+	//
+	// 生成侧仍用窄字符集（a-z2-7）避免 0/o、1/l 混淆，但校验侧必须更宽：
+	// 用户自定义 client_id 时不该被内部约定绑住，叫 shenzhen01 是合理诉求。
+	// 校验放宽不会让旧的合法值失效，也不会让非 ASCII / 符号混进来。
+	valid := []string{
+		"k7m2pqx4ab", "abcd", "a2345672345672345672345672345672",
+		"k7m2p9xq4a", "shenzhen01", "k7m2pqx4a0", "k7m2pqx4a8", "k7m2pqx4a9",
+	}
 	invalid := []string{
-		"", "abc", "K7M2PQX4AB", "k7m2p9xq4a", "k7m2pqx4ab!", strings.Repeat("a", 33),
-		"k7m2pqx4a0", "k7m2pqx4a1", "k7m2pqx4a8", "k7m2pqx4a9",
+		"", "abc", "K7M2PQX4AB", "k7m2pqx4ab!", strings.Repeat("a", 33),
+		"home-dns", "home.dns", "home_dns", "中文中文中文",
 	}
 	for _, v := range valid {
 		if !ValidClientID(v) {
@@ -92,5 +97,50 @@ func TestNewPAT(t *testing.T) {
 			t.Fatalf("PAT 重复: %q", p)
 		}
 		seen[p] = true
+	}
+}
+
+func TestCheckCustomClientID(t *testing.T) {
+	cases := []struct {
+		in   string
+		ok   bool
+		why  string
+	}{
+		{"shenzhen01", true, "6 位以上小写字母+数字"},
+		{"abcdef", true, "刚好 6 位"},
+		{"myhome8888", true, "含 8"},
+		{"home01", true, "含 0 和 1"},
+		{"abcde", false, "5 位，不够"},
+		{"", false, "空"},
+		{"home-dns", false, "含连字符"},
+		{"home.dns", false, "含点"},
+		{"home_dns", false, "含下划线"},
+		{"HomeDns", false, "含大写（调用方会先转小写，这里测原始校验）"},
+		{"中文中文中文", false, "非 ASCII"},
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false, "33 位，超长"},
+	}
+	for _, c := range cases {
+		err := CheckCustomClientID(c.in)
+		if (err == nil) != c.ok {
+			t.Errorf("CheckCustomClientID(%q) err=%v，期望 ok=%v（%s）", c.in, err, c.ok, c.why)
+		}
+	}
+}
+
+// 生成侧的字符集必须保持窄：0/1/8/9 在不少字体里和 o/l 分不清。
+func TestGeneratedClientIDStaysAmbiguityFree(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		s := NewClientID()
+		if len(s) != ClientIDLen {
+			t.Fatalf("生成长度 %d，期望 %d", len(s), ClientIDLen)
+		}
+		for _, c := range s {
+			if strings.ContainsRune("0189", c) {
+				t.Fatalf("生成的 client_id %q 含易混字符 %q", s, string(c))
+			}
+		}
+		if !ValidClientID(s) {
+			t.Fatalf("生成的 client_id %q 未通过校验", s)
+		}
 	}
 }

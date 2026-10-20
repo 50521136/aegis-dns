@@ -86,7 +86,24 @@ func UUIDv7() string {
 
 // 客户端 ID 字符集：base32 的小写形式（RFC 4648 §6），天然排除 0/1/8/9，
 // 避免在日志、截图、口述中与 O/I/B 混淆。
+// clientIDAlphabet 是**生成** client_id 用的字符集。
+//
+// 刻意去掉 0/1/8/9：这些字符和 o/l 在不少字体里几乎分不清，用户手抄会抄错。
 const clientIDAlphabet = "abcdefghijklmnopqrstuvwxyz234567"
+
+// clientIDAccepted 是**校验**时接受的字符集，比生成用的宽。
+//
+// 放宽的原因：用户自定义 client_id 时不该被「不能打 0 和 1」这种内部约定绑住，
+// 想叫 shenzhen01 就该能叫。生成侧仍然用窄字符集，所以系统发的 ID 不会有歧义。
+// 注意这里只加 0-9，不加连字符和点：client_id 是 DNS 标签的首段，
+// 允许 "-" 会让 "a--b"、"-abc" 这类边界形态混进来，收益不值这个复杂度。
+const clientIDAccepted = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+// CustomClientIDMinLen 是用户自定义 client_id 的最小长度。
+//
+// 比生成的 10 位短，但不能太短：client_id 是子域名的首段，太短既容易撞车，
+// 也更容易被扫描猜到别人的租户。
+const CustomClientIDMinLen = 6
 
 // ClientIDLen 是 client_id 的长度，也是它的子域名标签长度。
 const ClientIDLen = 10
@@ -130,11 +147,37 @@ func ValidClientID(s string) bool {
 		return false
 	}
 	for _, c := range s {
-		if !strings.ContainsRune(clientIDAlphabet, c) {
+		if !strings.ContainsRune(clientIDAccepted, c) {
 			return false
 		}
 	}
 	return true
+}
+
+// CheckCustomClientID 校验用户自定义的 client_id，返回人类可读的拒绝原因。
+//
+// 和 ValidClientID 分开是因为这里的规则是给用户看的：
+// 长度下限更高（6 位），而且错误信息要说清楚到底哪一条不满足 ——
+// 只回一个 false，前端就只能写「格式不正确」，用户根本不知道该改什么。
+func CheckCustomClientID(s string) error {
+	if s == "" {
+		return fmt.Errorf("请填写接入 ID")
+	}
+	if len(s) < CustomClientIDMinLen {
+		return fmt.Errorf("接入 ID 至少 %d 位，当前 %d 位", CustomClientIDMinLen, len(s))
+	}
+	if len(s) > 32 {
+		return fmt.Errorf("接入 ID 最多 32 位，当前 %d 位", len(s))
+	}
+	for _, c := range s {
+		if c >= 'A' && c <= 'Z' {
+			return fmt.Errorf("只能用小写字母和数字，不支持大写")
+		}
+		if !strings.ContainsRune(clientIDAccepted, c) {
+			return fmt.Errorf("只能用小写字母和数字，不能包含 %q", string(c))
+		}
+	}
+	return nil
 }
 
 // NewPAT 生成一个长期 API Token（PAT）。

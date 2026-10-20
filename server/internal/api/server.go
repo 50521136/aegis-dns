@@ -113,6 +113,8 @@ func (s *Server) Handler() http.Handler {
 			// iOS / macOS 的加密 DNS 描述文件，系统级批量下发用
 			r.Get("/me/mobileconfig", s.handleMobileConfig)
 			r.Post("/me/reset-client-id", s.handleResetMyClientID)
+			// 自定义 client_id：每个用户只有一次机会，之后只能找管理员
+			r.Post("/me/client-id", s.handleSetMyClientID)
 			r.Get("/me/export", s.handleExport)
 			r.Post("/me/import", s.handleImport)
 			r.Get("/me/tokens", s.handleListTokens)
@@ -179,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/users/bulk-delete", s.handleAdminBulkDeleteUsers)
 				r.Post("/users/{id}/reset-client-id", s.handleAdminResetClientID)
 				r.Post("/users/{id}/password", s.handleAdminSetPassword)
+				// 管理员直接指定 client_id，不消耗用户那次自定义机会
+				r.Post("/users/{id}/client-id", s.handleAdminSetClientID)
 				r.Get("/users/usage", s.handleAdminUsersQuota)
 			r.Post("/maintenance/cleanup", s.handleAdminCleanup)
 				r.Get("/settings", s.handleAdminGetSettings)

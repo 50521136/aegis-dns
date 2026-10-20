@@ -34,6 +34,12 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // CodeFeatureDisabled 表示该功能被关闭（全局总开关或该用户单独开关）。
 const CodeFeatureDisabled = "FEATURE_DISABLED"
 
+// CodeCustomIDUsed 表示「自定义接入 ID」那一次机会已经用掉了。
+const CodeCustomIDUsed = "CUSTOM_ID_USED"
+
+// CodeClientIDTaken 表示目标接入 ID 已被别的用户占用。
+const CodeClientIDTaken = "CLIENT_ID_TAKEN"
+
 // checkUserFeature 检查租户侧功能是否对该用户开放。
 //
 // 两层开关取「与」：全局设置里的总开关（管理员一键停掉所有人的规则/订阅），

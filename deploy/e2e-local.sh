@@ -458,6 +458,68 @@ echo "$CL" | grep -q '"total"' && ok "手动清理接口可用" || bad "清理�
 # retention=0 时统计清理任务根本不会加入，key 直接不出现（而不是删了 0 行）
 echo "$CL" | grep -q '"query_rollup"' && bad "统计被误删: $CL" || ok "统计保留 0 天时不按时间删（保护生效）"
 
+hdr "自定义接入 ID（一次机会）"
+# 必须从 /me 取当前 ID：前面的「重置接入 ID」用例已经把注册时的 $CID 换掉了，
+# 拿旧变量去比会误判成「值不同」，进而把这一次机会白白用掉。
+CUR=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+echo "  当前 client_id: $CUR"
+# 太短
+code=$(curl -s -o /tmp/e2e_cid1.json -w '%{http_code}' -X POST "$API/me/client-id" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"client_id":"abcde"}')
+[[ "$code" == "400" ]] && ok "5 位被拒（400）" || bad "短 ID 未拦住：$code"
+# 非法字符
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/client-id" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"client_id":"home-dns"}')
+[[ "$code" == "400" ]] && ok "含连字符被拒（400）" || bad "非法字符未拦住：$code"
+# 与主域名首段冲突（域名为 dns.e2e.local，首段是 dns）
+code=$(curl -s -o /tmp/e2e_cid2.json -w '%{http_code}' -X POST "$API/me/client-id" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"client_id":"dns"}')
+[[ "$code" == "400" ]] && ok "与主域名首段冲突被拒（400）" || bad "主域名首段未拦：$code"
+# 和当前 ID 相同
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/client-id" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"client_id\":\"$CUR\"}")
+[[ "$code" == "400" ]] && ok "与当前 ID 相同被拒（400，不消耗机会）" || bad "同值未拦：$code"
+
+# 正常设置
+NEWID="myhome$RANDOM"
+SET=$(curl -s -X POST "$API/me/client-id" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "{\"client_id\":\"$NEWID\"}")
+echo "$SET" | grep -q "\"client_id\":\"$NEWID\"" && ok "自定义成功：$NEWID" || bad "自定义失败: $SET"
+echo "$SET" | grep -q "\"old_client_id\":\"$CUR\"" && ok "返回了旧 ID" || bad "未返回旧 ID"
+
+# 改完之后 DNS 层必须立刻认新 ID（快照要重建）
+sleep 3
+OUT=$($PROBE dot 127.0.0.1:18853 customcheck.example.com A --sni "$NEWID.dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "$OUT" | grep -qiE 'NOERROR|无应答' && ok "新 ID 在 DoT 上立刻生效" || bad "新 ID 未生效: $OUT"
+OUT=$($PROBE dot 127.0.0.1:18853 customcheck.example.com A --sni "$CUR.dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "  旧 ID 现在: $OUT"
+
+# 第二次必须被拒
+code=$(curl -s -o /tmp/e2e_cid3.json -w '%{http_code}' -X POST "$API/me/client-id" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"client_id":"another01"}')
+[[ "$code" == "403" ]] && ok "第二次自定义被拒（403）" || bad "第二次仍成功：$code"
+grep -q 'CUSTOM_ID_USED' /tmp/e2e_cid3.json && ok "错误码是 CUSTOM_ID_USED" || bad "错误码不对"
+
+# /me 上要能读到 custom_id_used
+curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -q '"custom_id_used":true' \
+  && ok "/me 反映 custom_id_used=true" || bad "/me 未反映已用"
+
+# 占用冲突：另造一个用户占掉一个 id，再用管理员给第三个用户设同一个
+BID="taken$RANDOM"
+B1=$(curl -fsS -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"cid1$RANDOM\",\"email\":\"c1$RANDOM@t.local\",\"password\":\"Str0ngPass123\"}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+B2=$(curl -fsS -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"cid2$RANDOM\",\"email\":\"c2$RANDOM@t.local\",\"password\":\"Str0ngPass123\"}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+curl -fsS -X POST "$API/admin/users/$B1/client-id" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d "{\"client_id\":\"$BID\"}" >/dev/null
+code=$(curl -s -o /tmp/e2e_cid4.json -w '%{http_code}' -X POST "$API/admin/users/$B2/client-id" \
+  -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' -d "{\"client_id\":\"$BID\"}")
+[[ "$code" == "409" ]] && ok "重复 ID 冲突（409）" || bad "冲突未拦住：$code"
+grep -q 'CLIENT_ID_TAKEN' /tmp/e2e_cid4.json && ok "错误码是 CLIENT_ID_TAKEN" || bad "错误码不对"
+# 管理员设置不消耗用户的次数
+curl -fsS "$API/admin/users?q=cid2" -H "Authorization: Bearer $ADMTOK" | grep -q '"custom_id_used":false' \
+  && ok "管理员设置不消耗用户机会" || bad "管理员设置消耗了用户机会"
+
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——
 # 真实 index.html 开头是一段内联主题脚本，assets/ 引用在后面，

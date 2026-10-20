@@ -199,6 +199,7 @@ type userJSON struct {
 	IDResetCount   int    `json:"id_reset_count"`
 	RulesEnabled   bool   `json:"rules_enabled"`
 	SubsEnabled    bool   `json:"subs_enabled"`
+	CustomIDUsed   bool   `json:"custom_id_used"`
 	CreatedAt      string `json:"created_at"`
 }
 
@@ -212,6 +213,7 @@ func toUserJSON(u *model.User) userJSON {
 		ClientID: u.ClientID, Enabled: u.Enabled,
 		UseGlobalRules: u.UseGlobalRules, IDResetCount: u.IDResetCount,
 		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
+		CustomIDUsed: u.CustomIDUsed,
 		CreatedAt: time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
 	}
 }

@@ -1,12 +1,16 @@
 package api
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/50521136/aegis-dns/server/internal/auth"
+	"github.com/50521136/aegis-dns/server/internal/id"
+	"github.com/50521136/aegis-dns/server/internal/store"
 )
 
 /* ---------------- 重置 client_id ---------------- */
@@ -54,6 +58,152 @@ func (s *Server) handleResetMyClientID(w http.ResponseWriter, r *http.Request) {
 		"remaining":      set.MaxIDResets - u.IDResetCount - 1,
 		"dns_config":     buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
 	})
+}
+
+/* ---------------- 自定义 client_id ---------------- */
+
+// reservedClientID 判断某个 client_id 是否和主域名首段撞车。
+//
+// 为什么要拦：dnsd 识别租户是先取 SNI 首段再查 client_id。主域名
+// adguard.seven-cloud.cn 的首段是 "adguard"，如果有人把 client_id 设成
+// "adguard"，那么**裸域名**的请求就会被认成他的租户、套上他的规则 ——
+// 等于把主域名认领走了。这类冲突必须在写入前拦掉。
+func (s *Server) reservedClientID(r *http.Request, cid string) bool {
+	domain := s.domain(r)
+	first := domain
+	if i := strings.IndexByte(domain, '.'); i > 0 {
+		first = domain[:i]
+	}
+	return cid == strings.ToLower(first)
+}
+
+
+// handleSetMyClientID 让用户把自己的 client_id 改成自定义值。
+//
+// 需求是「只能一次」：这跟重置不同 —— 重置是系统发一个新的随机 id，
+// 自定义是用户自己挑，挑完就定下来，之后想换只能找管理员。
+//
+// 校验分三层，顺序有讲究：
+//  1. 形状（长度/字符集）先判，纯本地、最便宜，也让报错最具体
+//  2. 「机会是否已用」再判，避免用户白填一遍才发现没机会了
+//  3. 唯一性最后判，要查库
+func (s *Server) handleSetMyClientID(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+
+	var body struct {
+		ClientID string `json:"client_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	// 统一小写再校验：用户多半会输入大写，直接报错太苛刻，
+	// 而 client_id 本身是 DNS 标签，大小写不敏感，转小写语义不变。
+	cid := strings.ToLower(strings.TrimSpace(body.ClientID))
+	if err := id.CheckCustomClientID(cid); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error(), nil)
+		return
+	}
+
+	if s.reservedClientID(r, cid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest,
+			"该接入 ID 与主域名首段冲突，换一个", nil)
+		return
+	}
+	if u.CustomIDUsed {
+		writeError(w, http.StatusForbidden, CodeCustomIDUsed,
+			"自定义接入 ID 只能设置一次，如需再改请联系管理员", nil)
+		return
+	}
+	if cid == u.ClientID {
+		// 填了个一样的值：不该消耗掉这一次机会
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest,
+			"这就是你当前的接入 ID，无需修改", nil)
+		return
+	}
+
+	taken, err := s.store.ClientIDTaken(r.Context(), cid, u.ID)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	if taken {
+		writeError(w, http.StatusConflict, CodeClientIDTaken, "该接入 ID 已被占用，换一个试试", nil)
+		return
+	}
+
+	old := u.ClientID
+	if err := s.store.SetCustomClientID(r.Context(), u.ID, cid); err != nil {
+		switch {
+		case errors.Is(err, store.ErrClientIDTaken):
+			writeError(w, http.StatusConflict, CodeClientIDTaken, "该接入 ID 已被占用，换一个试试", nil)
+		case errors.Is(err, store.ErrNotFound):
+			// 并发下被另一个请求抢先改掉了，这里如实说明而不是含糊报错
+			writeError(w, http.StatusForbidden, CodeCustomIDUsed,
+				"自定义接入 ID 只能设置一次，如需再改请联系管理员", nil)
+		default:
+			writeStoreError(w, err, "")
+		}
+		return
+	}
+	// 换 id 必须重建快照：否则 dnsd 还认旧子域，新地址解析不了。
+	if err := s.touched(r.Context(), u.ID, false); err != nil {
+		s.log.Warn("自定义 client_id 后重建快照失败", "user", u.ID, "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"client_id":     cid,
+		"old_client_id": old,
+		"dns_config":    buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
+	})
+}
+
+// handleAdminSetClientID 管理员直接指定某个用户的 client_id。
+//
+// 不消耗用户那次机会：用户填错字、或者机会用完后想再换，都靠这条兜底。
+func (s *Server) handleAdminSetClientID(w http.ResponseWriter, r *http.Request) {
+	uid := chi.URLParam(r, "id")
+
+	var body struct {
+		ClientID string `json:"client_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	cid := strings.ToLower(strings.TrimSpace(body.ClientID))
+	if err := id.CheckCustomClientID(cid); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error(), nil)
+		return
+	}
+
+	if s.reservedClientID(r, cid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest,
+			"该接入 ID 与主域名首段冲突，换一个", nil)
+		return
+	}
+	taken, err := s.store.ClientIDTaken(r.Context(), cid, uid)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	if taken {
+		writeError(w, http.StatusConflict, CodeClientIDTaken, "该接入 ID 已被占用", nil)
+		return
+	}
+
+	if err := s.store.AdminSetClientID(r.Context(), uid, cid); err != nil {
+		if errors.Is(err, store.ErrClientIDTaken) {
+			writeError(w, http.StatusConflict, CodeClientIDTaken, "该接入 ID 已被占用", nil)
+			return
+		}
+		writeStoreError(w, err, "")
+		return
+	}
+	if err := s.touched(r.Context(), uid, false); err != nil {
+		s.log.Warn("管理员设置 client_id 后重建快照失败", "user", uid, "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"client_id": cid})
 }
 
 // handleAdminResetClientID 管理员替某个用户重置 client_id（不受次数限制）。
