@@ -208,8 +208,11 @@ export default function Register() {
               {...register('invite_code')}
             />
             <p className="text-xs text-muted-foreground">
+              {/* 配置还没到时不显示天数：闪一下「0 天」看起来像坏了 */}
               {inviteFromLink
-                ? `已从邀请链接自动填入，注册后邀请人将获得 ${cfg?.invite_reward_days ?? 0} 天会员`
+                ? cfg?.invite_reward_days
+                  ? `已从邀请链接自动填入，注册后邀请人将获得 ${cfg.invite_reward_days} 天会员`
+                  : '已从邀请链接自动填入'
                 : '邀请码由管理员或已注册用户提供'}
             </p>
           </div>
