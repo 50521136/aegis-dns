@@ -72,9 +72,9 @@ func TestDoHPathClientID(t *testing.T) {
 		{"/dns-query/k7m2pqx4ab/extra", "k7m2pqx4ab"},
 		{"/dns-query/", ""},
 		{"/dns-query", ""},
-		{"/dns-query/ab", ""},     // 太短
+		{"/dns-query/ab", ""},           // 太短
 		{"/dns-query/520342", "520342"}, // 含 '0'：自定义 id 已允许 0-9
-		{"/other/k7m2pqx4ab", ""}, // 不是 DoH 路径，绝不能把 "other" 当租户
+		{"/other/k7m2pqx4ab", ""},       // 不是 DoH 路径，绝不能把 "other" 当租户
 		{"/", ""},
 		{"", ""},
 	}

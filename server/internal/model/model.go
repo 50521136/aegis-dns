@@ -58,10 +58,10 @@ type User struct {
 	IDResetCount int `json:"id_reset_count"`
 	// RulesEnabled / SubsEnabled 是管理员对该用户的单独开关。
 	// 与全局设置里的总开关取「与」：任一为关，该用户就建不了对应的东西。
-	RulesEnabled bool  `json:"rules_enabled"`
-	SubsEnabled  bool  `json:"subs_enabled"`
+	RulesEnabled bool `json:"rules_enabled"`
+	SubsEnabled  bool `json:"subs_enabled"`
 	// CustomIDUsed 标记用户是否已经用掉「自定义 client_id」那一次机会。
-	CustomIDUsed bool `json:"custom_id_used"`
+	CustomIDUsed bool  `json:"custom_id_used"`
 	CreatedAt    int64 `json:"-"` // 对外由 handler 转成 RFC3339
 }
 

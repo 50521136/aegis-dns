@@ -192,8 +192,8 @@ func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"range": orDefault(q.Get("range"), "24h"),
-		"items": items,
+		"range":       orDefault(q.Get("range"), "24h"),
+		"items":       items,
 		"total_users": len(items),
 	})
 }

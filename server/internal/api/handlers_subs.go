@@ -12,7 +12,6 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/subsub"
 )
 
-
 // refreshSubAsync 在后台拉取订阅，成功后重建快照。
 //
 // 关键点：不能用 r.Context()。拉取在这条线路上要 60~90 秒，浏览器/代理先断开时

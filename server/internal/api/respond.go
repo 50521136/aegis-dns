@@ -214,7 +214,7 @@ func toUserJSON(u *model.User) userJSON {
 		UseGlobalRules: u.UseGlobalRules, IDResetCount: u.IDResetCount,
 		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
 		CustomIDUsed: u.CustomIDUsed,
-		CreatedAt: time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
+		CreatedAt:    time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
 	}
 }
 

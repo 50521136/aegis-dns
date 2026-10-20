@@ -51,12 +51,12 @@ func (s *Server) handleResetMyClientID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_id":      cid,
-		"old_client_id":  old,
-		"used":           u.IDResetCount + 1,
-		"limit":          set.MaxIDResets,
-		"remaining":      set.MaxIDResets - u.IDResetCount - 1,
-		"dns_config":     buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
+		"client_id":     cid,
+		"old_client_id": old,
+		"used":          u.IDResetCount + 1,
+		"limit":         set.MaxIDResets,
+		"remaining":     set.MaxIDResets - u.IDResetCount - 1,
+		"dns_config":    buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
 	})
 }
 
@@ -76,7 +76,6 @@ func (s *Server) reservedClientID(r *http.Request, cid string) bool {
 	}
 	return cid == strings.ToLower(first)
 }
-
 
 // handleSetMyClientID 让用户把自己的 client_id 改成自定义值。
 //
@@ -312,8 +311,8 @@ func (s *Server) handleAdminSetPassword(w http.ResponseWriter, r *http.Request) 
 // 定时任务每天跑一次，这个接口给管理员「现在就想腾空间」时用。
 func (s *Server) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		StatsDays *int `json:"stats_retention_days"`
-		LogDays   *int `json:"query_log_retention_days"`
+		StatsDays  *int `json:"stats_retention_days"`
+		LogDays    *int `json:"query_log_retention_days"`
 		MaxLogRows *int `json:"max_log_rows"`
 	}
 	// 允许空 body

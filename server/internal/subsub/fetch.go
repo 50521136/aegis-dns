@@ -2,8 +2,8 @@ package subsub
 
 import (
 	"compress/gzip"
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"

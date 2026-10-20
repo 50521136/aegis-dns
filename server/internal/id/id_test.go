@@ -102,9 +102,9 @@ func TestNewPAT(t *testing.T) {
 
 func TestCheckCustomClientID(t *testing.T) {
 	cases := []struct {
-		in   string
-		ok   bool
-		why  string
+		in  string
+		ok  bool
+		why string
 	}{
 		{"shenzhen01", true, "6 位以上小写字母+数字"},
 		{"abcdef", true, "刚好 6 位"},
