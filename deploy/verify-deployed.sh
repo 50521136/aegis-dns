@@ -202,6 +202,23 @@ echo "  DoH  $DOH_URL/dns-query  (Host: $CID.${DOMAIN:-<domain>})"
 echo "  DoT  $DOT_TARGET          (SNI:  $CID.${DOMAIN:-<domain>})"
 
 # --- 4. 规则与来源 IP ---
+# --- 3.5 iOS/macOS 描述文件 ---
+hdr "[3.5/8] iOS/macOS 描述文件（.mobileconfig）"
+MCH=$(curl -s -D - -o /tmp/aegis-verify.mobileconfig --max-time 15 \
+  "$API/api/v1/me/mobileconfig" -H "Authorization: Bearer $TOKEN")
+echo "$MCH" | grep -qi 'content-type: application/x-apple-aspen-config' \
+  && ok "MIME 是 x-apple-aspen-config" || bad "MIME 不对: $(echo "$MCH" | grep -i content-type | head -1)"
+grep -q 'com.apple.dnsSettings.managed' /tmp/aegis-verify.mobileconfig \
+  && ok "载荷类型是 com.apple.dnsSettings.managed" || bad "载荷类型不对"
+grep -q "$CID\." /tmp/aegis-verify.mobileconfig \
+  && ok "ServerURL 指向本租户子域名" || bad "ServerURL 未包含 client_id"
+# plist 必须是合法 XML，否则 iOS 直接拒绝安装
+python3 -c "import plistlib; plistlib.load(open('/tmp/aegis-verify.mobileconfig','rb'))" 2>/dev/null \
+  && ok "plist 可被解析（结构合法）" || bad "plist 解析失败"
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$API/api/v1/me/mobileconfig")
+[[ "$code" == "401" ]] && ok "未认证下载 → 401" || bad "未认证下载返回 $code"
+rm -f /tmp/aegis-verify.mobileconfig
+
 hdr "[4/8] 规则与来源 IP 归属"
 add_rule() {
   local code
