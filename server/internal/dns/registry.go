@@ -72,6 +72,20 @@ func NewRegistry(pools *resolver.Cache) *Registry {
 // Load 返回当前快照（无锁）。
 func (r *Registry) Load() *registrySnapshot { return r.current.Load() }
 
+// Domain 返回**生效的**主域名（来自数据库设置），不是 config.yaml 里那个兜底值。
+//
+// 这两者经常不一致：config.yaml 的 domain 只在首次初始化、数据库还没有
+// setting.domain 时才会被写进库。之后管理员在后台改域名，config.yaml 不会跟着变。
+// 启动横幅如果直接打印 config.Domain，就会报出一个早就不用的域名，
+// 排查时极易被误导（「明明配的是 A，日志说 B」）。
+func (r *Registry) Domain() string {
+	snap := r.current.Load()
+	if snap == nil {
+		return ""
+	}
+	return snap.defaults.Domain
+}
+
 // Version 返回当前快照版本号。
 func (r *Registry) Version() int64 { return r.version.Load() }
 

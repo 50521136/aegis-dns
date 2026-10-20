@@ -116,12 +116,25 @@ func main() {
 		defer storeHandle.Close()
 		go flushLoop(ctx, storeHandle, collector, cfg, log)
 	}
+	// 打印生效域名而不是 cfg.Domain：config.yaml 的 domain 只是首次初始化的兜底，
+	// 后台改过域名后它就不再更新，直接打印会报出一个早就不用的域名。
+	effDomain := registry.Domain()
+	if effDomain == "" {
+		effDomain = cfg.Domain
+	}
 	log.Info("aegis-dnsd 已就绪",
 		"version", version.Version,
-		"domain", cfg.Domain,
+		"domain", effDomain,
 		"data_dir", cfg.DataDir,
 		"snapshot_version", registry.Version(),
 	)
+	if cfg.Domain != "" && effDomain != "" && !strings.EqualFold(cfg.Domain, effDomain) {
+		log.Warn("config.yaml 的 domain 与后台设置不一致，以后台设置为准",
+			"config_domain", cfg.Domain,
+			"effective_domain", effDomain,
+			"hint", "建议把 config.yaml 的 domain 改成一致，避免自检和横幅误报",
+		)
+	}
 
 	// --- 等待退出信号 ---
 	<-ctx.Done()
@@ -203,7 +216,9 @@ func runChecks(cfg *config.Config, log *slog.Logger) int {
 	fmt.Println(strings.Repeat("-", 52))
 
 	// 1. 配置
-	fmt.Printf("%-34s %s\n", "主域名", orDash(cfg.Domain))
+	// 这里只能看 config.yaml，因为自检跑在加载数据库之前。
+	// 明确标注「兜底值」，免得和后台设置的真实域名混淆。
+	fmt.Printf("%-34s %s\n", "主域名(config.yaml 兜底)", orDash(cfg.Domain))
 	fmt.Printf("%-34s %s\n", "数据目录", cfg.DataDir)
 
 	// 2. 端口占用
