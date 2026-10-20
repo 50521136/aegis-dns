@@ -156,3 +156,59 @@ func BenchmarkSuffixSetLookup(b *testing.B) {
 		s.lookup("www.example.com", 1)
 	}
 }
+
+// 全局层必须被多个用户的 RuleSet 共享同一个实例。
+//
+// 这是「小服务器稳定运行」的核心不变量：之前每个用户各建一份，
+// 3 个租户 × 62 万条就把 1.7G 的机器打爆。用指针同一性判断最精确，
+// 用内存差值判断会被 GC 噪声淹没。
+func TestGlobalLayerIsSharedByPointer(t *testing.T) {
+	g := &model.GlobalSnap{
+		SubBlock: []string{"ads.example", "tracker.example"},
+		Rules: []model.Rule{
+			{Kind: model.KindAllow, Pattern: "||ok.example^", Enabled: true},
+		},
+	}
+	shared := BuildGlobal(g)
+
+	rs1, err := BuildWithGlobal(shared, Layers{SubBlock: []string{"own1.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs2, err := BuildWithGlobal(shared, Layers{SubBlock: []string{"own2.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs1.global != rs2.global {
+		t.Error("两个用户没有共享同一个全局层实例 —— 内存会按租户数线性增长")
+	}
+	if rs1.global != shared {
+		t.Error("用户没有用上传入的共享层")
+	}
+
+	// 各自的个人订阅不能串味
+	if d := rs1.Match("own1.example", 1); d.Action != ActionBlock {
+		t.Error("rs1 应命中自己的订阅")
+	}
+	if d := rs1.Match("own2.example", 1); d.Action == ActionBlock {
+		t.Error("rs1 不该命中 rs2 的订阅")
+	}
+	// 共享的全局层对两者都生效
+	for _, rs := range []*RuleSet{rs1, rs2} {
+		if d := rs.Match("ads.example", 1); d.Action != ActionBlock {
+			t.Error("共享全局层的 block 应对所有用户生效")
+		}
+		if d := rs.Match("ok.example", 1); d.Action != ActionAllow {
+			t.Error("共享全局层的 allow 应对所有用户生效")
+		}
+	}
+
+	// 关闭全局规则 = 传 nil，此时不应命中全局层
+	rs3, err := BuildWithGlobal(nil, Layers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := rs3.Match("ads.example", 1); d.Action == ActionBlock {
+		t.Error("没有共享层时不该命中全局规则")
+	}
+}

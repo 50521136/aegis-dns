@@ -26,12 +26,10 @@ type RuleSet struct {
 	userRewrite *trie
 	// 优先级 3：用户自定义 block
 	userBlock *trie
-	// 优先级 4：全局 allow（管理员，用户可用自己的 allow 覆盖）
-	globalAllow *trie
-	// 优先级 5：全局 rewrite
-	globalRewrite *trie
-	// 优先级 6：全局 block
-	globalBlock *trie
+	// 优先级 4~6 与 9~10 是全局层。它由所有租户共享同一份 ——
+	// 曾经是每个用户各建一份，3 个用户就是 3 份 62 万条，
+	// 用户数一多内存就线性爆炸。共享后无论多少租户都只有一份。
+	global *GlobalLayer
 	// 优先级 7~10 是订阅层：条目动辄几十万，用排序数组而不是 trie。
 	// trie 每节点一个 map，六十万域名要吃到 640MB（线上因此 OOM），
 	// 排序数组同样的数据只要约 40MB。见 suffixset.go。
@@ -40,10 +38,6 @@ type RuleSet struct {
 	subAllow *suffixSet
 	// 优先级 8：用户自己的订阅 blocklist
 	subBlock *suffixSet
-	// 优先级 9：全局订阅 allowlist
-	gsubAllow *suffixSet
-	// 优先级 10：全局订阅 blocklist
-	gsubBlock *suffixSet
 
 	// Stats 是规则条数统计，供 UI 展示。
 	Stats Stats
@@ -106,16 +100,12 @@ type Layers struct {
 // （文档 5.4「非法规则跳过并记录，不中断构建」）。
 func Build(l Layers) (*RuleSet, error) {
 	rs := &RuleSet{
-		userAllow:     newTrie(),
-		userRewrite:   newTrie(),
-		userBlock:     newTrie(),
-		globalAllow:   newTrie(),
-		globalRewrite: newTrie(),
-		globalBlock:   newTrie(),
-		subAllow:      newSuffixSet(),
-		subBlock:      newSuffixSet(),
-		gsubAllow:     newSuffixSet(),
-		gsubBlock:     newSuffixSet(),
+		userAllow:   newTrie(),
+		userRewrite: newTrie(),
+		userBlock:   newTrie(),
+
+		subAllow: newSuffixSet(),
+		subBlock: newSuffixSet(),
 	}
 
 	for _, r := range l.UserRules {
@@ -126,20 +116,15 @@ func Build(l Layers) (*RuleSet, error) {
 	rs.subBlock.add(l.SubBlock)
 
 	if l.Global != nil {
-		for _, r := range l.Global.Rules {
-			_ = rs.addRule(r, rs.globalAllow, rs.globalRewrite, rs.globalBlock)
-		}
-		rs.gsubAllow.add(l.Global.SubAllow)
-		rs.gsubBlock.add(l.Global.SubBlock)
+		rs.global = BuildGlobal(l.Global)
 	}
 
 	// 订阅层收尾：去重 + 排序。必须在返回前做，否则查询会走未排序数组，
 	// 二分结果无意义。
 	rs.subAllow.finish()
 	rs.subBlock.finish()
-	rs.gsubAllow.finish()
-	rs.gsubBlock.finish()
 
+	gs := rs.globalStats()
 	rs.Stats = Stats{
 		UserAllow:   rs.userAllow.size,
 		UserBlock:   rs.userBlock.size,
@@ -147,11 +132,11 @@ func Build(l Layers) (*RuleSet, error) {
 		SubAllow:    rs.subAllow.size,
 		SubBlock:    rs.subBlock.size,
 
-		GlobalAllow:   rs.globalAllow.size,
-		GlobalBlock:   rs.globalBlock.size,
-		GlobalRewrite: rs.globalRewrite.size,
-		GSubAllow:     rs.gsubAllow.size,
-		GSubBlock:     rs.gsubBlock.size,
+		GlobalAllow:   gs.globalAllowSize,
+		GlobalBlock:   gs.globalBlockSize,
+		GlobalRewrite: gs.globalRewriteSize,
+		GSubAllow:     gs.gsubAllowSize,
+		GSubBlock:     gs.gsubBlockSize,
 	}
 	return rs, nil
 }
@@ -298,17 +283,21 @@ func (rs *RuleSet) Match(qname string, qtype uint16) Decision {
 		return Decision{Action: ActionBlock, Source: "user_block"}
 	}
 
-	// 4-6：全局规则层。
-	if ok, _, _ := rs.globalAllow.lookup(domain, qtype); ok {
+	// 4-6：全局规则层（与所有租户共享同一份）。
+	if rs.global == nil {
+		goto subLayer
+	}
+	if ok, _, _ := rs.global.allow.lookup(domain, qtype); ok {
 		return Decision{Action: ActionAllow, Source: "global_allow"}
 	}
-	if ok, rrs, val := rs.globalRewrite.lookup(domain, qtype); ok {
+	if ok, rrs, val := rs.global.rewrite.lookup(domain, qtype); ok {
 		return Decision{Action: ActionRewrite, Rewrite: rrs, Value: val, Source: "global_rewrite"}
 	}
-	if ok, _, _ := rs.globalBlock.lookup(domain, qtype); ok {
+	if ok, _, _ := rs.global.block.lookup(domain, qtype); ok {
 		return Decision{Action: ActionBlock, Source: "global_block"}
 	}
 
+subLayer:
 	// 7-8：用户自己的订阅。
 	if ok, _, _ := rs.subAllow.lookup(domain, qtype); ok {
 		return Decision{Action: ActionAllow, Source: "sub_allow"}
@@ -317,12 +306,14 @@ func (rs *RuleSet) Match(qname string, qtype uint16) Decision {
 		return Decision{Action: ActionBlock, Source: "sub_block"}
 	}
 
-	// 9-10：全局订阅。
-	if ok, _, _ := rs.gsubAllow.lookup(domain, qtype); ok {
-		return Decision{Action: ActionAllow, Source: "global_sub_allow"}
-	}
-	if ok, _, _ := rs.gsubBlock.lookup(domain, qtype); ok {
-		return Decision{Action: ActionBlock, Source: "global_sub_block"}
+	// 9-10：全局订阅（同样共享）。
+	if rs.global != nil {
+		if ok, _, _ := rs.global.subAllow.lookup(domain, qtype); ok {
+			return Decision{Action: ActionAllow, Source: "global_sub_allow"}
+		}
+		if ok, _, _ := rs.global.subBlock.lookup(domain, qtype); ok {
+			return Decision{Action: ActionBlock, Source: "global_sub_block"}
+		}
 	}
 	return Decision{Action: ActionNone}
 }
@@ -353,4 +344,82 @@ func Validate(kind, pattern, value string, qtypes []string) error {
 	}
 	_ = qtypes
 	return nil
+}
+
+// GlobalLayer 是全局规则层，由所有租户共享同一份实例。
+//
+// 为什么单独抽出来：全局层里是管理员那几条规则 + 订阅压平后的几十万域名，
+// 而 RuleSet 是「每用户一个」。如果全局层跟着 RuleSet 走，
+// 10 个租户就会把同一份 62 万条列表建 10 遍 —— 内存按租户数线性增长。
+// 线上就是因为这个（3 个用户 × 62 万条）加上 trie 才把机器打爆的。
+//
+// 共享之后：无论多少租户，全局层都只有一份，内存与租户数无关。
+type GlobalLayer struct {
+	allow   *trie
+	rewrite *trie
+	block   *trie
+	// 订阅层用排序数组（见 suffixset.go）
+	subAllow *suffixSet
+	subBlock *suffixSet
+
+	globalAllowSize   int
+	globalBlockSize   int
+	globalRewriteSize int
+	gsubAllowSize     int
+	gsubBlockSize     int
+}
+
+// BuildGlobal 从全局快照构建一份可共享的全局层。
+//
+// 每次快照重建只调用一次，结果交给所有用户共用。
+func BuildGlobal(g *model.GlobalSnap) *GlobalLayer {
+	gl := &GlobalLayer{
+		allow:    newTrie(),
+		rewrite:  newTrie(),
+		block:    newTrie(),
+		subAllow: newSuffixSet(),
+		subBlock: newSuffixSet(),
+	}
+	if g == nil {
+		return gl
+	}
+	// 规则插入与用户层共用同一套 addRule 逻辑，保证优先级语义一致
+	tmp := &RuleSet{}
+	for _, r := range g.Rules {
+		_ = tmp.addRule(r, gl.allow, gl.rewrite, gl.block)
+	}
+	gl.subAllow.add(g.SubAllow)
+	gl.subBlock.add(g.SubBlock)
+	gl.subAllow.finish()
+	gl.subBlock.finish()
+
+	gl.globalAllowSize = gl.allow.size
+	gl.globalRewriteSize = gl.rewrite.size
+	gl.globalBlockSize = gl.block.size
+	gl.gsubAllowSize = gl.subAllow.size
+	gl.gsubBlockSize = gl.subBlock.size
+	return gl
+}
+
+// globalStats 返回共享全局层的规模统计（不共享时全 0）。
+func (rs *RuleSet) globalStats() GlobalLayer {
+	if rs.global == nil {
+		return GlobalLayer{}
+	}
+	return *rs.global
+}
+
+// BuildWithGlobal 用一份共享的全局层构建某个用户的规则集。
+//
+// registry 在每次快照重建时先 BuildGlobal 一次，然后对每个用户调用本函数。
+// 这样全局层只解析一次、只占一份内存。
+// shared 为 nil 表示该用户关闭了全局规则（UseGlobalRules = false）。
+func BuildWithGlobal(shared *GlobalLayer, l Layers) (*RuleSet, error) {
+	l.Global = nil // 由 shared 提供，避免重复构建
+	rs, err := Build(l)
+	if err != nil {
+		return rs, err
+	}
+	rs.global = shared
+	return rs, nil
 }

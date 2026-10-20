@@ -192,6 +192,11 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 	}
 	incremental := len(changed) > 0
 
+	// 全局层只构建一次，所有租户共享同一份 —— 见 rules.GlobalLayer 的说明。
+	// 这是「小服务器稳定运行」的关键：内存与租户数脱钩。
+	// 必须放在用户循环之外，放进去就变成每个用户建一份，等于没改。
+	sharedGlobal := rules.BuildGlobal(&snap.Global)
+
 	newSnap := &registrySnapshot{
 		version:    snap.Version,
 		byClientID: make(map[string]*UserRuntime, len(snap.Users)),
@@ -226,21 +231,19 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 			}
 		}
 
-		// 全局层只在该用户开启时才挂上；关掉全局的用户拿到的是纯个人规则集。
-		var globalLayer *model.GlobalSnap
+		// 关掉全局规则的用户拿 nil，其余用户共用同一份 sharedGlobal。
+		var gl *rules.GlobalLayer
 		if us.UseGlobalRules {
-			g := snap.Global
-			globalLayer = &g
+			gl = sharedGlobal
 		}
-		rs, err := rules.Build(rules.Layers{
+		rs, err := rules.BuildWithGlobal(gl, rules.Layers{
 			UserRules: us.Rules,
 			SubAllow:  us.SubAllow,
 			SubBlock:  us.SubBlock,
-			Global:    globalLayer,
 		})
 		if err != nil {
 			// 单用户构建失败不影响其他用户（文档 P4 优雅降级）。
-			rs, _ = rules.Build(rules.Layers{})
+			rs, _ = rules.BuildWithGlobal(gl, rules.Layers{})
 		}
 
 		ur := &UserRuntime{
