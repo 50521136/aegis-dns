@@ -15,6 +15,25 @@ export async function getDnsConfig(): Promise<DnsConfig> {
   return data
 }
 
+/**
+ * 下载 iOS / macOS 的加密 DNS 描述文件。
+ *
+ * 不能直接用 <a href> 指向接口：该路由要 Bearer 鉴权，浏览器直接跳转会拿到 401。
+ * 所以走 axios 取 blob，再用临时 object URL 触发下载。
+ */
+export async function downloadMobileConfig(clientID: string): Promise<void> {
+  const { data } = await api.get('/me/mobileconfig', { responseType: 'blob' })
+  const url = URL.createObjectURL(data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `dnsforge-${clientID}.mobileconfig`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // 立刻 revoke 在部分浏览器上会打断下载，延后释放
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
 export async function exportConfig(): Promise<ExportPayload> {
   const { data } = await api.get<ExportPayload>('/me/export')
   return data

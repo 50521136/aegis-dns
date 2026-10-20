@@ -110,6 +110,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/feedback", s.handleListMyFeedback)
 			r.Put("/me/password", s.handleChangePassword)
 			r.Get("/me/dns-config", s.handleDNSConfig)
+			// iOS / macOS 的加密 DNS 描述文件，系统级批量下发用
+			r.Get("/me/mobileconfig", s.handleMobileConfig)
 			r.Get("/me/export", s.handleExport)
 			r.Post("/me/import", s.handleImport)
 			r.Get("/me/tokens", s.handleListTokens)

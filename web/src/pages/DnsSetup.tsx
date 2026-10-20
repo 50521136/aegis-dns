@@ -9,8 +9,9 @@ import {
   Smartphone,
   Terminal,
   Wifi,
+  Download,
 } from 'lucide-react'
-import { getDnsConfig } from '@/api/me'
+import { downloadMobileConfig, getDnsConfig } from '@/api/me'
 import { PageHeader } from '@/components/PageHeader'
 import { CopyField } from '@/components/CopyField'
 import { ErrorState } from '@/components/ErrorState'
@@ -18,6 +19,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { errorMessage } from '@/api/client'
+import { Button } from '@/components/ui/button'
+import { useToast } from '@/components/ui/toast'
 
 const platformMeta: Record<string, { label: string; icon: React.ReactNode }> = {
   ios: { label: 'iOS', icon: <Apple className="size-4" /> },
@@ -29,6 +32,7 @@ const platformMeta: Record<string, { label: string; icon: React.ReactNode }> = {
 }
 
 export default function DnsSetup() {
+  const toast = useToast()
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['me', 'dns-config'],
     queryFn: getDnsConfig,
@@ -142,6 +146,32 @@ export default function DnsSetup() {
                           </li>
                         ))}
                       </ol>
+
+                      {/* iOS / macOS 原生支持 com.apple.dnsSettings.managed，
+                          装了描述文件就系统级生效，不用逐台手填地址。
+                          Windows / Android 没有等价机制，不给这个按钮。 */}
+                      {(g.platform === 'ios' || g.platform === 'macos') && data.client_id && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                              try {
+                                await downloadMobileConfig(data.client_id)
+                                toast.success('描述文件已下载', '打开后到「设置」里安装即可')
+                              } catch (err) {
+                                toast.error('下载失败', errorMessage(err))
+                              }
+                            }}
+                          >
+                            <Download />
+                            下载 .mobileconfig 描述文件
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            装上后系统级生效，适合多设备
+                          </span>
+                        </div>
+                      )}
                     </TabsContent>
                   ))}
                 </Tabs>

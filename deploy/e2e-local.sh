@@ -134,6 +134,24 @@ PAT=$(curl -fsS -X POST "$API/me/tokens" -H "Authorization: Bearer $TOKEN" -H 'C
 curl -fsS "$API/me" -H "Authorization: Bearer $PAT" | grep -q '"username":"e2etest"' \
   && ok "PAT 可用于鉴权" || bad "PAT 鉴权失败"
 
+hdr "iOS 描述文件（.mobileconfig）"
+MC_HDR=$(curl -s -D - -o "$RUN/e2e.mobileconfig" "$API/me/mobileconfig" -H "Authorization: Bearer $TOKEN")
+echo "$MC_HDR" | grep -qi 'content-type: application/x-apple-aspen-config' \
+  && ok "MIME 是 x-apple-aspen-config（iOS 才认）" || bad "MIME 不对: $(echo "$MC_HDR" | grep -i content-type)"
+echo "$MC_HDR" | grep -qi 'attachment; filename="dnsforge-.*\.mobileconfig"' \
+  && ok "Content-Disposition 带文件名" || bad "缺 Content-Disposition"
+grep -q 'com.apple.dnsSettings.managed' "$RUN/e2e.mobileconfig" \
+  && ok "载荷类型是 com.apple.dnsSettings.managed" || bad "载荷类型不对"
+grep -q '<string>HTTPS</string>' "$RUN/e2e.mobileconfig" \
+  && ok "DNSProtocol 是 HTTPS" || bad "DNSProtocol 不对"
+grep -q "$CID\\.dns\\.e2e\\.local/dns-query" "$RUN/e2e.mobileconfig" \
+  && ok "ServerURL 指向本租户子域名" || bad "ServerURL 不对: $(grep -o '<string>https://[^<]*' "$RUN/e2e.mobileconfig" | head -1)"
+# plist 必须是合法 XML，否则 iOS 会直接拒绝安装
+python3 -c "import plistlib,sys; plistlib.load(open('$RUN/e2e.mobileconfig','rb'))" 2>/dev/null \
+  && ok "plist 可被解析（结构合法）" || bad "plist 解析失败"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig")
+[[ "$code" == "401" ]] && ok "未认证下载 → 401" || bad "未认证下载返回 $code"
+
 hdr "添加规则"
 add_rule() {
   local body="$1" code
