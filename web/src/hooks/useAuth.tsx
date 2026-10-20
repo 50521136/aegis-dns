@@ -15,7 +15,13 @@ interface AuthContextValue {
   isAuthenticated: boolean
   isAdmin: boolean
   login: (username: string, password: string) => Promise<User>
-  register: (username: string, email: string, password: string) => Promise<AuthResponse>
+  register: (payload: {
+    username: string
+    email: string
+    password: string
+    invite_code?: string
+    email_code?: string
+  }) => Promise<AuthResponse>
   logout: () => Promise<void>
   refreshUser: () => Promise<User | null>
 }
@@ -84,8 +90,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 
   const register = useCallback(
-    async (username: string, email: string, password: string) => {
-      const res = await authApi.register({ username, email, password })
+    async (payload: {
+      username: string
+      email: string
+      password: string
+      invite_code?: string
+      email_code?: string
+    }) => {
+      const res = await authApi.register(payload)
       setUser(res.user)
       setDnsConfig(res.dns_config ?? null)
       queryClient.clear()

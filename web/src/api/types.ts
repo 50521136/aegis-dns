@@ -19,6 +19,13 @@ export interface User {
   subs_enabled?: boolean
   /** 是否已用掉「自定义接入 ID」那一次机会 */
   custom_id_used?: boolean
+  /** 会员到期时间（Unix 秒），0 表示非会员 */
+  member_until?: number
+  /** 会员剩余天数（后端算好，前端直接显示） */
+  member_days?: number
+  /** 档位：free | vip */
+  tier?: 'free' | 'vip'
+  invited_by?: string
 }
 
 export interface Tokens {
@@ -287,11 +294,27 @@ export interface AdminSettings {
   allow_user_subs: boolean
 
   /** 配额，0 表示不限制 */
-  max_rules_per_user: number
-  max_subs_per_user: number
+  /** 会员两档配额 */
+  free_max_rules: number
+  free_max_subs: number
+  free_daily_queries: number
+  vip_max_rules: number
+  vip_max_subs: number
+  vip_daily_queries: number
+  member_reward_days: number
+  /** 邮件服务（密码只回传 smtp_pass_set，不回传明文） */
+  smtp_enabled: boolean
+  smtp_host: string
+  smtp_port: number
+  smtp_user: string
+  /** 只写字段：留空表示不修改，后端不回传明文 */
+  smtp_pass?: string
+  smtp_pass_set: boolean
+  smtp_from: string
+  smtp_from_name: string
+  smtp_tls: string
+  email_verify_register: boolean
   max_sub_entries: number
-  max_rules_global: number
-  max_subs_global: number
 }
 
 export interface SystemInfo {
@@ -390,4 +413,56 @@ export interface FeedbackListResponse {
 /** 用户偏好。 */
 export interface Preferences {
   use_global_rules: boolean
+}
+
+/** 邀请码 */
+export interface InviteCode {
+  code: string
+  owner_id: string
+  note: string
+  reward_days: number
+  max_uses: number
+  used_count: number
+  expires_at: number
+  enabled: boolean
+  created_at: number
+  /** 后端算好的可用状态，前端不要自己拼三个条件 */
+  usable: boolean
+  unusable_reason?: string
+}
+
+/** 我的会员信息 */
+export interface MyMembership {
+  tier: 'free' | 'vip'
+  member_until: number
+  member_days: number
+  quota: { max_rules: number; max_subs: number; daily_queries: number }
+  tiers: Record<'free' | 'vip', { max_rules: number; max_subs: number; daily_queries: number }>
+  invite: { total_uses: number; reward_days: number }
+  /** 自助重置 client_id 的次数上限与已用次数 */
+  max_id_resets: number
+  id_reset_count: number
+  custom_id_used: boolean
+}
+
+/** 公告 */
+export interface Announcement {
+  id: number
+  title: string
+  body: string
+  level: 'info' | 'warning' | 'danger'
+  mode: 'silent' | 'popup'
+  dismissible: boolean
+  enabled: boolean
+  pinned: boolean
+  starts_at: number
+  ends_at: number
+  created_at: number
+  read_at?: number
+  dismissed_at?: number
+}
+
+export interface AnnouncementList {
+  items: Announcement[]
+  unread: number
 }

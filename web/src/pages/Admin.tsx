@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useForm } from 'react-hook-form'
+import { useForm, type UseFormReturn } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
@@ -11,12 +11,15 @@ import {
   Database,
   DatabaseBackup,
   Download,
+  Gift,
   HardDriveDownload,
   KeyRound,
   LogOut,
+  Megaphone,
   PlugZap,
   Save,
   Search,
+  Send,
   ShieldCheck,
   Trash2,
   Users,
@@ -33,6 +36,7 @@ import {
   runCleanup,
   type CleanupResult,
 } from '@/api/admin'
+import { testEmail } from '@/api/member'
 import { errorMessage } from '@/api/client'
 import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
@@ -65,6 +69,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { formatDateTime, formatNumber, formatUptime } from '@/lib/format'
+import { InvitePanel, MemberOverview } from '@/pages/AdminInvite'
+import { AnnouncementPanel } from '@/pages/AdminAnnouncement'
 
 /* ---------- 用户管理 ---------- */
 
@@ -100,11 +106,23 @@ const settingsSchema = z.object({
   max_id_resets: z.coerce.number().int().min(0),
   allow_user_rules: z.boolean(),
   allow_user_subs: z.boolean(),
-  max_rules_per_user: z.coerce.number().int().min(0),
-  max_subs_per_user: z.coerce.number().int().min(0),
   max_sub_entries: z.coerce.number().int().min(0),
-  max_rules_global: z.coerce.number().int().min(0),
-  max_subs_global: z.coerce.number().int().min(0),
+  free_max_rules: z.coerce.number().int().min(0),
+  free_max_subs: z.coerce.number().int().min(0),
+  free_daily_queries: z.coerce.number().int().min(0),
+  vip_max_rules: z.coerce.number().int().min(0),
+  vip_max_subs: z.coerce.number().int().min(0),
+  vip_daily_queries: z.coerce.number().int().min(0),
+  member_reward_days: z.coerce.number().int().min(1),
+  smtp_enabled: z.boolean(),
+  smtp_host: z.string(),
+  smtp_port: z.coerce.number().int().min(1),
+  smtp_user: z.string(),
+  smtp_pass: z.string(),
+  smtp_from: z.string(),
+  smtp_from_name: z.string(),
+  smtp_tls: z.string(),
+  email_verify_register: z.boolean(),
 })
 
 type SettingsForm = z.infer<typeof settingsSchema>
@@ -127,6 +145,8 @@ function SettingsPanel() {
       bootstrap_dns: (s.bootstrap_dns ?? []).join('\n'),
       proxy_url: s.proxy_url ?? '',
       proxy_enabled: s.proxy_enabled ?? false,
+      // 密码永远从空开始：后端不回传明文，回填空串表示「不修改」
+      smtp_pass: '',
     } as unknown as SettingsForm)
     setHydrated(true)
   }
@@ -144,6 +164,9 @@ function SettingsPanel() {
           .map((u) => u.trim())
           .filter(Boolean),
       }
+      // 空密码不发：发了后端也会忽略，但请求体里带着空串更容易在日志里
+      // 被误读成「管理员清空了密码」
+      if (!payload.smtp_pass) delete payload.smtp_pass
       return updateSettings(payload)
     },
     onSuccess: () => {
@@ -346,11 +369,110 @@ function SettingsPanel() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <NumberField form={form} name="max_rules_per_user" label="每用户规则上限（0=不限）" />
-            <NumberField form={form} name="max_subs_per_user" label="每用户订阅上限（0=不限）" />
             <NumberField form={form} name="max_sub_entries" label="单订阅条目上限" />
-            <NumberField form={form} name="max_rules_global" label="全局规则上限" />
-            <NumberField form={form} name="max_subs_global" label="全局订阅上限" />
+          </div>
+
+          {/* 两档配额并排展示：并排才能一眼看出「开会员多得到什么」，
+              分两个卡片放会让人来回对照 */}
+          <div className="overflow-hidden rounded-xl border border-border">
+            <div className="grid grid-cols-3 gap-px bg-border text-xs font-medium">
+              <div className="bg-muted/40 px-3 py-2">配额项</div>
+              <div className="bg-muted/40 px-3 py-2">普通用户</div>
+              <div className="bg-primary/10 px-3 py-2 text-primary">会员</div>
+            </div>
+            <QuotaRow form={form} label="自定义规则上限" free="free_max_rules" vip="vip_max_rules" />
+            <QuotaRow form={form} label="自定义订阅上限" free="free_max_subs" vip="vip_max_subs" />
+            <QuotaRow form={form} label="每日请求量上限" free="free_daily_queries" vip="vip_daily_queries" />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <NumberField form={form} name="member_reward_days" label="邀请奖励默认天数" />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            0 表示不限制。每日请求量按 UTC 自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。
+          </p>
+
+          {/* 邮件服务：注册验证与找回密码都依赖它 */}
+          <div className="space-y-3 rounded-xl border border-border/60 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">邮件服务（SMTP）</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  用于注册邮箱验证与找回密码。关掉后这两项都不可用。
+                </p>
+              </div>
+              <Switch
+                checked={form.watch('smtp_enabled')}
+                onCheckedChange={(v) => form.setValue('smtp_enabled', v)}
+                aria-label="启用邮件服务"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="smtp_host">SMTP 服务器</Label>
+                <Input id="smtp_host" placeholder="smtp.example.com" {...form.register('smtp_host')} />
+              </div>
+              <div>
+                <Label htmlFor="smtp_port">端口</Label>
+                <Input id="smtp_port" type="number" placeholder="465" {...form.register('smtp_port')} />
+              </div>
+              <div>
+                <Label htmlFor="smtp_user">用户名</Label>
+                <Input id="smtp_user" placeholder="通常就是邮箱地址" {...form.register('smtp_user')} />
+              </div>
+              <div>
+                <Label htmlFor="smtp_pass">
+                  密码 / 授权码
+                  {settingsQuery.data?.smtp_pass_set && (
+                    <span className="ml-2 text-xs text-success">已设置，留空表示不修改</span>
+                  )}
+                </Label>
+                <Input
+                  id="smtp_pass"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={settingsQuery.data?.smtp_pass_set ? '••••••••' : 'SMTP 授权码'}
+                  {...form.register('smtp_pass')}
+                />
+              </div>
+              <div>
+                <Label htmlFor="smtp_from">发件人地址</Label>
+                <Input id="smtp_from" placeholder="noreply@example.com" {...form.register('smtp_from')} />
+              </div>
+              <div>
+                <Label htmlFor="smtp_from_name">发件人名称</Label>
+                <Input id="smtp_from_name" placeholder="可选" {...form.register('smtp_from_name')} />
+              </div>
+              <div>
+                <Label htmlFor="smtp_tls">加密方式</Label>
+                <Select
+                  value={form.watch('smtp_tls')}
+                  onValueChange={(v) => form.setValue('smtp_tls', v)}
+                >
+                  <SelectTrigger id="smtp_tls">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tls">TLS（隐式，465）</SelectItem>
+                    <SelectItem value="starttls">STARTTLS（587）</SelectItem>
+                    <SelectItem value="none">不加密（仅本地中继）</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/40 px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">注册需要邮箱验证</p>
+                <p className="text-xs text-muted-foreground">
+                  开启后注册必须先收到验证码；未配置好邮件时不允许开启
+                </p>
+              </div>
+              <Switch
+                checked={form.watch('email_verify_register')}
+                onCheckedChange={(v) => form.setValue('email_verify_register', v)}
+                aria-label="注册邮箱验证"
+              />
+            </div>
+            <EmailTester defaultTo={form.watch('smtp_from')} enabled={form.watch('smtp_enabled')} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
@@ -549,6 +671,14 @@ export default function Admin() {
             <Activity className="size-4" />
             全局设置
           </TabsTrigger>
+          <TabsTrigger value="member">
+            <Gift className="size-4" />
+            会员与邀请
+          </TabsTrigger>
+          <TabsTrigger value="announce">
+            <Megaphone className="size-4" />
+            公告
+          </TabsTrigger>
           <TabsTrigger value="system">
             <Cpu className="size-4" />
             系统状态
@@ -564,6 +694,15 @@ export default function Admin() {
         </TabsContent>
         <TabsContent value="settings">
           <SettingsPanel />
+        </TabsContent>
+        <TabsContent value="member">
+          <div className="space-y-6">
+            <MemberOverview />
+            <InvitePanel />
+          </div>
+        </TabsContent>
+        <TabsContent value="announce">
+          <AnnouncementPanel />
         </TabsContent>
         <TabsContent value="system">
           <div className="space-y-6">
@@ -795,5 +934,84 @@ function BackupCard() {
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * QuotaRow 是两档配额表的一行。
+ *
+ * 用表格而不是两个并排的输入框：配额的意义在「两档差多少」，
+ * 上下对照才能一眼看出来，分开摆会让人来回扫。
+ */
+function QuotaRow<T extends SettingsForm>({
+  form,
+  label,
+  free,
+  vip,
+}: {
+  form: UseFormReturn<T>
+  label: string
+  free: keyof T & string
+  vip: keyof T & string
+}) {
+  return (
+    <div className="grid grid-cols-3 gap-px border-t border-border bg-border">
+      <div className="flex items-center bg-background px-3 py-2 text-sm">{label}</div>
+      {[free, vip].map((name) => (
+        <div key={name} className="bg-background px-2 py-1.5">
+          <Input
+            type="number"
+            min={0}
+            className="h-8 font-mono text-sm"
+            {...form.register(name as never)}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * EmailTester 发一封测试邮件。
+ *
+ * 单独一个按钮而不是「保存时顺便测」：SMTP 出错的原因很多（端口、加密方式、
+ * 授权码、发件人域名校验），必须让管理员能在改完后立刻单独验证这一环，
+ * 否则用户收不到验证码时根本分不清是配置错还是别的问题。
+ */
+function EmailTester({ defaultTo, enabled }: { defaultTo: string; enabled: boolean }) {
+  const toast = useToast()
+  const [to, setTo] = useState('')
+  const target = to.trim() || defaultTo
+
+  const m = useMutation({
+    mutationFn: () => testEmail(target),
+    onSuccess: (res) => toast.success('测试邮件已发出', res.message ?? `请查收 ${target}`),
+    onError: (err) => toast.error('发送失败', errorMessage(err)),
+  })
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex gap-2">
+        <Input
+          placeholder="收件邮箱（留空则发给发件人自己）"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          className="min-w-0 flex-1"
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!enabled || !target}
+          loading={m.isPending}
+          onClick={() => m.mutate()}
+        >
+          <Send />
+          发送测试
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        测试用的是已保存的配置，改完记得先点保存再测试。
+      </p>
+    </div>
   )
 }

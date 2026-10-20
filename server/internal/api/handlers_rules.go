@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -52,16 +53,24 @@ func orEmptySlice(in []string) []string {
 	return in
 }
 
-// ruleQuota 返回指定 scope 下该用户的规则配额上限。
-func (s *Server) ruleQuota(ctx context.Context, global bool) int {
+// ruleQuota 返回指定 scope 下的规则配额上限，0 表示不限制。
+//
+// 全局层不设上限：全局规则是管理员自己维护的一份，条数由他负责，
+// 再套一层配额只会让「加不进去却不知道为什么」变成日常问题。
+// 个人层按会员档位算，档位→配额的换算统一走 model.QuotaFor。
+func (s *Server) ruleQuota(ctx context.Context, uid string, global bool) int {
+	if global {
+		return 0
+	}
 	set, err := s.store.GetSettings(ctx)
 	if err != nil {
 		return 0 // 读不到设置就不拦，避免因为一次读库失败把用户锁死
 	}
-	if global {
-		return set.MaxRulesGlobal
+	u, err := s.store.GetUser(ctx, uid)
+	if err != nil || u == nil {
+		return 0
 	}
-	return set.MaxRulesPerUser
+	return model.QuotaForUser(u, set, time.Now()).MaxRules
 }
 
 // checkRuleQuota 在新增规则前检查配额。
@@ -69,7 +78,7 @@ func (s *Server) ruleQuota(ctx context.Context, global bool) int {
 // 配额是硬上限：个人层与全局层分开计数，管理员自己的个人规则不会挤占全局额度。
 // adding 是本批要新增的条数（导入时可能一次很多条）。
 func (s *Server) checkRuleQuota(ctx context.Context, uid string, global bool, adding int) error {
-	limit := s.ruleQuota(ctx, global)
+	limit := s.ruleQuota(ctx, uid, global)
 	if limit <= 0 {
 		return nil
 	}
@@ -128,7 +137,7 @@ func (s *Server) listRules(w http.ResponseWriter, r *http.Request, global bool) 
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "total": total, "page": page, "page_size": size,
-		"limit": s.ruleQuota(r.Context(), global),
+		"limit": s.ruleQuota(r.Context(), currentUser(r).ID, global),
 	})
 }
 

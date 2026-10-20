@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ThemeToggle } from './ThemeToggle'
+import { AnnouncementBell } from '@/components/AnnouncementBell'
 
 interface TopBarProps {
   title?: string
@@ -50,6 +51,8 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
       <div className="min-w-0 flex-1">
         {title && <h2 className="truncate text-lg font-semibold">{title}</h2>}
       </div>
+
+      <AnnouncementBell />
 
       <ThemeToggle />
 

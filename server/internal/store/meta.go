@@ -154,12 +154,29 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 		set.UpdateChannel = v
 	}
 
-	// 配额五项之前只写不读 —— 后台改了也不生效，一直用的是 DefaultSettings 的值。
-	set.MaxRulesPerUser = intOr(kv["max_rules_per_user"], set.MaxRulesPerUser)
-	set.MaxSubsPerUser = intOr(kv["max_subs_per_user"], set.MaxSubsPerUser)
+	// 配额之前只写不读 —— 后台改了也不生效，一直用的是 DefaultSettings 的值。
 	set.MaxSubEntries = intOr(kv["max_sub_entries"], set.MaxSubEntries)
-	set.MaxRulesGlobal = intOr(kv["max_rules_global"], set.MaxRulesGlobal)
-	set.MaxSubsGlobal = intOr(kv["max_subs_global"], set.MaxSubsGlobal)
+	set.FreeMaxRules = intOr(kv["free_max_rules"], set.FreeMaxRules)
+	set.FreeMaxSubs = intOr(kv["free_max_subs"], set.FreeMaxSubs)
+	set.FreeDailyQueries = int64Or(kv["free_daily_queries"], set.FreeDailyQueries)
+	set.VipMaxRules = intOr(kv["vip_max_rules"], set.VipMaxRules)
+	set.VipMaxSubs = intOr(kv["vip_max_subs"], set.VipMaxSubs)
+	set.VipDailyQueries = int64Or(kv["vip_daily_queries"], set.VipDailyQueries)
+	set.MemberRewardDays = intOr(kv["member_reward_days"], set.MemberRewardDays)
+
+	set.SMTPHost = strOr(kv["smtp_host"], set.SMTPHost)
+	set.SMTPPort = intOr(kv["smtp_port"], set.SMTPPort)
+	set.SMTPUser = strOr(kv["smtp_user"], set.SMTPUser)
+	set.SMTPPass = strOr(kv["smtp_pass"], set.SMTPPass)
+	set.SMTPFrom = strOr(kv["smtp_from"], set.SMTPFrom)
+	set.SMTPFromName = strOr(kv["smtp_from_name"], set.SMTPFromName)
+	set.SMTPTLS = strOr(kv["smtp_tls"], set.SMTPTLS)
+	if v, ok := kv["smtp_enabled"]; ok {
+		set.SMTPEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["email_verify_register"]; ok {
+		set.EmailVerifyRegister = v == "1" || strings.EqualFold(v, "true")
+	}
 
 	set.StatsRetentionD = intOr(kv["stats_retention_days"], set.StatsRetentionD)
 	set.MaxIDResets = intOr(kv["max_id_resets"], set.MaxIDResets)
@@ -213,11 +230,24 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"sub_interval_hours":       strconv.Itoa(set.SubIntervalH),
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
-		"max_rules_per_user": strconv.Itoa(set.MaxRulesPerUser),
-		"max_subs_per_user":  strconv.Itoa(set.MaxSubsPerUser),
 		"max_sub_entries":    strconv.Itoa(set.MaxSubEntries),
-		"max_rules_global":   strconv.Itoa(set.MaxRulesGlobal),
-		"max_subs_global":    strconv.Itoa(set.MaxSubsGlobal),
+		"free_max_rules":     strconv.Itoa(set.FreeMaxRules),
+		"free_max_subs":      strconv.Itoa(set.FreeMaxSubs),
+		"free_daily_queries": strconv.FormatInt(set.FreeDailyQueries, 10),
+		"vip_max_rules":      strconv.Itoa(set.VipMaxRules),
+		"vip_max_subs":       strconv.Itoa(set.VipMaxSubs),
+		"vip_daily_queries":  strconv.FormatInt(set.VipDailyQueries, 10),
+		"member_reward_days": strconv.Itoa(set.MemberRewardDays),
+
+		"smtp_enabled":          boolStr(set.SMTPEnabled),
+		"smtp_host":             set.SMTPHost,
+		"smtp_port":             strconv.Itoa(set.SMTPPort),
+		"smtp_user":             set.SMTPUser,
+		"smtp_pass":             set.SMTPPass,
+		"smtp_from":             set.SMTPFrom,
+		"smtp_from_name":        set.SMTPFromName,
+		"smtp_tls":              set.SMTPTLS,
+		"email_verify_register": boolStr(set.EmailVerifyRegister),
 
 		"stats_retention_days": strconv.Itoa(set.StatsRetentionD),
 		"max_id_resets":        strconv.Itoa(set.MaxIDResets),
@@ -292,4 +322,24 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// int64Or 解析 int64 配置项，缺失或非法时返回默认值。
+func int64Or(raw string, def int64) int64 {
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// strOr 返回配置值，缺失时用默认值。
+func strOr(raw, def string) string {
+	if raw == "" {
+		return def
+	}
+	return raw
 }

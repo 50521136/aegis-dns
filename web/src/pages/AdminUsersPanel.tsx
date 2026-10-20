@@ -1,6 +1,15 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AtSign, Check, KeyRound, RefreshCw, Search, Trash2, Users } from 'lucide-react'
+import {
+  AtSign,
+  Check,
+  Gift,
+  KeyRound,
+  RefreshCw,
+  Search,
+  Trash2,
+  Users,
+} from 'lucide-react'
 import {
   bulkDeleteUsers,
   deleteUser,
@@ -45,6 +54,7 @@ import { useToast } from '@/components/ui/toast'
 import { useAuth } from '@/hooks/useAuth'
 import { formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { revokeUserMember, setUserMember } from '@/api/member'
 
 /**
  * 用户管理面板。
@@ -69,6 +79,9 @@ export function UsersPanel() {
   const [pwValue, setPwValue] = useState('')
   const [resetUser, setResetUser] = useState<User | null>(null)
   const [cidUser, setCidUser] = useState<User | null>(null)
+  // 会员调整弹窗
+  const [memberUser, setMemberUser] = useState<User | null>(null)
+  const [memberDays, setMemberDays] = useState(30)
   const [cidValue, setCidValue] = useState('')
 
   const usersQuery = useQuery({
@@ -189,6 +202,29 @@ export function UsersPanel() {
     onError: (err) => toast.error('重置失败', errorMessage(err)),
   })
 
+  const memberMut = useMutation({
+    mutationFn: ({ id, days }: { id: string; days: number }) => setUserMember(id, days),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+      setMemberUser(null)
+      toast.success(
+        r.tier === 'vip' ? '会员已生效' : '会员已取消',
+        r.tier === 'vip' ? `剩余 ${r.member_days} 天` : '已降为普通用户',
+      )
+    },
+    onError: (err) => toast.error('调整失败', errorMessage(err)),
+  })
+
+  const revokeMut = useMutation({
+    mutationFn: (id: string) => revokeUserMember(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+      setMemberUser(null)
+      toast.success('会员已取消')
+    },
+    onError: (err) => toast.error('取消失败', errorMessage(err)),
+  })
+
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
@@ -291,9 +327,11 @@ export function UsersPanel() {
                   {items.map((u) => {
                     const isSelf = u.id === me?.id
                     const usage = usageOf.get(u.id)
+                    // 每个用户的上限取决于他自己的档位，不能拿统一数字比对
+                    const tierLimits = limits ? limits[u.tier === 'vip' ? 'vip' : 'free'] : null
                     const rulesPct =
-                      limits && limits.max_rules_per_user > 0
-                        ? (usage?.rules ?? 0) / limits.max_rules_per_user
+                      tierLimits && tierLimits.max_rules > 0
+                        ? (usage?.rules ?? 0) / tierLimits.max_rules
                         : 0
                     return (
                       <TableRow key={u.id} className={cn(selected.has(u.id) && 'bg-primary/5')}>
@@ -312,6 +350,12 @@ export function UsersPanel() {
                           <div className="flex items-center gap-1.5">
                             {u.username}
                             {isSelf && <Badge variant="secondary">自己</Badge>}
+                            {/* 档位由后端按到期时间算好，前端不自己判断 */}
+                            {u.role !== 'admin' && u.tier === 'vip' && (
+                              <Badge variant="success" title={`剩余 ${u.member_days} 天`}>
+                                会员 {u.member_days}天
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground md:hidden">
                             {u.email || '—'}
@@ -334,15 +378,15 @@ export function UsersPanel() {
                             )}
                           >
                             {usage?.rules ?? 0}
-                            {limits && limits.max_rules_per_user > 0
-                              ? ` / ${limits.max_rules_per_user}`
+                            {tierLimits && tierLimits.max_rules > 0
+                              ? ` / ${tierLimits.max_rules}`
                               : ''}
                           </span>
                           <span className="mx-1 text-muted-foreground">·</span>
                           <span className="font-mono text-xs tabular-nums">
                             {usage?.subs ?? 0}
-                            {limits && limits.max_subs_per_user > 0
-                              ? ` / ${limits.max_subs_per_user}`
+                            {tierLimits && tierLimits.max_subs > 0
+                              ? ` / ${tierLimits.max_subs}`
                               : ''}
                           </span>
                         </TableCell>
@@ -428,6 +472,19 @@ export function UsersPanel() {
                               title="重置接入 ID"
                             >
                               <RefreshCw />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={u.role === 'admin'}
+                              onClick={() => {
+                                setMemberUser(u)
+                                setMemberDays(30)
+                              }}
+                              aria-label="调整会员"
+                              title="调整会员天数"
+                            >
+                              <Gift />
                             </Button>
                             <Button
                               variant="ghost"
@@ -600,6 +657,62 @@ export function UsersPanel() {
             >
               <Check />
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 会员调整 */}
+      <Dialog open={memberUser !== null} onOpenChange={(v) => !v && setMemberUser(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>调整会员</DialogTitle>
+            <DialogDescription>
+              {memberUser?.tier === 'vip'
+                ? `「${memberUser.username}」当前是会员，剩余 ${memberUser.member_days} 天。`
+                : `「${memberUser?.username}」当前是普通用户。`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label htmlFor="member-days">增减天数</Label>
+              <Input
+                id="member-days"
+                type="number"
+                value={memberDays}
+                onChange={(e) => setMemberDays(Number(e.target.value))}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                正数延长，负数扣减（扣到过去即立即到期）。从「现在与原到期时间中较晚者」起算，
+                连续调整不会冲掉剩余时间。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[7, 30, 90, 365].map((d) => (
+                <Button key={d} size="sm" variant="secondary" onClick={() => setMemberDays(d)}>
+                  +{d} 天
+                </Button>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              className="text-danger hover:bg-danger/10"
+              loading={revokeMut.isPending}
+              onClick={() => memberUser && revokeMut.mutate(memberUser.id)}
+            >
+              直接取消会员
+            </Button>
+            <Button
+              loading={memberMut.isPending}
+              disabled={!memberDays}
+              onClick={() =>
+                memberUser && memberMut.mutate({ id: memberUser.id, days: memberDays })
+              }
+            >
+              <Check />
+              应用
             </Button>
           </DialogFooter>
         </DialogContent>

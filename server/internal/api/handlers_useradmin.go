@@ -376,9 +376,20 @@ func (s *Server) handleAdminUsersQuota(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": usage,
+		// 两档配额都给出来：前端要按每个用户自己的档位显示对应上限，
+		// 而不是拿一个统一数字糊弄。
 		"limits": map[string]any{
-			"max_rules_per_user": set.MaxRulesPerUser,
-			"max_subs_per_user":  set.MaxSubsPerUser,
+			"free": map[string]any{
+				"max_rules":     set.FreeMaxRules,
+				"max_subs":      set.FreeMaxSubs,
+				"daily_queries": set.FreeDailyQueries,
+			},
+			"vip": map[string]any{
+				"max_rules":     set.VipMaxRules,
+				"max_subs":      set.VipMaxSubs,
+				"daily_queries": set.VipDailyQueries,
+			},
+			"member_reward_days": set.MemberRewardDays,
 		},
 	})
 }

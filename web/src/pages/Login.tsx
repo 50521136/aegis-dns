@@ -94,6 +94,15 @@ export default function Login() {
         </Button>
       </form>
 
+      <div className="mt-4 text-center">
+        <Link
+          to="/forgot-password"
+          className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+        >
+          忘记密码？
+        </Link>
+      </div>
+
       <p className="mt-6 text-center text-sm text-muted-foreground">
         还没有账号？{' '}
         <Link to="/register" className="font-medium text-primary hover:underline">

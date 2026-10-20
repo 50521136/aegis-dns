@@ -321,3 +321,23 @@ func (s *Server) handlePublicStats(w http.ResponseWriter, r *http.Request) {
 		"unique_domains": unique,
 	})
 }
+
+// handlePublicConfig 给登录/注册页用的公开配置。
+//
+// 注册页需要知道「要不要邀请码」「要不要邮箱验证」「能不能发信」，
+// 否则只能等用户填完提交才报错 —— 而那时候他可能已经等了半分钟收信。
+// 只暴露布尔与站点名，不含任何密钥或内部设置。
+func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
+	set, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"allow_register":       set.AllowRegister,
+		"require_invite":       set.InviteCode != "",
+		"require_email_verify": set.EmailVerifyRegister,
+		"email_available":      set.SMTPEnabled,
+		"domain":               s.domain(r),
+	})
+}

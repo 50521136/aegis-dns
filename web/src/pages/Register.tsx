@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -9,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CopyField } from '@/components/CopyField'
+import { getPublicConfig, sendEmailCode } from '@/api/member'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
@@ -21,6 +23,8 @@ const schema = z.object({
     .max(32, '用户名最多 32 个字符')
     .regex(/^[a-zA-Z0-9_-]+$/, '仅支持字母、数字、下划线与连字符'),
   email: z.string().email('请输入有效的邮箱地址'),
+  invite_code: z.string().optional(),
+  email_code: z.string().optional(),
   password: z
     .string()
     .min(8, '密码至少 8 个字符')
@@ -36,19 +40,57 @@ export default function Register() {
   const navigate = useNavigate()
   const [showPassword, setShowPassword] = useState(false)
   const [dnsConfig, setDnsConfig] = useState<DnsConfig | null>(null)
-
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { username: '', email: '', password: '' },
+    defaultValues: { username: '', email: '', password: '', invite_code: '', email_code: '' },
   })
+
+  // 公开配置决定表单要显示哪些字段：不要邀请码的站点不该摆一个空框
+  const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
+  const cfg = cfgQuery.data
+  const [sending, setSending] = useState(false)
+  const [countdown, setCountdown] = useState(0)
+  const emailValue = watch('email')
+
+  // 倒计时：不加的话用户会连点发送，然后被后端限流报错
+  useEffect(() => {
+    if (countdown <= 0) return
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [countdown])
+
+  const sendCode = async () => {
+    if (!emailValue || !/^\S+@\S+\.\S+$/.test(emailValue)) {
+      toast.error('请先填写有效邮箱', '验证码会发到这个地址')
+      return
+    }
+    setSending(true)
+    try {
+      await sendEmailCode(emailValue, 'register')
+      toast.success('验证码已发出', `请查收 ${emailValue}`)
+      setCountdown(60)
+    } catch (err) {
+      toast.error('发送失败', errorMessage(err))
+    } finally {
+      setSending(false)
+    }
+  }
+
 
   const onSubmit = async (values: FormValues) => {
     try {
-      const res = await registerUser(values.username, values.email, values.password)
+      const res = await registerUser({
+        username: values.username,
+        email: values.email,
+        password: values.password,
+        invite_code: values.invite_code?.trim() || undefined,
+        email_code: values.email_code?.trim() || undefined,
+      })
       toast.success('注册成功', '你的专属 DNS 地址已生成')
       if (res.dns_config) {
         setDnsConfig(res.dns_config)
@@ -120,6 +162,50 @@ export default function Register() {
           <Input id="email" type="email" autoComplete="email" placeholder="you@example.com" {...register('email')} />
           {errors.email && <p className="text-xs text-danger">{errors.email.message}</p>}
         </div>
+
+        {/* 开启注册邮箱验证时才出现验证码字段 */}
+        {cfg?.require_email_verify && (
+          <div className="space-y-1.5">
+            <Label htmlFor="email_code">邮箱验证码</Label>
+            <div className="flex gap-2">
+              <Input
+                id="email_code"
+                className="min-w-0 flex-1 font-mono tracking-widest"
+                inputMode="numeric"
+                maxLength={6}
+                placeholder="6 位数字"
+                autoComplete="one-time-code"
+                {...register('email_code')}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={sending || countdown > 0 || !cfg.email_available}
+                onClick={sendCode}
+              >
+                {countdown > 0 ? `${countdown}s` : sending ? '发送中' : '获取验证码'}
+              </Button>
+            </div>
+            {!cfg.email_available && (
+              <p className="text-xs text-danger">本站未配置邮件服务，暂时无法注册</p>
+            )}
+          </div>
+        )}
+
+        {/* 需要邀请码时才出现 */}
+        {cfg?.require_invite && (
+          <div className="space-y-1.5">
+            <Label htmlFor="invite_code">邀请码</Label>
+            <Input
+              id="invite_code"
+              className="font-mono uppercase"
+              placeholder="请输入邀请码"
+              autoComplete="off"
+              {...register('invite_code')}
+            />
+            <p className="text-xs text-muted-foreground">邀请码由管理员或已注册用户提供</p>
+          </div>
+        )}
 
         <div className="space-y-2">
           <Label htmlFor="password">密码</Label>

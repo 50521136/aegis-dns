@@ -13,6 +13,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/50521136/aegis-dns/server/internal/mail"
 	"github.com/50521136/aegis-dns/server/internal/model"
 	"github.com/50521136/aegis-dns/server/internal/resolver"
 	"github.com/50521136/aegis-dns/server/internal/selfupdate"
@@ -212,11 +213,27 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"update_channel":           set.UpdateChannel,
 
 		// 配额：前端据此显示「已用 x / 上限 y」并在新建时提前拦。
-		"max_rules_per_user": set.MaxRulesPerUser,
-		"max_subs_per_user":  set.MaxSubsPerUser,
-		"max_sub_entries":    set.MaxSubEntries,
-		"max_rules_global":   set.MaxRulesGlobal,
-		"max_subs_global":    set.MaxSubsGlobal,
+		"max_sub_entries": set.MaxSubEntries,
+		// 会员两档配额
+		"free_max_rules":     set.FreeMaxRules,
+		"free_max_subs":      set.FreeMaxSubs,
+		"free_daily_queries": set.FreeDailyQueries,
+		"vip_max_rules":      set.VipMaxRules,
+		"vip_max_subs":       set.VipMaxSubs,
+		"vip_daily_queries":  set.VipDailyQueries,
+		"member_reward_days": set.MemberRewardDays,
+
+		// 邮件服务。密码不回传：后台表单只需要知道「有没有配」，
+		// 把明文密码发到浏览器等于把它暴露在任何一次截图/日志里。
+		"smtp_enabled":          set.SMTPEnabled,
+		"smtp_host":             set.SMTPHost,
+		"smtp_port":             set.SMTPPort,
+		"smtp_user":             set.SMTPUser,
+		"smtp_pass_set":         set.SMTPPass != "",
+		"smtp_from":             set.SMTPFrom,
+		"smtp_from_name":        set.SMTPFromName,
+		"smtp_tls":              set.SMTPTLS,
+		"email_verify_register": set.EmailVerifyRegister,
 
 		// 主域名开关、清理周期、自助重置上限、租户侧总开关。
 		// 这个 map 是手写的，加字段时这里必须同步 —— 漏了的话设置存进去了
@@ -272,11 +289,24 @@ type settingsPatch struct {
 	UpdateRepo     *string   `json:"update_repo"`
 	UpdateChannel  *string   `json:"update_channel"`
 
-	MaxRulesPerUser *int `json:"max_rules_per_user"`
-	MaxSubsPerUser  *int `json:"max_subs_per_user"`
-	MaxSubEntries   *int `json:"max_sub_entries"`
-	MaxRulesGlobal  *int `json:"max_rules_global"`
-	MaxSubsGlobal   *int `json:"max_subs_global"`
+	MaxSubEntries    *int   `json:"max_sub_entries"`
+	FreeMaxRules     *int   `json:"free_max_rules"`
+	FreeMaxSubs      *int   `json:"free_max_subs"`
+	FreeDailyQueries *int64 `json:"free_daily_queries"`
+	VipMaxRules      *int   `json:"vip_max_rules"`
+	VipMaxSubs       *int   `json:"vip_max_subs"`
+	VipDailyQueries  *int64 `json:"vip_daily_queries"`
+	MemberRewardDays *int   `json:"member_reward_days"`
+
+	SMTPEnabled         *bool   `json:"smtp_enabled"`
+	SMTPHost            *string `json:"smtp_host"`
+	SMTPPort            *int    `json:"smtp_port"`
+	SMTPUser            *string `json:"smtp_user"`
+	SMTPPass            *string `json:"smtp_pass"`
+	SMTPFrom            *string `json:"smtp_from"`
+	SMTPFromName        *string `json:"smtp_from_name"`
+	SMTPTLS             *string `json:"smtp_tls"`
+	EmailVerifyRegister *bool   `json:"email_verify_register"`
 
 	AllowRootDomain *bool `json:"allow_root_domain"`
 	StatsRetentionD *int  `json:"stats_retention_days"`
@@ -318,11 +348,27 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.QueryLogSize, p.QueryLogSize)
 	setInt(&dst.SubIntervalH, p.SubIntervalH)
 	setInt(&dst.LogRetentionD, p.LogRetentionD)
-	setInt(&dst.MaxRulesPerUser, p.MaxRulesPerUser)
-	setInt(&dst.MaxSubsPerUser, p.MaxSubsPerUser)
 	setInt(&dst.MaxSubEntries, p.MaxSubEntries)
-	setInt(&dst.MaxRulesGlobal, p.MaxRulesGlobal)
-	setInt(&dst.MaxSubsGlobal, p.MaxSubsGlobal)
+	setInt(&dst.FreeMaxRules, p.FreeMaxRules)
+	setInt(&dst.FreeMaxSubs, p.FreeMaxSubs)
+	setInt64(&dst.FreeDailyQueries, p.FreeDailyQueries)
+	setInt(&dst.VipMaxRules, p.VipMaxRules)
+	setInt(&dst.VipMaxSubs, p.VipMaxSubs)
+	setInt64(&dst.VipDailyQueries, p.VipDailyQueries)
+	setInt(&dst.MemberRewardDays, p.MemberRewardDays)
+	setStr(&dst.SMTPHost, p.SMTPHost)
+	setInt(&dst.SMTPPort, p.SMTPPort)
+	setStr(&dst.SMTPUser, p.SMTPUser)
+	// 密码留空表示「不修改」：前端拿不到原密码，回传的永远是空串，
+	// 如果按空串覆盖，用户改任何别的设置都会把密码清掉。
+	if p.SMTPPass != nil && *p.SMTPPass != "" {
+		dst.SMTPPass = *p.SMTPPass
+	}
+	setStr(&dst.SMTPFrom, p.SMTPFrom)
+	setStr(&dst.SMTPFromName, p.SMTPFromName)
+	setStr(&dst.SMTPTLS, p.SMTPTLS)
+	setBool(&dst.SMTPEnabled, p.SMTPEnabled)
+	setBool(&dst.EmailVerifyRegister, p.EmailVerifyRegister)
 	setInt(&dst.StatsRetentionD, p.StatsRetentionD)
 	setInt(&dst.MaxIDResets, p.MaxIDResets)
 	setBool(&dst.EnableQueryLog, p.EnableQueryLog)
@@ -341,7 +387,19 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	}
 }
 
+func setStr(dst *string, src *string) {
+	if src != nil {
+		*dst = strings.TrimSpace(*src)
+	}
+}
+
 func setInt(dst *int, src *int) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setInt64(dst *int64, src *int64) {
 	if src != nil {
 		*dst = *src
 	}
@@ -457,20 +515,29 @@ func mergeSettings(dst *model.GlobalSettings, src *model.GlobalSettings) {
 	}
 	// 配额：允许显式设成 0 表示「不限制」，因此不做非零判断。
 	// 但负数没有意义，直接忽略。
-	if src.MaxRulesPerUser >= 0 {
-		dst.MaxRulesPerUser = src.MaxRulesPerUser
-	}
-	if src.MaxSubsPerUser >= 0 {
-		dst.MaxSubsPerUser = src.MaxSubsPerUser
-	}
 	if src.MaxSubEntries >= 0 {
 		dst.MaxSubEntries = src.MaxSubEntries
 	}
-	if src.MaxRulesGlobal >= 0 {
-		dst.MaxRulesGlobal = src.MaxRulesGlobal
+	if src.FreeMaxRules >= 0 {
+		dst.FreeMaxRules = src.FreeMaxRules
 	}
-	if src.MaxSubsGlobal >= 0 {
-		dst.MaxSubsGlobal = src.MaxSubsGlobal
+	if src.FreeMaxSubs >= 0 {
+		dst.FreeMaxSubs = src.FreeMaxSubs
+	}
+	if src.FreeDailyQueries >= 0 {
+		dst.FreeDailyQueries = src.FreeDailyQueries
+	}
+	if src.VipMaxRules >= 0 {
+		dst.VipMaxRules = src.VipMaxRules
+	}
+	if src.VipMaxSubs >= 0 {
+		dst.VipMaxSubs = src.VipMaxSubs
+	}
+	if src.VipDailyQueries >= 0 {
+		dst.VipDailyQueries = src.VipDailyQueries
+	}
+	if src.MemberRewardDays > 0 {
+		dst.MemberRewardDays = src.MemberRewardDays
 	}
 	// 统计保留天数允许设成 0（不自动清理），所以用 >= 0。
 	if src.StatsRetentionD >= 0 {
@@ -623,20 +690,59 @@ func validateSettings(s *model.GlobalSettings) error {
 	// 配额上限：0 = 不限制，其余必须落在合理区间。
 	// 不设上限的话一个管理员把 max_sub_entries 写成 1000 万，
 	// 一次订阅就能把进程内存打爆 —— 这正是这个功能要防的事。
-	if s.MaxRulesPerUser < 0 || s.MaxRulesPerUser > 100000 {
-		return errValidation("max_rules_per_user 需在 0 到 100000 之间（0 = 不限制）")
-	}
-	if s.MaxSubsPerUser < 0 || s.MaxSubsPerUser > 200 {
-		return errValidation("max_subs_per_user 需在 0 到 200 之间（0 = 不限制）")
-	}
 	if s.MaxSubEntries < 0 || s.MaxSubEntries > 2000000 {
 		return errValidation("max_sub_entries 需在 0 到 2000000 之间（0 = 不限制）")
 	}
-	if s.MaxRulesGlobal < 0 || s.MaxRulesGlobal > 100000 {
-		return errValidation("max_rules_global 需在 0 到 100000 之间（0 = 不限制）")
+	// 会员两档配额。免费档必须严格小于会员档，否则「开会员」这件事
+	// 在配额上完全没有意义，运营还以为自己配错了。
+	if s.FreeMaxRules < 0 || s.FreeMaxRules > 100000 {
+		return errValidation("free_max_rules 需在 0 到 100000 之间（0 = 不限制）")
 	}
-	if s.MaxSubsGlobal < 0 || s.MaxSubsGlobal > 200 {
-		return errValidation("max_subs_global 需在 0 到 200 之间（0 = 不限制）")
+	if s.VipMaxRules < 0 || s.VipMaxRules > 100000 {
+		return errValidation("vip_max_rules 需在 0 到 100000 之间（0 = 不限制）")
+	}
+	if s.FreeMaxSubs < 0 || s.FreeMaxSubs > 200 {
+		return errValidation("free_max_subs 需在 0 到 200 之间（0 = 不限制）")
+	}
+	if s.VipMaxSubs < 0 || s.VipMaxSubs > 200 {
+		return errValidation("vip_max_subs 需在 0 到 200 之间（0 = 不限制）")
+	}
+	if s.FreeDailyQueries < 0 {
+		return errValidation("free_daily_queries 不能为负（0 = 不限制）")
+	}
+	if s.VipDailyQueries < 0 {
+		return errValidation("vip_daily_queries 不能为负（0 = 不限制）")
+	}
+	if s.MemberRewardDays < 1 || s.MemberRewardDays > 3650 {
+		return errValidation("member_reward_days 需在 1 到 3650 之间")
+	}
+	// 邮件：只有启用时才要求配全，否则「先填一半保存」会被卡住。
+	if s.SMTPEnabled {
+		if strings.TrimSpace(s.SMTPHost) == "" {
+			return errValidation("启用邮件服务时必须填写 SMTP 服务器")
+		}
+		if s.SMTPPort <= 0 || s.SMTPPort > 65535 {
+			return errValidation("smtp_port 不合法")
+		}
+		if !strings.Contains(s.SMTPFrom, "@") {
+			return errValidation("smtp_from 需为合法邮箱地址")
+		}
+		switch s.SMTPTLS {
+		case mail.TLSNone, mail.TLSStartTLS, mail.TLSImplicit:
+		default:
+			return errValidation("smtp_tls 只能是 none / starttls / tls")
+		}
+		// 打开注册验证却没配邮件，等于把所有人挡在门外
+		if s.EmailVerifyRegister {
+			if err := (mail.Config{
+				Host: s.SMTPHost, Port: s.SMTPPort, From: s.SMTPFrom,
+				TLS: s.SMTPTLS, Enabled: true,
+			}).Validate(); err != nil {
+				return errValidation("邮件配置不完整: " + err.Error())
+			}
+		}
+	} else if s.EmailVerifyRegister {
+		return errValidation("开启注册邮箱验证前必须先启用并配好邮件服务")
 	}
 	return nil
 }

@@ -91,12 +91,17 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/docs", s.handleDocs)
 		// 首页用的公开统计（无需认证，只含聚合数字）
 		r.Get("/public/stats", s.handlePublicStats)
+		// 登录/注册页需要的公开配置（是否要邀请码、是否要邮箱验证）
+		r.Get("/public/config", s.handlePublicConfig)
 
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/register", s.handleRegister)
 			r.Post("/login", s.handleLogin)
 			r.Post("/refresh", s.handleRefresh)
 			r.Post("/logout", s.handleLogout)
+			// 邮箱验证码：注册验证与找回密码共用
+			r.Post("/email/send-code", s.handleSendEmailCode)
+			r.Post("/forgot-password", s.handleForgotPassword)
 		})
 
 		// --- 需要认证 ---
@@ -118,6 +123,12 @@ func (s *Server) Handler() http.Handler {
 			// 自定义 client_id：每个用户只有一次机会，之后只能找管理员
 			r.Post("/me/client-id", s.handleSetMyClientID)
 			r.Get("/me/export", s.handleExport)
+			// 会员档位、配额与邀请战绩
+			r.Get("/me/membership", s.handleMyMembership)
+			// 公告：列表带未读数，已读与「不再弹出」分开记
+			r.Get("/me/announcements", s.handleMyAnnouncements)
+			r.Post("/me/announcements/{id}/read", s.handleReadAnnouncement)
+			r.Post("/me/announcements/{id}/dismiss", s.handleDismissAnnouncement)
 			r.Post("/me/import", s.handleImport)
 			r.Get("/me/tokens", s.handleListTokens)
 			r.Post("/me/tokens", s.handleCreateToken)
@@ -189,6 +200,21 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/settings/test-upstream", s.handleTestUpstream)
 				// 系统级备份：数据库 + 配置 + 证书打包下载
 				r.Get("/backup", s.handleAdminBackup)
+
+				// 邀请码与会员期
+				r.Get("/invite-codes", s.handleListInviteCodes)
+				r.Post("/invite-codes", s.handleCreateInviteCode)
+				r.Patch("/invite-codes/{code}", s.handleUpdateInviteCode)
+				r.Delete("/invite-codes/{code}", s.handleDeleteInviteCode)
+				r.Post("/users/{id}/member", s.handleSetMember)
+				r.Post("/users/{id}/member/revoke", s.handleRevokeMember)
+
+				// 公告
+				r.Get("/announcements", s.handleListAnnouncements)
+				r.Post("/announcements", s.handleCreateAnnouncement)
+				r.Post("/settings/test-email", s.handleTestEmail)
+				r.Patch("/announcements/{id}", s.handleUpdateAnnouncement)
+				r.Delete("/announcements/{id}", s.handleDeleteAnnouncement)
 				r.Get("/users/usage", s.handleAdminUsersQuota)
 				r.Post("/maintenance/cleanup", s.handleAdminCleanup)
 				r.Get("/settings", s.handleAdminGetSettings)

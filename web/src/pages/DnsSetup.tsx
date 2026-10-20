@@ -11,7 +11,7 @@ import {
   Wifi,
   Download,
 } from 'lucide-react'
-import { downloadMobileConfig, getDnsConfig } from '@/api/me'
+import { downloadMobileConfig, getDnsConfig, getMe } from '@/api/me'
 import { PageHeader } from '@/components/PageHeader'
 import { CopyField } from '@/components/CopyField'
 import { ErrorState } from '@/components/ErrorState'
@@ -21,6 +21,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { errorMessage } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/toast'
+import { ClientIDActions } from '@/components/ClientIDActions'
+import { getMyMembership } from '@/api/member'
 
 const platformMeta: Record<string, { label: string; icon: React.ReactNode }> = {
   ios: { label: 'iOS', icon: <Apple className="size-4" /> },
@@ -37,6 +39,9 @@ export default function DnsSetup() {
     queryKey: ['me', 'dns-config'],
     queryFn: getDnsConfig,
   })
+  // 重置次数与自定义 ID 是否用过都要展示，用户才知道还剩几次机会
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe })
+  const { data: membership } = useQuery({ queryKey: ['membership'], queryFn: getMyMembership })
 
   return (
     <div className="space-y-6">
@@ -70,6 +75,13 @@ export default function DnsSetup() {
                   <code className="rounded-md bg-muted px-2 py-1 font-mono text-[13px] font-medium">
                     {data.client_id}
                   </code>
+                  {/* 重置入口就放在 ID 旁边：看到它的那一刻才最可能想改 */}
+                  <ClientIDActions
+                    clientID={data.client_id}
+                    resetUsed={membership?.id_reset_count ?? me?.id_reset_count}
+                    resetLimit={membership?.max_id_resets}
+                    customUsed={membership?.custom_id_used ?? me?.custom_id_used}
+                  />
                 </div>
 
                 <CopyField label="DoH（DNS over HTTPS）" value={data.doh_url} />

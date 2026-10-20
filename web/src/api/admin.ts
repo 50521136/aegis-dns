@@ -109,7 +109,12 @@ export interface UserUsage {
 
 export interface UsersUsageResponse {
   items: UserUsage[]
-  limits: { max_rules_per_user: number; max_subs_per_user: number }
+  /** 两档配额：前端按每个用户自己的 tier 取对应上限 */
+  limits: {
+    free: { max_rules: number; max_subs: number; daily_queries: number }
+    vip: { max_rules: number; max_subs: number; daily_queries: number }
+    member_reward_days: number
+  }
 }
 
 export async function getUsersUsage(): Promise<UsersUsageResponse> {

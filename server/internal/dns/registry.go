@@ -55,6 +55,11 @@ type UserRuntime struct {
 	Pool *resolver.Pool
 	// RuleStats 保存构建时的规则条数统计，供 UI 展示。
 	RuleStats rules.Stats
+	// DailyQueries 是该用户的每日请求量上限，0 表示不限。
+	// 由 apid 按会员档位算好放进快照，dnsd 只当数字用。
+	DailyQueries int64
+	// MemberUntil 仅用于排障展示。
+	MemberUntil int64
 }
 
 // NewRegistry 创建一个空的 Registry。
@@ -239,11 +244,13 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 		}
 
 		ur := &UserRuntime{
-			UserID:    us.UserID,
-			ClientID:  cid,
-			Enabled:   us.Enabled,
-			Upstreams: us.Upstreams,
-			RuleStats: rs.Stats,
+			UserID:       us.UserID,
+			ClientID:     cid,
+			Enabled:      us.Enabled,
+			Upstreams:    us.Upstreams,
+			RuleStats:    rs.Stats,
+			DailyQueries: us.DailyQueries,
+			MemberUntil:  us.MemberUntil,
 		}
 		ur.Rules.Store(rs)
 

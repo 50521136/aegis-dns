@@ -68,8 +68,12 @@ type Handler struct {
 	defaults atomic.Pointer[model.Defaults]
 
 	// 指标
-	rejected     atomic.Int64
-	panics       atomic.Int64
+	rejected atomic.Int64
+	panics   atomic.Int64
+	// quotaRefused 统计因超出每日请求量上限被拒的次数
+	quotaRefused atomic.Int64
+	// quota 是每日请求量计数器（会员档位）
+	quota        *dailyQuota
 	upstreamErrs atomic.Int64
 }
 
@@ -80,6 +84,7 @@ func NewHandler(reg *Registry, cache *Cache, collector *stats.Collector, log *sl
 		collector: collector,
 		log:       log,
 		sem:       make(chan struct{}, 300),
+		quota:     newDailyQuota(),
 	}
 	if cache == nil {
 		cache = NewCache(10000, 60, 86400)
@@ -194,6 +199,23 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		h.record(user.UserID, q, "blocked", "REFUSED", time.Since(start), w)
 		_ = w.WriteMsg(refusedResponse(req))
 		return
+	}
+
+	// Stage 2 前置校验：每日请求量上限（会员档位）。
+	//
+	// 判定放在「识别出用户之后、任何解析动作之前」：
+	// 超额请求不该消耗上游、缓存与规则匹配的任何资源。
+	// 回 REFUSED 而不是 SERVFAIL —— 前者是「明确拒绝」，客户端会展示为
+	// 解析失败而不是重试；后者会诱发客户端反复重试，把上限越撞越死。
+	if !isFallback && user.DailyQueries > 0 {
+		if !h.quota.allow(user.UserID, user.DailyQueries, start) {
+			h.quotaRefused.Add(1)
+			h.record(user.UserID, q, "blocked", "REFUSED", time.Since(start), w, qdetail{
+				Proto: det.Proto, ECS: det.ECS,
+			})
+			_ = w.WriteMsg(refusedResponse(req))
+			return
+		}
 	}
 
 	// 裸域名开关。

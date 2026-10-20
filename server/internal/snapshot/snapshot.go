@@ -68,6 +68,9 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 	if err != nil {
 		return nil, err
 	}
+	// 会员档位按生成快照这一刻判定：到期后下一次重建快照就会自动降档，
+	// 不需要任何人手动改用户的档位字段。
+	now := time.Now()
 	users, err := st.ListUsersAll(ctx)
 	if err != nil {
 		return nil, err
@@ -131,6 +134,10 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 			Enabled:        u.Enabled,
 			UseGlobalRules: u.UseGlobalRules,
 			IPs:            ipsByUser[u.ID],
+			// 档位在这里被压成一个数字：dnsd 不需要知道「会员」是什么，
+			// 它只要知道这个用户每天能查多少次。
+			DailyQueries: model.QuotaForUser(u, settings, now).DailyQueries,
+			MemberUntil:  u.MemberUntil,
 		}
 		if rules, ok := rulesByUser[u.ID]; ok {
 			us.Rules = rules

@@ -63,6 +63,11 @@ type User struct {
 	// CustomIDUsed 标记用户是否已经用掉「自定义 client_id」那一次机会。
 	CustomIDUsed bool  `json:"custom_id_used"`
 	CreatedAt    int64 `json:"-"` // 对外由 handler 转成 RFC3339
+	// MemberUntil 是会员到期时间（Unix 秒），0 表示从未开通/已过期。
+	// 档位不单独存字段：到期即自动降级，不需要任何定时任务。
+	MemberUntil int64 `json:"member_until"`
+	// InvitedBy 记录拉新关系，用于统计与防止重复发放奖励。
+	InvitedBy string `json:"invited_by,omitempty"`
 }
 
 // Rule 是一条自定义规则。
@@ -180,6 +185,14 @@ type UserSnap struct {
 	// 订阅条目在这里被「压平」成纯域名数组：数十万条时 JSON 体积最小。
 	SubAllow []string `json:"sub_allow,omitempty"`
 	SubBlock []string `json:"sub_block,omitempty"`
+
+	// DailyQueries 是该用户每日请求量上限，0 表示不限。
+	// 由 apid 在生成快照时按会员档位算好，dnsd 只负责计数与判定 ——
+	// dnsd 不该知道「会员」这个概念，它只需要一个数字。
+	DailyQueries int64 `json:"daily_queries,omitempty"`
+	// MemberUntil 带进快照只用于展示与排障（例如自检横幅），
+	// 档位判定已经在 DailyQueries 里体现。
+	MemberUntil int64 `json:"member_until,omitempty"`
 }
 
 // Snapshot 是 apid 写给 dnsd 的完整配置快照（data/runtime/config.json）。
@@ -243,11 +256,38 @@ type GlobalSettings struct {
 	//
 	// 一次订阅拉进来 23 万条是常态，而订阅条目是**按用户压平**进快照的，
 	// 几个用户订阅同一份列表就会成倍膨胀。默认取严格档。
-	MaxRulesPerUser int `json:"max_rules_per_user"` // 单个用户的个人规则上限
-	MaxSubsPerUser  int `json:"max_subs_per_user"`  // 单个用户的个人订阅上限
-	MaxSubEntries   int `json:"max_sub_entries"`    // 单个订阅解析后的条目上限（超出截断）
-	MaxRulesGlobal  int `json:"max_rules_global"`   // 全局规则上限
-	MaxSubsGlobal   int `json:"max_subs_global"`    // 全局订阅上限
+	MaxSubEntries int `json:"max_sub_entries"` // 单个订阅解析后的条目上限（超出截断）
+
+	// 会员两档配额。档位不落库，按 users.member_until 实时判定，
+	// 这里只描述「每档能给多少」。
+	//
+	// DailyQueries 为 0 表示不限量；单位是「每天」且按 UTC 自然日归零。
+	FreeMaxRules     int   `json:"free_max_rules"`
+	FreeMaxSubs      int   `json:"free_max_subs"`
+	FreeDailyQueries int64 `json:"free_daily_queries"`
+	VipMaxRules      int   `json:"vip_max_rules"`
+	VipMaxSubs       int   `json:"vip_max_subs"`
+	VipDailyQueries  int64 `json:"vip_daily_queries"`
+
+	// MemberRewardDays 是邀请码的默认奖励天数（新建码时的预填值）。
+	MemberRewardDays int `json:"member_reward_days"`
+
+	// --- 邮件服务 ---
+	//
+	// 用于注册邮箱验证与找回密码。SMTPPass 只写不读：
+	// GET /admin/settings 返回时会被抹掉，只留一个「是否已设置」的布尔。
+	SMTPEnabled  bool   `json:"smtp_enabled"`
+	SMTPHost     string `json:"smtp_host"`
+	SMTPPort     int    `json:"smtp_port"`
+	SMTPUser     string `json:"smtp_user"`
+	SMTPPass     string `json:"smtp_pass"`
+	SMTPFrom     string `json:"smtp_from"`
+	SMTPFromName string `json:"smtp_from_name"`
+	SMTPTLS      string `json:"smtp_tls"`
+
+	// EmailVerifyRegister 为真时，注册必须先通过邮箱验证码。
+	// 与 AllowRegister 是两回事：后者管「能不能注册」，这个管「注册要不要验证」。
+	EmailVerifyRegister bool `json:"email_verify_register"`
 
 	// AllowRootDomain 为真时，主域名本身（如 example.com）也能解析，
 	// 而不只是 <client_id>.example.com。方便用户在没法填子域名的客户端里直接用主域名。
@@ -297,11 +337,22 @@ func DefaultSettings() GlobalSettings {
 		AllowUserRules:  true,
 		AllowUserSubs:   true,
 
-		MaxRulesPerUser: 50,
-		MaxSubsPerUser:  3,
-		MaxSubEntries:   50000,
-		MaxRulesGlobal:  500,
-		MaxSubsGlobal:   20,
+		MaxSubEntries: 50000,
+
+		// 免费档刻意压得比原来的统一配额更低：会员的意义就在于这两档有差别。
+		FreeMaxRules:     20,
+		FreeMaxSubs:      1,
+		FreeDailyQueries: 50000,
+		VipMaxRules:      200,
+		VipMaxSubs:       10,
+		VipDailyQueries:  0, // 会员不限请求量
+		MemberRewardDays: 30,
+
+		// 邮件默认关闭：没配 SMTP 就打开验证会让所有人都注册不了。
+		SMTPEnabled:         false,
+		SMTPPort:            465,
+		SMTPTLS:             "tls",
+		EmailVerifyRegister: false,
 	}
 }
 
@@ -358,3 +409,53 @@ type QueryLogRow struct {
 	Tracker    string `json:"tracker,omitempty"`     // 命中的已知追踪器
 	ClientName string `json:"client_name,omitempty"` // 客户端备注名
 }
+
+// InviteCode 是一个邀请码。
+//
+// 码本身是分发出去的凭据，创建后不可修改（改了等于把已发出去的码作废）；
+// 可改的只有备注、奖励天数、次数上限、有效期与开关。
+type InviteCode struct {
+	Code       string `json:"code"`
+	OwnerID    string `json:"owner_id"`
+	Note       string `json:"note"`
+	RewardDays int    `json:"reward_days"`
+	MaxUses    int    `json:"max_uses"` // 0 = 不限
+	UsedCount  int    `json:"used_count"`
+	ExpiresAt  int64  `json:"expires_at"` // 0 = 永不过期
+	Enabled    bool   `json:"enabled"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+// Announcement 是一条站内公告。
+type Announcement struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Level string `json:"level"` // info | warning | danger
+	Mode  string `json:"mode"`  // silent | popup
+	// Dismissible 控制 popup 模式下是否提供「不再弹出」。
+	// 关掉就只能点「我知道了」，每次登录都会再弹一次 —— 用于必须看到的通知。
+	Dismissible bool  `json:"dismissible"`
+	Enabled     bool  `json:"enabled"`
+	Pinned      bool  `json:"pinned"`
+	StartsAt    int64 `json:"starts_at"` // 0 = 立即生效
+	EndsAt      int64 `json:"ends_at"`   // 0 = 永不过期
+	CreatedAt   int64 `json:"created_at"`
+}
+
+// AnnouncementView 是面向用户的公告，带该用户自己的已读状态。
+type AnnouncementView struct {
+	Announcement
+	ReadAt      int64 `json:"read_at"`
+	DismissedAt int64 `json:"dismissed_at"`
+}
+
+// 公告等级与投递方式常量。
+const (
+	AnnLevelInfo    = "info"
+	AnnLevelWarning = "warning"
+	AnnLevelDanger  = "danger"
+
+	AnnModeSilent = "silent"
+	AnnModePopup  = "popup"
+)

@@ -201,6 +201,13 @@ type userJSON struct {
 	SubsEnabled    bool   `json:"subs_enabled"`
 	CustomIDUsed   bool   `json:"custom_id_used"`
 	CreatedAt      string `json:"created_at"`
+
+	// 会员信息。档位不落库，这里按当前时间实时算出来给前端，
+	// 前端不需要自己判断 member_until 有没有过期。
+	MemberUntil int64  `json:"member_until"`
+	MemberDays  int    `json:"member_days"`
+	Tier        string `json:"tier"`
+	InvitedBy   string `json:"invited_by,omitempty"`
 }
 
 // toUserJSON 直接吃 *model.User。
@@ -215,6 +222,10 @@ func toUserJSON(u *model.User) userJSON {
 		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
 		CustomIDUsed: u.CustomIDUsed,
 		CreatedAt:    time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
+		MemberUntil:  u.MemberUntil,
+		MemberDays:   u.MemberRemainingDays(time.Now()),
+		Tier:         string(model.TierOf(u, time.Now())),
+		InvitedBy:    u.InvitedBy,
 	}
 }
 

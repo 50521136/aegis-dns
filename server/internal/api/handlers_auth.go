@@ -7,6 +7,7 @@ import (
 
 	"github.com/50521136/aegis-dns/server/internal/auth"
 	"github.com/50521136/aegis-dns/server/internal/model"
+	"github.com/50521136/aegis-dns/server/internal/store"
 )
 
 // registerRequest 是注册请求体。
@@ -16,6 +17,8 @@ type registerRequest struct {
 	Password string `json:"password"`
 	// InviteCode 在全局设置开启邀请码时必填。
 	InviteCode string `json:"invite_code"`
+	// EmailCode 在开启「注册邮箱验证」时必填。
+	EmailCode string `json:"email_code"`
 }
 
 // authResponse 是注册/登录的统一响应（文档 9.2）。
@@ -58,7 +61,47 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, CodeForbidden, "当前已关闭公开注册，请联系管理员开通账号", nil)
 		return
 	}
-	if settings.InviteCode != "" && req.InviteCode != settings.InviteCode {
+	// 邮箱验证：必须在建账号之前过。
+	// 放在后面就等于「先占住用户名，再慢慢验证」，验证码失效时用户名已经被占用。
+	if settings.EmailVerifyRegister {
+		if strings.TrimSpace(req.Email) == "" {
+			writeError(w, http.StatusBadRequest, CodeValidationFailed, "开启邮箱验证时必须填写邮箱", nil)
+			return
+		}
+		email := strings.ToLower(strings.TrimSpace(req.Email))
+		if err := s.store.VerifyEmailCode(r.Context(), email, store.EmailPurposeRegister, strings.TrimSpace(req.EmailCode)); err != nil {
+			writeError(w, http.StatusBadRequest, CodeValidationFailed, err.Error(), nil)
+			return
+		}
+	}
+
+	// 邀请码校验：两条路都认。
+	//   - 全局设置里的单个邀请码（老机制，只有一个，谁用都一样）
+	//   - invite_codes 表里的码（带奖励天数、次数与有效期）
+	// 先查表再回退到老机制，这样已有的部署不用改配置就能继续用。
+	code := strings.ToUpper(strings.TrimSpace(req.InviteCode))
+	codeInTable := false
+	if code != "" {
+		if c, err := s.store.GetInviteCode(r.Context(), code); err == nil && c != nil {
+			codeInTable = true
+			// 这里只做「存在且可用」的粗判，真正的核销在注册成功后由
+			// RedeemInvite 在事务里做（含次数与有效期复查），
+			// 避免校验与核销之间被并发挤过。
+			if !c.Enabled {
+				writeError(w, http.StatusForbidden, CodeForbidden, "邀请码已停用", nil)
+				return
+			}
+			if c.ExpiresAt > 0 && time.Now().Unix() > c.ExpiresAt {
+				writeError(w, http.StatusForbidden, CodeForbidden, "邀请码已过期", nil)
+				return
+			}
+			if c.MaxUses > 0 && c.UsedCount >= c.MaxUses {
+				writeError(w, http.StatusForbidden, CodeForbidden, "邀请码使用次数已用完", nil)
+				return
+			}
+		}
+	}
+	if settings.InviteCode != "" && !codeInTable && code != strings.ToUpper(strings.TrimSpace(settings.InviteCode)) {
 		writeError(w, http.StatusForbidden, CodeForbidden, "邀请码不正确", nil)
 		return
 	}
@@ -73,6 +116,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
+	}
+
+	// 核销邀请码并给邀请人发奖励。
+	// 失败不阻塞注册：账号已经建好了，为了「奖励没发出去」把人挡在门外
+	// 是本末倒置；失败会记日志，由管理员补偿。
+	if codeInTable {
+		if days, err := s.store.RedeemInvite(r.Context(), code, user.ID); err != nil {
+			s.log.Warn("核销邀请码失败", "code", code, "user", user.ID, "err", err)
+		} else if days > 0 {
+			// 邀请人的会员期变了，快照要跟着更新，否则他的配额还是旧的
+			if _, err := s.coord.Changed(r.Context(), ""); err != nil {
+				s.log.Warn("邀请奖励后重建快照失败", "err", err)
+			}
+		}
 	}
 
 	// 新用户默认没有任何规则；但必须立刻重建快照，

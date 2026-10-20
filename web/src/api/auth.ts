@@ -6,6 +6,10 @@ export interface RegisterPayload {
   username: string
   email: string
   password: string
+  /** 需要邀请码时必填 */
+  invite_code?: string
+  /** 开启注册邮箱验证时必填 */
+  email_code?: string
 }
 
 export interface LoginPayload {

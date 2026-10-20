@@ -370,10 +370,10 @@ SET_BEFORE=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"domain":"dns.e2e.local","allow_register":true,"enable_query_log":true,
        "allow_root_domain":false,"allow_user_rules":false,"allow_user_subs":true,
-       "max_id_resets":2,"stats_retention_days":0,"max_rules_per_user":7,
-       "max_subs_per_user":2,"max_sub_entries":1000,"max_rules_global":100,"max_subs_global":5}' >/dev/null
+       "max_id_resets":2,"stats_retention_days":0,"free_max_rules":7,
+       "free_max_subs":2,"max_sub_entries":1000,"vip_max_rules":100,"vip_max_subs":5}' >/dev/null
 SET_AFTER=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
-echo "$SET_AFTER" | grep -q '"max_rules_per_user":7' && ok "配额 max_rules_per_user 已持久化" || bad "配额未持久化"
+echo "$SET_AFTER" | grep -q '"free_max_rules":7' && ok "配额 free_max_rules 已持久化" || bad "配额未持久化"
 echo "$SET_AFTER" | grep -q '"max_sub_entries":1000' && ok "配额 max_sub_entries 已持久化" || bad "配额未持久化"
 echo "$SET_AFTER" | grep -q '"allow_root_domain":false' && ok "主域名开关已持久化（能存 false）" || bad "主域名开关未持久化"
 echo "$SET_AFTER" | grep -q '"max_id_resets":2' && ok "重置次数上限已持久化" || bad "重置次数未持久化"
@@ -428,8 +428,8 @@ hdr "主域名开关（DNS 解析层）"
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"domain":"dns.e2e.local","allow_register":true,"enable_query_log":true,
        "allow_root_domain":false,"allow_user_rules":true,"allow_user_subs":true,
-       "max_id_resets":2,"stats_retention_days":0,"max_rules_per_user":50,
-       "max_subs_per_user":3,"max_sub_entries":50000,"max_rules_global":500,"max_subs_global":20}' >/dev/null
+       "max_id_resets":2,"stats_retention_days":0,"free_max_rules":50,
+       "free_max_subs":3,"max_sub_entries":50000}' >/dev/null
 sleep 4
 OUT=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "dns.e2e.local" --insecure 2>&1 | tail -1)
 echo "  关: $OUT"
@@ -439,8 +439,8 @@ echo "$OUT" | grep -qiE 'REFUSED|拒绝' && ok "关闭时裸域名 → REFUSED" 
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"domain":"dns.e2e.local","allow_register":true,"enable_query_log":true,
        "allow_root_domain":true,"allow_user_rules":true,"allow_user_subs":true,
-       "max_id_resets":2,"stats_retention_days":0,"max_rules_per_user":50,
-       "max_subs_per_user":3,"max_sub_entries":50000,"max_rules_global":500,"max_subs_global":20}' >/dev/null
+       "max_id_resets":2,"stats_retention_days":0,"free_max_rules":50,
+       "free_max_subs":3,"max_sub_entries":50000}' >/dev/null
 sleep 4
 OUT2=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "dns.e2e.local" --insecure 2>&1 | tail -1)
 echo "  开: $OUT2"
@@ -669,6 +669,131 @@ else:
 sys.exit(1 if fails else 0)
 PYEOF
 if [[ $? -eq 0 ]]; then ok "日志详情字段齐全"; else bad "日志详情字段有缺失"; fi
+
+hdr "会员档位与两档配额"
+# 新注册用户必须是 free 档
+MEM=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN")
+echo "$MEM" | grep -q '"tier":"free"' && ok "新用户默认 free 档" || bad "默认档位不对: $(echo "$MEM" | head -c 120)"
+FREE_RULES=$(echo "$MEM" | python3 -c "import json,sys; print(json.load(sys.stdin)['quota']['max_rules'])")
+# 管理员给 +30 天
+MUID=$(echo "$MEM" >/dev/null; curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+SETM=$(curl -s -X POST "$API/admin/users/$MUID/member" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"days":30}')
+echo "$SETM" | grep -q '"tier":"vip"' && ok "加 30 天后变 vip" || bad "加会员失败: $SETM"
+echo "$SETM" | grep -q '"member_days":30' && ok "剩余天数正确（30）" || bad "天数不对: $SETM"
+# 快照要跟着更新，配额读出来应是 vip 档
+sleep 3
+MEM2=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN")
+VIP_RULES=$(echo "$MEM2" | python3 -c "import json,sys; print(json.load(sys.stdin)['quota']['max_rules'])")
+echo "$MEM2" | grep -q '"tier":"vip"' && ok "配额按 vip 档算" || bad "档位没切换"
+[[ "$VIP_RULES" -gt "$FREE_RULES" ]] && ok "会员规则上限更大（$FREE_RULES → $VIP_RULES）" \
+  || bad "会员配额没变大：$FREE_RULES → $VIP_RULES"
+# 再 +7 天应叠加而不是覆盖
+SETM2=$(curl -s -X POST "$API/admin/users/$MUID/member" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"days":7}')
+echo "$SETM2" | grep -q '"member_days":37' && ok "连续加会员天数会叠加（37）" || bad "天数被覆盖: $SETM2"
+# 取消
+curl -fsS -X POST "$API/admin/users/$MUID/member/revoke" -H "Authorization: Bearer $ADMTOK" >/dev/null
+sleep 2
+MEM3=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN")
+echo "$MEM3" | grep -q '"tier":"free"' && ok "取消会员后立刻降级" || bad "取消没生效"
+
+hdr "邀请码与拉新奖励"
+NEWCODE=$(curl -s -X POST "$API/admin/invite-codes" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"note":"e2e","reward_days":10,"max_uses":1}' | grep -o '"code":"[^"]*"' | cut -d'"' -f4)
+[[ -n "$NEWCODE" ]] && ok "邀请码已创建（$NEWCODE）" || bad "创建邀请码失败"
+# 关掉注册限制，用码注册一个新用户
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"allow_register":true,"invite_code":""}' >/dev/null
+INV=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"invited$$\",\"email\":\"invited$$@e2e.local\",\"password\":\"Passw0rd!23\",\"invite_code\":\"$NEWCODE\"}")
+echo "$INV" | grep -q '"access_token"' && ok "带邀请码可注册" || bad "注册失败: $(echo "$INV" | head -c 140)"
+# 邀请人（管理员）应拿到 10 天
+sleep 2
+ADMMEM=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $ADMTOK")
+ADMDAYS=$(echo "$ADMMEM" | python3 -c "import json,sys; print(json.load(sys.stdin)['member_days'])")
+[[ "$ADMDAYS" -ge 10 ]] && ok "邀请人获得 10 天奖励（当前 $ADMDAYS 天）" || bad "奖励没发: $ADMDAYS"
+# 次数用完后再用应被拒
+INV2=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"invited2$$\",\"email\":\"invited2$$@e2e.local\",\"password\":\"Passw0rd!23\",\"invite_code\":\"$NEWCODE\"}")
+echo "$INV2" | grep -qiE '次数已用完|不存在' && ok "次数用完的码被拒" || bad "超次数仍可用: $(echo "$INV2" | head -c 120)"
+
+hdr "公告：静默 / 弹窗 / 已读"
+ANN=$(curl -s -X POST "$API/admin/announcements" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"title":"e2e 静默公告","body":"只进公告栏","level":"info","mode":"silent"}')
+AID=$(echo "$ANN" | grep -o '"id":[0-9]*' | cut -d: -f2)
+[[ -n "$AID" ]] && ok "静默公告已发布（id=$AID）" || bad "发布失败: $ANN"
+MY=$(curl -fsS "$API/me/announcements" -H "Authorization: Bearer $TOKEN")
+echo "$MY" | grep -q "e2e 静默公告" && ok "用户能看到公告" || bad "用户看不到公告"
+echo "$MY" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+sys.exit(0 if d['unread']>=1 else 1)" && ok "未读数 ≥ 1（红点来源）" || bad "未读数不对"
+curl -fsS -X POST "$API/me/announcements/$AID/read" -H "Authorization: Bearer $TOKEN" >/dev/null
+MY2=$(curl -fsS "$API/me/announcements" -H "Authorization: Bearer $TOKEN")
+echo "$MY2" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+me=[a for a in d['items'] if a['id']==$AID][0]
+sys.exit(0 if me['read_at']>0 else 1)" && ok "标记已读生效" || bad "已读没记上"
+# 弹窗公告 + 不再弹出
+ANN2=$(curl -s -X POST "$API/admin/announcements" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"title":"e2e 弹窗","body":"会弹","mode":"popup","dismissible":true}')
+AID2=$(echo "$ANN2" | grep -o '"id":[0-9]*' | cut -d: -f2)
+curl -fsS -X POST "$API/me/announcements/$AID2/dismiss" -H "Authorization: Bearer $TOKEN" >/dev/null
+curl -fsS "$API/me/announcements" -H "Authorization: Bearer $TOKEN" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+me=[a for a in d['items'] if a['id']==$AID2][0]
+# 不再弹出必须隐含已读，否则公告栏会一直挂着红点
+sys.exit(0 if me['dismissed_at']>0 and me['read_at']>0 else 1)" \
+  && ok "不再弹出同时记为已读" || bad "dismiss 没隐含已读"
+# 清理
+curl -fsS -X DELETE "$API/admin/announcements/$AID" -H "Authorization: Bearer $ADMTOK" >/dev/null
+curl -fsS -X DELETE "$API/admin/announcements/$AID2" -H "Authorization: Bearer $ADMTOK" >/dev/null
+
+hdr "邮件服务（未启用时如实报错）"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"smtp_enabled":false,"email_verify_register":false}' >/dev/null
+EC=$(curl -s -X POST "$API/auth/email/send-code" -H 'Content-Type: application/json' \
+  -d '{"email":"nobody@e2e.local","purpose":"register"}')
+echo "$EC" | grep -q 'FEATURE_DISABLED' && ok "未启用邮件时发码被拒（FEATURE_DISABLED）" || bad "未启用仍尝试发信: $EC"
+# 开着注册验证但没配邮件，必须存不进去
+BAD=$(curl -s -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"email_verify_register":true}')
+echo "$BAD" | grep -qi '邮件' && ok "未配邮件时不允许开启注册验证" || bad "错误配置被接受: $BAD"
+# 密码永远不回传
+curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | grep -q '"smtp_pass":"' \
+  && bad "settings 回传了 SMTP 明文密码" || ok "SMTP 密码不回传"
+curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | grep -q '"smtp_pass_set"' \
+  && ok "只暴露是否已设置" || bad "缺 smtp_pass_set"
+
+hdr "全局层不再有配额上限"
+GQ=$(curl -fsS "$API/admin/rules?page=1&page_size=1" -H "Authorization: Bearer $ADMTOK")
+echo "$GQ" | grep -q '"limit":0' && ok "全局规则 limit=0（不限）" || bad "全局规则仍有上限: $(echo "$GQ" | grep -o '\"limit\":[0-9]*')"
+GS=$(curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK")
+echo "$GS" | grep -q '"limit":0' && ok "全局订阅 limit=0（不限）" || bad "全局订阅仍有上限"
+
+hdr "每日请求量上限（会员档）"
+# 把免费档压到极小，验证超额被 REFUSED。
+# 注意不能只 sleep 几秒：dnsd 的兜底轮询是 30s（fsnotify 正常情况下会更快），
+# 固定 sleep 会变成「有时过有时不过」的假失败。这里改成边探边等，
+# 一旦出现 REFUSED 就算生效，超时才判失败。
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"free_daily_queries":3}' >/dev/null
+QUOTA_CID=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+echo "  测试接入 ID: $QUOTA_CID"
+GOT_REFUSED=0
+LAST=""
+for i in $(seq 1 45); do
+  LAST=$($PROBE dot 127.0.0.1:18853 "quota$i.example.com" A --sni "$QUOTA_CID.dns.e2e.local" --insecure 2>&1 | tail -1)
+  if echo "$LAST" | grep -qiE 'REFUSED|拒绝'; then GOT_REFUSED=1; echo "  第 $i 次查询被拒"; break; fi
+  sleep 1
+done
+[[ "$GOT_REFUSED" == "1" ]] && ok "超过每日上限后返回 REFUSED" || bad "45 秒内未被拦截，最后一次: $LAST"
+# 恢复
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"free_daily_queries":50000}' >/dev/null
 
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——

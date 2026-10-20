@@ -13,13 +13,14 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, created_at`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
 	var enabled, useGlobal, rulesOn, subsOn, customUsed int
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
-		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed, &u.CreatedAt)
+		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed,
+		&u.MemberUntil, &u.InvitedBy, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -59,10 +60,11 @@ func (s *Store) CreateUser(ctx context.Context, username, email, passwordHash, r
 			CreatedAt:    now,
 		}
 		_, err := s.write.ExecContext(ctx,
-			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			u.ID, u.Username, u.Email, u.PasswordHash, u.Role, u.ClientID,
 			boolInt(u.Enabled), boolInt(u.UseGlobalRules), u.IDResetCount,
-			boolInt(u.RulesEnabled), boolInt(u.SubsEnabled), boolInt(u.CustomIDUsed), u.CreatedAt)
+			boolInt(u.RulesEnabled), boolInt(u.SubsEnabled), boolInt(u.CustomIDUsed),
+			u.MemberUntil, u.InvitedBy, u.CreatedAt)
 		if err == nil {
 			return u, nil
 		}
@@ -112,6 +114,11 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (*model.
 }
 
 // GetUserByID 按主键查询。
+// GetUser 是 GetUserByID 的短别名，供配额换算等高频调用点使用。
+func (s *Store) GetUser(ctx context.Context, uid string) (*model.User, error) {
+	return s.GetUserByID(ctx, uid)
+}
+
 func (s *Store) GetUserByID(ctx context.Context, uid string) (*model.User, error) {
 	row := s.read.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, uid)
 	u, err := scanUser(row)
@@ -125,6 +132,19 @@ func (s *Store) GetUserByID(ctx context.Context, uid string) (*model.User, error
 }
 
 // GetUserByClientID 按 client_id 查询（用于反查子域名归属，管理接口用）。
+// GetUserByEmail 按邮箱查用户（找回密码用）。查不到返回 (nil, nil)。
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
+	row := s.read.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE LOWER(email) = ? AND email != ''`, email)
+	u, err := scanUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询用户失败: %w", err)
+	}
+	return u, nil
+}
+
 func (s *Store) GetUserByClientID(ctx context.Context, cid string) (*model.User, error) {
 	row := s.read.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE client_id = ?`, cid)
 	u, err := scanUser(row)

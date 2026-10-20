@@ -101,21 +101,26 @@ func subToJSON(sub *model.Subscription) map[string]any {
 	}
 }
 
-// subQuota 返回指定 scope 下该用户的订阅配额上限。
-func (s *Server) subQuota(ctx context.Context, global bool) int {
+// subQuota 返回指定 scope 下的订阅配额上限，0 表示不限制。
+// 全局层不限（见 ruleQuota 的说明），个人层按会员档位算。
+func (s *Server) subQuota(ctx context.Context, uid string, global bool) int {
+	if global {
+		return 0
+	}
 	set, err := s.store.GetSettings(ctx)
 	if err != nil {
 		return 0
 	}
-	if global {
-		return set.MaxSubsGlobal
+	u, err := s.store.GetUser(ctx, uid)
+	if err != nil || u == nil {
+		return 0
 	}
-	return set.MaxSubsPerUser
+	return model.QuotaForUser(u, set, time.Now()).MaxSubs
 }
 
 // checkSubQuota 在新增订阅前检查配额。
 func (s *Server) checkSubQuota(ctx context.Context, uid string, global bool) error {
-	limit := s.subQuota(ctx, global)
+	limit := s.subQuota(ctx, uid, global)
 	if limit <= 0 {
 		return nil
 	}
@@ -178,7 +183,7 @@ func (s *Server) listSubs(w http.ResponseWriter, r *http.Request, global bool) {
 		items = append(items, subToJSON(sub))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items, "total": len(items), "limit": s.subQuota(r.Context(), global),
+		"items": items, "total": len(items), "limit": s.subQuota(r.Context(), currentUser(r).ID, global),
 	})
 }
 
