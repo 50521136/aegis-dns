@@ -314,21 +314,38 @@ func buildFallbackRules(snap *model.Snapshot) (*rules.RuleSet, error) {
 	if snap.Defaults.FallbackPolicy != model.FallbackBlocklistOnly {
 		return rules.Build(rules.Layers{})
 	}
-	var global []string
-	seen := map[string]struct{}{}
+	// 兜底规则集 = 全局层 + 所有启用用户的个人订阅拦截项。
+	//
+	// 全局层必须算进来：把规则都放在全局层的部署（多租户共用一套公共列表
+	// 是最常见的用法）如果漏了它，blocklist_only 会变成「一条都不拦」，
+	// 而管理员看到的是「策略设了却没生效」，极难定位。
+	seenBlock := map[string]struct{}{}
+	var block []string
+	if snap.Global.SubBlock != nil {
+		for _, d := range snap.Global.SubBlock {
+			if _, ok := seenBlock[d]; ok {
+				continue
+			}
+			seenBlock[d] = struct{}{}
+			block = append(block, d)
+		}
+	}
 	for _, u := range snap.Users {
 		if !u.Enabled {
 			continue
 		}
 		for _, d := range u.SubBlock {
-			if _, ok := seen[d]; ok {
+			if _, ok := seenBlock[d]; ok {
 				continue
 			}
-			seen[d] = struct{}{}
-			global = append(global, d)
+			seenBlock[d] = struct{}{}
+			block = append(block, d)
 		}
 	}
-	return rules.Build(rules.Layers{SubBlock: global})
+	return rules.Build(rules.Layers{
+		SubBlock: block,
+		Global:   &model.GlobalSnap{SubAllow: snap.Global.SubAllow},
+	})
 }
 
 // poolStats 汇总所有池的上游地址（系统状态展示用）。
