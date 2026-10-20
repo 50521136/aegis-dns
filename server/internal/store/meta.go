@@ -164,9 +164,27 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.VipDailyQueries = int64Or(kv["vip_daily_queries"], set.VipDailyQueries)
 	set.MemberRewardDays = intOr(kv["member_reward_days"], set.MemberRewardDays)
 	set.UserInviteMaxCodes = intOr(kv["user_invite_max_codes"], set.UserInviteMaxCodes)
-	if v, ok := kv["allow_user_invite"]; ok {
-		set.AllowUserInvite = v == "1" || strings.EqualFold(v, "true")
+	set.SignupMemberDays = intOr(kv["signup_member_days"], set.SignupMemberDays)
+	set.CheckinDays = intOr(kv["checkin_days"], set.CheckinDays)
+	set.CheckinStreakDays = intOr(kv["checkin_streak_days"], set.CheckinStreakDays)
+	set.CheckinStreakBonus = intOr(kv["checkin_streak_bonus"], set.CheckinStreakBonus)
+	// 一组布尔开关：逐个写 if 太啰嗦且容易漏，用表驱动。
+	for _, kvp := range []struct {
+		key string
+		dst *bool
+	}{
+		{"allow_user_invite", &set.AllowUserInvite},
+		{"checkin_enabled", &set.CheckinEnabled},
+		{"email_verify_register", &set.EmailVerifyRegister},
+		{"allow_email_change", &set.AllowEmailChange},
+		{"enable_ecs", &set.EnableECS},
+		{"enable_dnssec", &set.EnableDNSSEC},
+	} {
+		if v, ok := kv[kvp.key]; ok {
+			*kvp.dst = v == "1" || strings.EqualFold(v, "true")
+		}
 	}
+	set.EmailDomainWhitelist = strOr(kv["email_domain_whitelist"], set.EmailDomainWhitelist)
 
 	set.SMTPHost = strOr(kv["smtp_host"], set.SMTPHost)
 	set.SMTPPort = intOr(kv["smtp_port"], set.SMTPPort)
@@ -177,9 +195,6 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.SMTPTLS = strOr(kv["smtp_tls"], set.SMTPTLS)
 	if v, ok := kv["smtp_enabled"]; ok {
 		set.SMTPEnabled = v == "1" || strings.EqualFold(v, "true")
-	}
-	if v, ok := kv["email_verify_register"]; ok {
-		set.EmailVerifyRegister = v == "1" || strings.EqualFold(v, "true")
 	}
 
 	set.StatsRetentionD = intOr(kv["stats_retention_days"], set.StatsRetentionD)
@@ -242,18 +257,27 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"vip_max_subs":          strconv.Itoa(set.VipMaxSubs),
 		"vip_daily_queries":     strconv.FormatInt(set.VipDailyQueries, 10),
 		"member_reward_days":    strconv.Itoa(set.MemberRewardDays),
+		"signup_member_days":    strconv.Itoa(set.SignupMemberDays),
+		"checkin_enabled":       boolStr(set.CheckinEnabled),
+		"checkin_days":          strconv.Itoa(set.CheckinDays),
+		"checkin_streak_days":   strconv.Itoa(set.CheckinStreakDays),
+		"checkin_streak_bonus":  strconv.Itoa(set.CheckinStreakBonus),
 		"allow_user_invite":     boolStr(set.AllowUserInvite),
 		"user_invite_max_codes": strconv.Itoa(set.UserInviteMaxCodes),
 
-		"smtp_enabled":          boolStr(set.SMTPEnabled),
-		"smtp_host":             set.SMTPHost,
-		"smtp_port":             strconv.Itoa(set.SMTPPort),
-		"smtp_user":             set.SMTPUser,
-		"smtp_pass":             set.SMTPPass,
-		"smtp_from":             set.SMTPFrom,
-		"smtp_from_name":        set.SMTPFromName,
-		"smtp_tls":              set.SMTPTLS,
-		"email_verify_register": boolStr(set.EmailVerifyRegister),
+		"smtp_enabled":           boolStr(set.SMTPEnabled),
+		"smtp_host":              set.SMTPHost,
+		"smtp_port":              strconv.Itoa(set.SMTPPort),
+		"smtp_user":              set.SMTPUser,
+		"smtp_pass":              set.SMTPPass,
+		"smtp_from":              set.SMTPFrom,
+		"smtp_from_name":         set.SMTPFromName,
+		"smtp_tls":               set.SMTPTLS,
+		"email_verify_register":  boolStr(set.EmailVerifyRegister),
+		"email_domain_whitelist": set.EmailDomainWhitelist,
+		"allow_email_change":     boolStr(set.AllowEmailChange),
+		"enable_ecs":             boolStr(set.EnableECS),
+		"enable_dnssec":          boolStr(set.EnableDNSSEC),
 
 		"stats_retention_days": strconv.Itoa(set.StatsRetentionD),
 		"max_id_resets":        strconv.Itoa(set.MaxIDResets),

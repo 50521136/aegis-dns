@@ -20,6 +20,15 @@ import Subscriptions from '@/pages/Subscriptions'
 import QueryLog from '@/pages/QueryLog'
 import Settings from '@/pages/Settings'
 import Admin from '@/pages/Admin'
+import {
+  AdminUsersPage,
+  AdminMemberPage,
+  AdminAnnouncePage,
+  AdminDnsPage,
+  AdminGeneralPage,
+  AdminEmailPage,
+  AdminSystemPage,
+} from '@/pages/Admin'
 import AdminLogs from '@/pages/AdminLogs'
 import AdminFeedback from '@/pages/AdminFeedback'
 import AdminTls from '@/pages/AdminTls'
@@ -115,7 +124,16 @@ export default function App() {
                       {/* 管理员落地页是总览（全站统计 + 流量排行）；
                           用户/设置/系统这些控制面功能挪到 /admin/manage */}
                       <Route path="/admin" element={<Dashboard scope="global" />} />
+                      {/* 管理后台按主题拆成独立页面：设置项已经四十多个，
+                          全塞一个 Tab 面板里既难找，也没法把某个页面的地址发出去 */}
                       <Route path="/admin/manage" element={<Admin />} />
+                      <Route path="/admin/users" element={<AdminUsersPage />} />
+                      <Route path="/admin/member" element={<AdminMemberPage />} />
+                      <Route path="/admin/announcements" element={<AdminAnnouncePage />} />
+                      <Route path="/admin/dns" element={<AdminDnsPage />} />
+                      <Route path="/admin/general" element={<AdminGeneralPage />} />
+                      <Route path="/admin/email" element={<AdminEmailPage />} />
+                      <Route path="/admin/system" element={<AdminSystemPage />} />
                       {/* 全局层与个人层共用同一份页面组件，只换 scope */}
                       <Route path="/admin/rules" element={<Rules scope="global" />} />
                       <Route path="/admin/subscriptions" element={<Subscriptions scope="global" />} />

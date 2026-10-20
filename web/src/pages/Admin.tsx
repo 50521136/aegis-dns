@@ -15,11 +15,13 @@ import {
   HardDriveDownload,
   KeyRound,
   LogOut,
+  Mail,
   Megaphone,
   PlugZap,
   Save,
   Search,
   Send,
+  Settings,
   ShieldCheck,
   Trash2,
   Users,
@@ -71,6 +73,7 @@ import {
 import { formatDateTime, formatNumber, formatUptime } from '@/lib/format'
 import { InvitePanel, MemberOverview } from '@/pages/AdminInvite'
 import { AnnouncementPanel } from '@/pages/AdminAnnouncement'
+import { Textarea } from '@/components/ui/textarea'
 
 /* ---------- 用户管理 ---------- */
 
@@ -125,19 +128,27 @@ const settingsSchema = z.object({
   smtp_from_name: z.string(),
   smtp_tls: z.string(),
   email_verify_register: z.boolean(),
+  email_domain_whitelist: z.string(),
+  allow_email_change: z.boolean(),
+  enable_ecs: z.boolean(),
+  enable_dnssec: z.boolean(),
+  signup_member_days: z.coerce.number().int().min(0),
+  checkin_enabled: z.boolean(),
+  checkin_days: z.coerce.number().int().min(0),
+  checkin_streak_days: z.coerce.number().int().min(0),
+  checkin_streak_bonus: z.coerce.number().int().min(0),
 })
 
 type SettingsForm = z.infer<typeof settingsSchema>
+type SettingsSection = 'dns' | 'general' | 'member' | 'email'
 
-function SettingsPanel() {
+function SettingsPanel({ section }: { section: SettingsSection }) {
   const qc = useQueryClient()
   const toast = useToast()
 
   const settingsQuery = useQuery({ queryKey: ['admin', 'settings'], queryFn: getSettings })
-
   const form = useForm<SettingsForm>({ resolver: zodResolver(settingsSchema) })
 
-  // 数据加载完成后填充表单
   const [hydrated, setHydrated] = useState(false)
   if (settingsQuery.data && !hydrated) {
     const s = settingsQuery.data
@@ -157,17 +168,10 @@ function SettingsPanel() {
     mutationFn: (values: SettingsForm) => {
       const payload: Partial<AdminSettings> = {
         ...values,
-        bootstrap_dns: values.bootstrap_dns
-          .split('\n')
-          .map((v) => v.trim())
-          .filter(Boolean),
-        upstreams: values.upstreams
-          .split('\n')
-          .map((u) => u.trim())
-          .filter(Boolean),
+        bootstrap_dns: values.bootstrap_dns.split('\n').map((v) => v.trim()).filter(Boolean),
+        upstreams: values.upstreams.split('\n').map((u) => u.trim()).filter(Boolean),
       }
-      // 空密码不发：发了后端也会忽略，但请求体里带着空串更容易在日志里
-      // 被误读成「管理员清空了密码」
+      // 空密码不发：后端也会忽略，但请求体里带空串容易被日志误读成「清空了密码」
       if (!payload.smtp_pass) delete payload.smtp_pass
       return updateSettings(payload)
     },
@@ -186,383 +190,462 @@ function SettingsPanel() {
   }
 
   const err = form.formState.errors
+  const show = (x: SettingsSection) => section === x
+  const toggle = (name: keyof SettingsForm) => (
+    <Switch
+      checked={Boolean(form.watch(name as never))}
+      onCheckedChange={(v) => form.setValue(name as never, v as never)}
+    />
+  )
 
   return (
     <form onSubmit={form.handleSubmit((v) => saveMutation.mutate(v))} className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>域名与上游</CardTitle>
-          <CardDescription>主域名用于生成用户专属子域名，上游为默认解析服务器。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="domain">主域名</Label>
-            <Input id="domain" className="font-mono" {...form.register('domain')} />
-            {err.domain && <p className="text-xs text-danger">{err.domain.message}</p>}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="upstreams">上游 DNS（每行一个）</Label>
-            <textarea
-              id="upstreams"
-              {...form.register('upstreams')}
-              className="min-h-[100px] w-full rounded-xl border border-border bg-background px-3.5 py-2.5 font-mono text-[13px] focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
-              placeholder={'1.1.1.1\n8.8.8.8\nhttps://dns.google/dns-query'}
-            />
-            <p className="text-xs text-muted-foreground">支持 IP、udp://、tls://、https:// 形式。</p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="bootstrap_dns">引导 DNS（每行一个 IP）</Label>
-            <textarea
-              id="bootstrap_dns"
-              {...form.register('bootstrap_dns')}
-              className="min-h-[70px] w-full rounded-xl border border-border bg-background px-3.5 py-2.5 font-mono text-[13px] focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
-              placeholder={'223.5.5.5\n119.29.29.29'}
-            />
-            <p className="text-xs text-muted-foreground">
-              只填 IP：DoH/DoT 上游要先解析主机名才能连，而解析又依赖它，所以不能用域名做引导。
-              留空则回退系统解析器（容器里经常没有，会表现为「上游全部超时」）。
-            </p>
-          </div>
-
-          <UpstreamTester
-            upstream={form.watch('upstreams')}
-            bootstrap={form.watch('bootstrap_dns')}
-          />
-
-          <div className="space-y-3 rounded-xl border border-border/60 p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <Label htmlFor="proxy_url">出口代理</Label>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  在线更新与订阅拉取共用。国内机房访问 GitHub 常完全不通，这里填运维现成的代理即可，不影响解析。
+      {/* ───────── DNS 设置 ───────── */}
+      {show('dns') && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>域名与上游</CardTitle>
+              <CardDescription>主域名用于生成用户专属子域名，上游为默认解析服务器。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="domain">主域名</Label>
+                <Input id="domain" className="font-mono" {...form.register('domain')} />
+                {err.domain && <p className="text-xs text-danger">{err.domain.message}</p>}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="upstreams">上游服务器（每行一个）</Label>
+                <Textarea id="upstreams" rows={4} className="font-mono text-sm" {...form.register('upstreams')} />
+                <p className="text-xs text-muted-foreground">
+                  支持 UDP/TCP（<code>223.5.5.5</code>）、DoT（<code>tls://…</code>）、DoH（<code>https://…/dns-query</code>）。
+                  第一个为主，其余在对冲延迟后并发竞速。国内机房实测：UDP 5–7ms，DoH 41–56ms。
+                </p>
+                {err.upstreams && <p className="text-xs text-danger">{err.upstreams.message}</p>}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="bootstrap_dns">引导 DNS（每行一个 IP）</Label>
+                <Textarea id="bootstrap_dns" rows={2} className="font-mono text-sm" {...form.register('bootstrap_dns')} />
+                <p className="text-xs text-muted-foreground">
+                  只接受 IP：用来解析 DoH/DoT 上游里的主机名。用域名做引导是循环依赖。
                 </p>
               </div>
-              <Switch
-                checked={form.watch('proxy_enabled')}
-                onCheckedChange={(v) => form.setValue('proxy_enabled', v)}
-                aria-label="启用代理"
-              />
-            </div>
-            <Input
-              id="proxy_url"
-              className="font-mono"
-              placeholder="socks5://127.0.0.1:1080 或 http://user:pass@1.2.3.4:7890"
-              {...form.register('proxy_url')}
-            />
-            <p className="text-xs text-muted-foreground">
-              支持 http / https / socks5。必须带协议前缀；开关关掉时代理地址保留但不生效。
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+              <UpstreamTester upstream={form.watch('upstreams')} bootstrap={form.watch('bootstrap_dns')} />
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>拦截与兜底策略</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label>拦截应答模式</Label>
-            <Select
-              value={form.watch('blocking_mode')}
-              onValueChange={(v) => form.setValue('blocking_mode', v as SettingsForm['blocking_mode'])}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="null_ip">返回 0.0.0.0 / ::（推荐）</SelectItem>
-                <SelectItem value="nxdomain">返回 NXDOMAIN</SelectItem>
-                <SelectItem value="refused">返回 REFUSED</SelectItem>
-                <SelectItem value="custom_ip">返回自定义 IP</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>自定义拦截 IP</Label>
-            <Input
-              className="font-mono"
-              placeholder="仅 custom_ip 模式生效"
-              disabled={form.watch('blocking_mode') !== 'custom_ip'}
-              {...form.register('custom_ip')}
-            />
-          </div>
-          <div className="space-y-2 sm:col-span-2">
-            <Label>未识别请求兜底策略</Label>
-            <Select
-              value={form.watch('fallback_policy')}
-              onValueChange={(v) => form.setValue('fallback_policy', v as SettingsForm['fallback_policy'])}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="passthrough">passthrough —— 直接放行</SelectItem>
-                <SelectItem value="refused">refused —— 返回 REFUSED</SelectItem>
-                <SelectItem value="blocklist_only">blocklist_only —— 仅应用全局黑名单</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>缓存与性能</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <NumberField form={form} name="cache_size" label="缓存容量（条）" />
-          <NumberField form={form} name="cache_min_ttl" label="最小 TTL（秒）" />
-          <NumberField form={form} name="cache_max_ttl" label="最大 TTL（秒）" />
-          <NumberField form={form} name="rate_limit_qps" label="限流 QPS" />
-          <NumberField form={form} name="max_inflight" label="最大并发查询" />
-          <NumberField form={form} name="query_timeout_ms" label="查询超时（ms）" />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>日志与订阅</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <NumberField form={form} name="query_log_size" label="查询日志缓冲（条）" />
-          <NumberField form={form} name="query_log_retention_days" label="日志保留（天）" />
-          <NumberField form={form} name="stats_retention_days" label="统计保留（天，0=不清理）" />
-          <NumberField form={form} name="sub_interval_hours" label="订阅刷新间隔（小时）" />
-          <div className="flex items-center justify-between rounded-xl border border-border bg-background px-4 py-3 sm:col-span-2 lg:col-span-3">
-            <div>
-              <p className="text-sm font-medium">启用查询日志</p>
-              <p className="text-xs text-muted-foreground">关闭可降低内存与磁盘占用</p>
-            </div>
-            <Switch
-              checked={form.watch('enable_query_log')}
-              onCheckedChange={(v) => form.setValue('enable_query_log', v)}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>域名与接入</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">允许使用主域名</p>
-              <p className="text-xs text-muted-foreground">
-                开启后主域名本身也能解析（只套全局规则）；关闭则只认
-                &lt;用户ID&gt;.主域名 这种子域名
-              </p>
-            </div>
-            <Switch
-              checked={form.watch('allow_root_domain')}
-              onCheckedChange={(v) => form.setValue('allow_root_domain', v)}
-            />
-          </div>
-          <NumberField form={form} name="max_id_resets" label="用户自助重置 ID 次数（0=禁止）" />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>配额与租户开关</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <NumberField form={form} name="max_sub_entries" label="单订阅条目上限" />
-          </div>
-
-          {/* 两档配额并排展示：并排才能一眼看出「开会员多得到什么」，
-              分两个卡片放会让人来回对照 */}
-          <div className="overflow-hidden rounded-xl border border-border">
-            <div className="grid grid-cols-3 gap-px bg-border text-xs font-medium">
-              <div className="bg-muted/40 px-3 py-2">配额项</div>
-              <div className="bg-muted/40 px-3 py-2">普通用户</div>
-              <div className="bg-primary/10 px-3 py-2 text-primary">会员</div>
-            </div>
-            <QuotaRow form={form} label="自定义规则上限" free="free_max_rules" vip="vip_max_rules" />
-            <QuotaRow form={form} label="自定义订阅上限" free="free_max_subs" vip="vip_max_subs" />
-            <QuotaRow form={form} label="每日请求量上限" free="free_daily_queries" vip="vip_daily_queries" />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <NumberField form={form} name="member_reward_days" label="邀请奖励默认天数" />
-            <NumberField form={form} name="user_invite_max_codes" label="每用户最多邀请码数" />
-          </div>
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">允许用户自建邀请码</p>
-              <p className="text-xs text-muted-foreground">
-                开启后普通用户能生成自己的邀请链接拉新，奖励天数固定用上面的值
-              </p>
-            </div>
-            <Switch
-              checked={form.watch('allow_user_invite')}
-              onCheckedChange={(v) => form.setValue('allow_user_invite', v)}
-              aria-label="允许用户自建邀请码"
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            0 表示不限制。每日请求量按 UTC 自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。
-          </p>
-
-          {/* 邮件服务：注册验证与找回密码都依赖它 */}
-          <div className="space-y-3 rounded-xl border border-border/60 p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">邮件服务（SMTP）</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  用于注册邮箱验证与找回密码。关掉后这两项都不可用。
-                </p>
-              </div>
-              <Switch
-                checked={form.watch('smtp_enabled')}
-                onCheckedChange={(v) => form.setValue('smtp_enabled', v)}
-                aria-label="启用邮件服务"
-              />
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <Label htmlFor="smtp_host">SMTP 服务器</Label>
-                <Input id="smtp_host" placeholder="smtp.example.com" {...form.register('smtp_host')} />
-              </div>
-              <div>
-                <Label htmlFor="smtp_port">端口</Label>
-                <Input id="smtp_port" type="number" placeholder="465" {...form.register('smtp_port')} />
-              </div>
-              <div>
-                <Label htmlFor="smtp_user">用户名</Label>
-                <Input id="smtp_user" placeholder="通常就是邮箱地址" {...form.register('smtp_user')} />
-              </div>
-              <div>
-                <Label htmlFor="smtp_pass">
-                  密码 / 授权码
-                  {settingsQuery.data?.smtp_pass_set && (
-                    <span className="ml-2 text-xs text-success">已设置，留空表示不修改</span>
-                  )}
-                </Label>
-                <Input
-                  id="smtp_pass"
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder={settingsQuery.data?.smtp_pass_set ? '••••••••' : 'SMTP 授权码'}
-                  {...form.register('smtp_pass')}
-                />
-              </div>
-              <div>
-                <Label htmlFor="smtp_from">发件人地址</Label>
-                <Input id="smtp_from" placeholder="noreply@example.com" {...form.register('smtp_from')} />
-              </div>
-              <div>
-                <Label htmlFor="smtp_from_name">发件人名称</Label>
-                <Input id="smtp_from_name" placeholder="可选" {...form.register('smtp_from_name')} />
-              </div>
-              <div>
-                <Label htmlFor="smtp_tls">加密方式</Label>
+          <Card>
+            <CardHeader>
+              <CardTitle>拦截与兜底策略</CardTitle>
+              <CardDescription>命中拦截规则时返回什么，以及未识别请求怎么处理。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>拦截返回方式</Label>
                 <Select
-                  value={form.watch('smtp_tls')}
-                  onValueChange={(v) => form.setValue('smtp_tls', v)}
+                  value={form.watch('blocking_mode')}
+                  onValueChange={(v) => form.setValue('blocking_mode', v as SettingsForm['blocking_mode'])}
                 >
-                  <SelectTrigger id="smtp_tls">
+                  <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="tls">TLS（隐式，465）</SelectItem>
-                    <SelectItem value="starttls">STARTTLS（587）</SelectItem>
-                    <SelectItem value="none">不加密（仅本地中继）</SelectItem>
+                    <SelectItem value="null_ip">0.0.0.0 / ::（推荐，最快失败）</SelectItem>
+                    <SelectItem value="nxdomain">NXDOMAIN（域名不存在）</SelectItem>
+                    <SelectItem value="refused">REFUSED（明确拒绝）</SelectItem>
+                    <SelectItem value="custom_ip">自定义 IP</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-            </div>
-            <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/40 px-3 py-2">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">注册需要邮箱验证</p>
+              {form.watch('blocking_mode') === 'custom_ip' && (
+                <div className="space-y-2">
+                  <Label htmlFor="custom_ip">自定义拦截 IP</Label>
+                  <Input id="custom_ip" className="font-mono" placeholder="例如 0.0.0.0" {...form.register('custom_ip')} />
+                  {err.custom_ip && <p className="text-xs text-danger">{err.custom_ip.message}</p>}
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label>未识别请求的处理</Label>
+                <Select
+                  value={form.watch('fallback_policy')}
+                  onValueChange={(v) => form.setValue('fallback_policy', v as SettingsForm['fallback_policy'])}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="blocklist_only">仅应用全局黑名单</SelectItem>
+                    <SelectItem value="passthrough">透传上游</SelectItem>
+                    <SelectItem value="refused">直接 REFUSED</SelectItem>
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
-                  开启后注册必须先收到验证码；未配置好邮件时不允许开启
+                  「透传上游」会让本服务变成开放解析器，存在被滥用的风险。
                 </p>
               </div>
-              <Switch
-                checked={form.watch('email_verify_register')}
-                onCheckedChange={(v) => form.setValue('email_verify_register', v)}
-                aria-label="注册邮箱验证"
-              />
-            </div>
-            <EmailTester defaultTo={form.watch('smtp_from')} enabled={form.watch('smtp_enabled')} />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">允许用户加规则</p>
-                <p className="text-xs text-muted-foreground">关闭后普通用户不能新建个人规则</p>
-              </div>
-              <Switch
-                checked={form.watch('allow_user_rules')}
-                onCheckedChange={(v) => form.setValue('allow_user_rules', v)}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">允许用户加订阅</p>
-                <p className="text-xs text-muted-foreground">关闭后普通用户不能新建个人订阅</p>
-              </div>
-              <Switch
-                checked={form.watch('allow_user_subs')}
-                onCheckedChange={(v) => form.setValue('allow_user_subs', v)}
-              />
-            </div>
-          </div>
-          <CleanupButton />
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>注册与更新</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="flex items-center justify-between rounded-xl border border-border bg-background px-4 py-3 sm:col-span-2">
-            <div>
-              <p className="text-sm font-medium">开放注册</p>
-              <p className="text-xs text-muted-foreground">关闭后仅管理员可创建账号</p>
-            </div>
-            <Switch
-              checked={form.watch('allow_register')}
-              onCheckedChange={(v) => form.setValue('allow_register', v)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="invite_code">邀请码</Label>
-            <Input id="invite_code" className="font-mono" placeholder="留空表示无需邀请码" {...form.register('invite_code')} />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="update_repo">更新仓库</Label>
-            <Input id="update_repo" className="font-mono" placeholder="owner/repo" {...form.register('update_repo')} />
-          </div>
-          <div className="space-y-2">
-            <Label>更新渠道</Label>
-            <Select
-              value={form.watch('update_channel')}
-              onValueChange={(v) => form.setValue('update_channel', v as SettingsForm['update_channel'])}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="stable">stable</SelectItem>
-                <SelectItem value="beta">beta</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>缓存与性能</CardTitle>
+              <CardDescription>
+                缓存直接决定延迟。改动后建议观察命中率：日志里「规则变更，已定向失效缓存」不应频繁出现。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NumberField form={form} name="cache_size" label="缓存条目上限" />
+                <NumberField form={form} name="cache_min_ttl" label="最小 TTL（秒）" />
+                <NumberField form={form} name="cache_max_ttl" label="最大 TTL（秒）" />
+                <NumberField form={form} name="query_timeout_ms" label="查询总超时（毫秒）" />
+                <NumberField form={form} name="max_inflight" label="最大并发查询" />
+                <NumberField form={form} name="rate_limit_qps" label="单 IP 限速 QPS（0=不限）" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                提高最小 TTL 能显著抬升命中率（很多 CDN 域名 TTL 只有 15–20 秒，永远等不到第二次查询命中），
+                代价是最多陈旧这么久。单上游超时固定 1.5 秒、对冲延迟 300 毫秒，都是代码常量。
+              </p>
+            </CardContent>
+          </Card>
 
-      <div className="flex justify-end gap-3">
-        <Button type="button" variant="outline" onClick={() => settingsQuery.refetch()}>
-          重置
-        </Button>
+          <Card>
+            <CardHeader>
+              <CardTitle>EDNS 与 DNSSEC</CardTitle>
+              <CardDescription>两个都会改变转发给上游的报文，默认关闭。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">EDNS Client Subnet（ECS）</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    把客户端所在网段（IPv4 /24、IPv6 /56）带给上游，让 CDN 返回更近的节点。
+                    代价：用户网段会暴露给上游；且缓存仍按域名共享，第一个用户的网段决定了这次应答，
+                    后续用户直接命中缓存 —— 真正的就近效果会被缓存削弱。
+                  </p>
+                </div>
+                {toggle('enable_ecs')}
+              </div>
+              <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">DNSSEC（请求并透传）</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    向上游带上 DO 位，并把上游的 AD 位透给客户端。<strong className="text-foreground">这不是本地校验</strong>
+                    ：真正的链式校验要自己做。想拿到「已校验」的保证，上游本身必须验证
+                    —— 阿里 / 腾讯公共 DNS 不验证，1.1.1.1 与 8.8.8.8 验证但延迟高一个数量级。
+                  </p>
+                </div>
+                {toggle('enable_dnssec')}
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {/* ───────── 常规设置 ───────── */}
+      {show('general') && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>访问与注册</CardTitle>
+              <CardDescription>控制谁能用这套服务。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <ToggleRow
+                title="允许公开注册"
+                desc="关闭后只能由管理员建号"
+                checked={Boolean(form.watch('allow_register'))}
+                onChange={(v) => form.setValue('allow_register', v)}
+              />
+              <ToggleRow
+                title="主域名本身可解析"
+                desc="关闭时裸域名请求直接 REFUSED，用户分配的子域名不受影响"
+                checked={Boolean(form.watch('allow_root_domain'))}
+                onChange={(v) => form.setValue('allow_root_domain', v)}
+              />
+              <div className="space-y-2">
+                <Label htmlFor="invite_code">全局邀请码（可选）</Label>
+                <Input id="invite_code" className="font-mono uppercase" placeholder="留空表示不需要邀请码" {...form.register('invite_code')} />
+                <p className="text-xs text-muted-foreground">
+                  填了以后注册必须带这个码。<strong className="text-foreground">多码与奖励机制</strong>在「会员与邀请」里管理。
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>租户功能开关</CardTitle>
+              <CardDescription>关掉后普通用户不能新建，已有内容照常生效。</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2">
+              <ToggleRow
+                title="允许用户加规则"
+                desc="个人规则层的总开关"
+                checked={Boolean(form.watch('allow_user_rules'))}
+                onChange={(v) => form.setValue('allow_user_rules', v)}
+              />
+              <ToggleRow
+                title="允许用户加订阅"
+                desc="个人订阅层的总开关"
+                checked={Boolean(form.watch('allow_user_subs'))}
+                onChange={(v) => form.setValue('allow_user_subs', v)}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>日志与订阅</CardTitle>
+              <CardDescription>查询日志的开关、容量与保留期。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <ToggleRow
+                title="记录查询日志"
+                desc="关掉后用户端和管理端都看不到新的查询记录"
+                checked={Boolean(form.watch('enable_query_log'))}
+                onChange={(v) => form.setValue('enable_query_log', v)}
+              />
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NumberField form={form} name="query_log_size" label="内存日志缓冲条数" />
+                <NumberField form={form} name="query_log_retention_days" label="日志保留天数（0=不清理）" />
+                <NumberField form={form} name="stats_retention_days" label="统计保留天数（0=不清理）" />
+                <NumberField form={form} name="sub_interval_hours" label="订阅刷新间隔（小时）" />
+                <NumberField form={form} name="max_id_resets" label="自助重置 ID 次数（0=关闭）" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>在线更新与代理</CardTitle>
+              <CardDescription>更新走 GitHub，国内机房通常需要代理。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="update_repo">更新仓库</Label>
+                  <Input id="update_repo" className="font-mono" placeholder="owner/repo" {...form.register('update_repo')} />
+                </div>
+                <div className="space-y-2">
+                  <Label>更新通道</Label>
+                  <Select value={form.watch('update_channel')} onValueChange={(v) => form.setValue('update_channel', v as SettingsForm['update_channel'])}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="stable">stable</SelectItem>
+                      <SelectItem value="beta">beta</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-3 rounded-xl border border-border/60 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">出口代理</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      在线更新与订阅拉取共用。国内机房访问 GitHub 常完全不通，这里填现成的代理即可，不影响解析。
+                    </p>
+                  </div>
+                  <Switch
+                    checked={Boolean(form.watch('proxy_enabled'))}
+                    onCheckedChange={(v) => form.setValue('proxy_enabled', v)}
+                    aria-label="启用代理"
+                  />
+                </div>
+                <Input className="font-mono" placeholder="socks5://127.0.0.1:1080 或 http://user:pass@1.2.3.4:7890" {...form.register('proxy_url')} />
+                <p className="text-xs text-muted-foreground">支持 http / https / socks5，必须带协议前缀。</p>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {/* ───────── 会员与邀请 ───────── */}
+      {show('member') && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>两档配额</CardTitle>
+              <CardDescription>
+                档位不落库，按用户的会员到期时间实时判定；到期即自动降级。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="overflow-hidden rounded-xl border border-border">
+                <div className="grid grid-cols-3 gap-px bg-border text-xs font-medium">
+                  <div className="bg-muted/40 px-3 py-2">配额项</div>
+                  <div className="bg-muted/40 px-3 py-2">普通用户</div>
+                  <div className="bg-primary/10 px-3 py-2 text-primary">会员</div>
+                </div>
+                <QuotaRow form={form} label="自定义规则上限" free="free_max_rules" vip="vip_max_rules" />
+                <QuotaRow form={form} label="自定义订阅上限" free="free_max_subs" vip="vip_max_subs" />
+                <QuotaRow form={form} label="每日请求量上限" free="free_daily_queries" vip="vip_daily_queries" />
+              </div>
+              <NumberField form={form} name="max_sub_entries" label="单订阅条目上限" />
+              <p className="text-xs text-muted-foreground">
+                0 表示不限制。每日请求量按 UTC 自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>注册赠送与签到</CardTitle>
+              <CardDescription>拉新的第一推动力：注册即得，每日签到还能继续攒。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NumberField form={form} name="signup_member_days" label="注册赠送天数（0=不送）" />
+              </div>
+              <ToggleRow
+                title="开启每日签到"
+                desc="用户每天可签到一次，获得会员天数"
+                checked={Boolean(form.watch('checkin_enabled'))}
+                onChange={(v) => form.setValue('checkin_enabled', v)}
+              />
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NumberField form={form} name="checkin_days" label="单次签到赠送天数" />
+                <NumberField form={form} name="checkin_streak_days" label="连签门槛（天，0=不设）" />
+                <NumberField form={form} name="checkin_streak_bonus" label="连签额外奖励天数" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                连签奖励按门槛的整数倍发放（门槛 7 天时，第 7、14、21 天各触发一次），
+                避免第 8 天又领一次第 7 天的奖励。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>邀请设置</CardTitle>
+              <CardDescription>用户自建邀请码时的规则。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NumberField form={form} name="member_reward_days" label="邀请奖励默认天数" />
+                <NumberField form={form} name="user_invite_max_codes" label="每用户最多邀请码数" />
+              </div>
+              <ToggleRow
+                title="允许用户自建邀请码"
+                desc="开启后普通用户能生成自己的邀请链接拉新，奖励天数固定用上面的值（不给用户自选）"
+                checked={Boolean(form.watch('allow_user_invite'))}
+                onChange={(v) => form.setValue('allow_user_invite', v)}
+              />
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {/* ───────── 邮箱 ───────── */}
+      {show('email') && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>邮件服务（SMTP）</CardTitle>
+              <CardDescription>注册验证、找回密码、更换邮箱都依赖它。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <ToggleRow
+                title="启用邮件服务"
+                desc="关掉后上面三项都不可用"
+                checked={Boolean(form.watch('smtp_enabled'))}
+                onChange={(v) => form.setValue('smtp_enabled', v)}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="smtp_host">SMTP 服务器</Label>
+                  <Input id="smtp_host" placeholder="smtp.example.com" {...form.register('smtp_host')} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="smtp_port">端口</Label>
+                  <Input id="smtp_port" type="number" placeholder="465" {...form.register('smtp_port')} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="smtp_user">用户名</Label>
+                  <Input id="smtp_user" placeholder="通常就是邮箱地址" {...form.register('smtp_user')} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="smtp_pass">
+                    密码 / 授权码
+                    {settingsQuery.data?.smtp_pass_set && (
+                      <span className="ml-2 text-xs text-success">已设置，留空表示不修改</span>
+                    )}
+                  </Label>
+                  <Input
+                    id="smtp_pass"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder={settingsQuery.data?.smtp_pass_set ? '••••••••' : 'SMTP 授权码'}
+                    {...form.register('smtp_pass')}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="smtp_from">发件人地址</Label>
+                  <Input id="smtp_from" placeholder="noreply@example.com" {...form.register('smtp_from')} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="smtp_from_name">发件人名称</Label>
+                  <Input id="smtp_from_name" placeholder="可选" {...form.register('smtp_from_name')} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>加密方式</Label>
+                  <Select value={form.watch('smtp_tls')} onValueChange={(v) => form.setValue('smtp_tls', v)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="tls">TLS（隐式，465）</SelectItem>
+                      <SelectItem value="starttls">STARTTLS（587）</SelectItem>
+                      <SelectItem value="none">不加密（仅本地中继）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <EmailTester defaultTo={form.watch('smtp_from')} enabled={Boolean(form.watch('smtp_enabled'))} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>邮箱策略</CardTitle>
+              <CardDescription>限制可用后缀能挡掉一次性邮箱，避免「注册送会员」被刷。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <ToggleRow
+                title="注册需要邮箱验证"
+                desc="开启后注册必须先收到验证码；未配置好邮件时不允许开启"
+                checked={Boolean(form.watch('email_verify_register'))}
+                onChange={(v) => form.setValue('email_verify_register', v)}
+              />
+              <ToggleRow
+                title="允许用户更换邮箱"
+                desc="需新邮箱收到验证码才能换"
+                checked={Boolean(form.watch('allow_email_change'))}
+                onChange={(v) => form.setValue('allow_email_change', v)}
+              />
+              <div className="space-y-2">
+                <Label htmlFor="email_domain_whitelist">允许的邮箱后缀</Label>
+                <Textarea
+                  id="email_domain_whitelist"
+                  rows={3}
+                  className="font-mono text-sm"
+                  placeholder="qq.com, 163.com, gmail.com"
+                  {...form.register('email_domain_whitelist')}
+                />
+                <p className="text-xs text-muted-foreground">
+                  逗号或换行分隔，留空表示不限制。写 <code>qq.com</code> 会同时允许 <code>mail.qq.com</code> 这类子域。
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      <div className="flex justify-end">
         <Button type="submit" loading={saveMutation.isPending}>
-          <Save />
+          <Check />
           保存设置
         </Button>
       </div>
@@ -570,24 +653,47 @@ function SettingsPanel() {
   )
 }
 
+/** ToggleRow 是「标题 + 说明 + 开关」的通用行，设置项大多是这个形状。 */
 function NumberField({
   form,
   name,
   label,
 }: {
-  form: ReturnType<typeof useForm<SettingsForm>>
-  name: keyof SettingsForm
+  form: UseFormReturn<SettingsForm>
+  name: keyof SettingsForm & string
   label: string
 }) {
+  const e = form.formState.errors[name]
   return (
-    <div className="space-y-2">
-      <Label htmlFor={String(name)}>{label}</Label>
-      <Input id={String(name)} type="number" className="tabular-nums" {...form.register(name)} />
+    <div className="space-y-1.5">
+      <Label htmlFor={name}>{label}</Label>
+      <Input id={name} type="number" className="font-mono" {...form.register(name as never)} />
+      {e && <p className="text-xs text-danger">{String(e.message ?? '')}</p>}
     </div>
   )
 }
 
-/* ---------- 系统状态 ---------- */
+function ToggleRow({
+  title,
+  desc,
+  checked,
+  onChange,
+}: {
+  title: string
+  desc: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{desc}</p>
+      </div>
+      <Switch checked={checked} onCheckedChange={onChange} aria-label={title} />
+    </div>
+  )
+}
 
 function SystemPanel() {
   const qc = useQueryClient()
@@ -668,72 +774,133 @@ function SystemPanel() {
 
 /* ---------- 主页面 ---------- */
 
-export default function Admin() {
+/**
+ * 管理后台现在是多个独立页面，不再是一个大 Tab 面板。
+ *
+ * 拆开的理由：设置项已经从十几个涨到四十多个，全塞在一个页面里
+ * 「改个缓存 TTL 要滚过整屏配额和 SMTP」，而且没有地址能直接发给别人。
+ */
+function AdminPage({
+  title,
+  description,
+  icon,
+  children,
+}: {
+  title: string
+  description: string
+  icon: React.ReactNode
+  children: React.ReactNode
+}) {
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="管理后台"
-        description="用户、全局设置、系统状态与账号安全"
-        icon={<ShieldCheck className="size-5" />}
-      />
-
-      <Tabs defaultValue="users">
-        <TabsList className="flex-wrap">
-          <TabsTrigger value="users">
-            <Users className="size-4" />
-            用户
-          </TabsTrigger>
-          <TabsTrigger value="settings">
-            <Activity className="size-4" />
-            全局设置
-          </TabsTrigger>
-          <TabsTrigger value="member">
-            <Gift className="size-4" />
-            会员与邀请
-          </TabsTrigger>
-          <TabsTrigger value="announce">
-            <Megaphone className="size-4" />
-            公告
-          </TabsTrigger>
-          <TabsTrigger value="system">
-            <Cpu className="size-4" />
-            系统状态
-          </TabsTrigger>
-          <TabsTrigger value="account">
-            <KeyRound className="size-4" />
-            账号安全
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="users">
-          <UsersPanel />
-        </TabsContent>
-        <TabsContent value="settings">
-          <SettingsPanel />
-        </TabsContent>
-        <TabsContent value="member">
-          <div className="space-y-6">
-            <MemberOverview />
-            <InvitePanel />
-          </div>
-        </TabsContent>
-        <TabsContent value="announce">
-          <AnnouncementPanel />
-        </TabsContent>
-        <TabsContent value="system">
-          <div className="space-y-6">
-            <SystemPanel />
-            <BackupCard />
-            {/* 在线更新是运维动作，放在系统状态里而不是租户设置页 */}
-            <UpdateCard />
-          </div>
-        </TabsContent>
-        <TabsContent value="account">
-          <AdminAccountPanel />
-        </TabsContent>
-      </Tabs>
+      <PageHeader title={title} description={description} icon={icon} />
+      {children}
     </div>
   )
+}
+
+/** 用户管理 */
+export function AdminUsersPage() {
+  return (
+    <AdminPage
+      title="用户"
+      description="账号、接入 ID、会员天数与配额用量"
+      icon={<Users className="size-5" />}
+    >
+      <UsersPanel />
+    </AdminPage>
+  )
+}
+
+/** 会员与邀请：配额、激励规则、邀请码全在这里 */
+export function AdminMemberPage() {
+  return (
+    <AdminPage
+      title="会员与邀请"
+      description="两档配额、注册赠送、每日签到、邀请码与拉新奖励"
+      icon={<Gift className="size-5" />}
+    >
+      <SettingsPanel section="member" />
+      <div className="space-y-6">
+        <MemberOverview />
+        <InvitePanel />
+      </div>
+    </AdminPage>
+  )
+}
+
+/** 公告 */
+export function AdminAnnouncePage() {
+  return (
+    <AdminPage
+      title="公告"
+      description="静默公告进公告栏，弹窗公告进控制台时弹出"
+      icon={<Megaphone className="size-5" />}
+    >
+      <AnnouncementPanel />
+    </AdminPage>
+  )
+}
+
+/** DNS 设置：域名、上游、拦截、缓存、EDNS/DNSSEC */
+export function AdminDnsPage() {
+  return (
+    <AdminPage
+      title="DNS 设置"
+      description="域名与上游、拦截与兜底、缓存与性能、EDNS 与 DNSSEC"
+      icon={<Activity className="size-5" />}
+    >
+      <SettingsPanel section="dns" />
+    </AdminPage>
+  )
+}
+
+/** 常规设置：访问注册、租户开关、日志、更新与代理 */
+export function AdminGeneralPage() {
+  return (
+    <AdminPage
+      title="常规设置"
+      description="访问与注册、租户开关、日志与订阅、在线更新与代理"
+      icon={<Settings className="size-5" />}
+    >
+      <SettingsPanel section="general" />
+    </AdminPage>
+  )
+}
+
+/** 邮箱：SMTP 与邮箱策略 */
+export function AdminEmailPage() {
+  return (
+    <AdminPage
+      title="邮箱"
+      description="SMTP 发信配置、注册验证、后缀白名单与自助换绑"
+      icon={<Mail className="size-5" />}
+    >
+      <SettingsPanel section="email" />
+    </AdminPage>
+  )
+}
+
+/** 系统状态：运行状态、备份、在线更新 */
+export function AdminSystemPage() {
+  return (
+    <AdminPage
+      title="系统状态"
+      description="服务运行状态、数据备份与在线更新"
+      icon={<Cpu className="size-5" />}
+    >
+      <div className="space-y-6">
+        <SystemPanel />
+        <BackupCard />
+        <UpdateCard />
+      </div>
+    </AdminPage>
+  )
+}
+
+/** 兼容旧地址 /admin/manage：直接落到常规设置 */
+export default function Admin() {
+  return <AdminGeneralPage />
 }
 
 /* ---------- 手动清理 ---------- */

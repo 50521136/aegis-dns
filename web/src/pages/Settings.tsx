@@ -71,6 +71,7 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDateTime } from '@/lib/format'
+import { ChangeEmailForm } from '@/components/ChangeEmailForm'
 
 /* ---------- 修改密码 ---------- */
 
@@ -331,7 +332,7 @@ export function UpdateCard() {
 /* ---------- 主页面 ---------- */
 
 export default function Settings() {
-  const { user, logout, isAdmin } = useAuth()
+  const { user, logout, isAdmin, refreshUser } = useAuth()
   const { theme, setTheme } = useTheme()
   const toast = useToast()
 
@@ -390,6 +391,14 @@ export default function Settings() {
                   />
                 </div>
               )}
+              {/* 换绑邮箱：只在后端开放且配好邮件时显示 */}
+              <ChangeEmailForm
+                currentEmail={meQuery.data?.email ?? user?.email ?? ''}
+                onChanged={() => {
+                  meQuery.refetch()
+                  refreshUser()
+                }}
+              />
             </CardContent>
           </Card>
 

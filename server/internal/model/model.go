@@ -162,6 +162,9 @@ type Defaults struct {
 	// AllowRootDomain 决定裸域名（如 adguard.com）能否被当作合法入口。
 	// 为真时它按「无租户」处理、只套全局规则；为假时直接 REFUSED。
 	AllowRootDomain bool `json:"allow_root_domain"`
+	// EnableECS / EnableDNSSEC 是转发行为开关，dnsd 据此决定要不要动查询报文。
+	EnableECS    bool `json:"enable_ecs"`
+	EnableDNSSEC bool `json:"enable_dnssec"`
 }
 
 // GlobalSnap 是快照里的全局层：管理员的规则与订阅条目，对所有
@@ -295,6 +298,19 @@ type GlobalSettings struct {
 	// UserInviteMaxCodes 是每个普通用户最多能同时持有的邀请码数量。
 	UserInviteMaxCodes int `json:"user_invite_max_codes"`
 
+	// SignupMemberDays 是新注册用户直接获得的会员天数，0 表示不送。
+	// 这是拉新的第一推动力：注册即得，用户才有理由留下来试用。
+	SignupMemberDays int `json:"signup_member_days"`
+
+	// --- 每日签到 ---
+	CheckinEnabled bool `json:"checkin_enabled"`
+	// CheckinDays 是单次签到赠送的天数。
+	CheckinDays int `json:"checkin_days"`
+	// CheckinStreakDays 是「连续签到多少天」触发额外奖励的门槛，0 表示不设连签奖励。
+	CheckinStreakDays int `json:"checkin_streak_days"`
+	// CheckinStreakBonus 是达到连签门槛时额外赠送的天数。
+	CheckinStreakBonus int `json:"checkin_streak_bonus"`
+
 	// --- 邮件服务 ---
 	//
 	// 用于注册邮箱验证与找回密码。SMTPPass 只写不读：
@@ -311,6 +327,25 @@ type GlobalSettings struct {
 	// EmailVerifyRegister 为真时，注册必须先通过邮箱验证码。
 	// 与 AllowRegister 是两回事：后者管「能不能注册」，这个管「注册要不要验证」。
 	EmailVerifyRegister bool `json:"email_verify_register"`
+
+	// EmailDomainWhitelist 是允许使用的邮箱后缀白名单（逗号分隔，如 qq.com,163.com）。
+	// 空表示不限制。用于挡掉一次性邮箱：这类域名每天批量注册，
+	// 在「注册送会员」的场景下会被直接刷穿。
+	EmailDomainWhitelist string `json:"email_domain_whitelist"`
+	// AllowEmailChange 允许用户自己更换邮箱（需新邮箱验证码）。
+	AllowEmailChange bool `json:"allow_email_change"`
+
+	// EnableECS 为真时把客户端的 /24 网段通过 EDNS Client Subnet 传给上游，
+	// 让 CDN 返回离用户更近的节点。
+	//
+	// 代价必须说清楚：缓存要按网段分片（命中率下降）、用户网段会泄漏给上游。
+	EnableECS bool `json:"enable_ecs"`
+	// EnableDNSSEC 为真时在转发查询里带上 DO 位，并把上游的 AD 位透传给客户端。
+	//
+	// 注意这是「请求并透传」，不是本地校验：真正的链式校验（DNSKEY/DS/RRSIG）
+	// 要自己做，每条新域名多几次 RTT。想拿到「已校验」的保证，
+	// 上游本身必须验证（阿里/腾讯公共 DNS 不验证，1.1.1.1 与 8.8.8.8 验证）。
+	EnableDNSSEC bool `json:"enable_dnssec"`
 
 	// AllowRootDomain 为真时，主域名本身（如 example.com）也能解析，
 	// 而不只是 <client_id>.example.com。方便用户在没法填子域名的客户端里直接用主域名。
@@ -375,12 +410,20 @@ func DefaultSettings() GlobalSettings {
 		MemberRewardDays:   30,
 		AllowUserInvite:    true,
 		UserInviteMaxCodes: 5,
+		SignupMemberDays:   0,
+
+		CheckinEnabled:     false,
+		CheckinDays:        1,
+		CheckinStreakDays:  7,
+		CheckinStreakBonus: 7,
 
 		// 邮件默认关闭：没配 SMTP 就打开验证会让所有人都注册不了。
-		SMTPEnabled:         false,
-		SMTPPort:            465,
-		SMTPTLS:             "tls",
-		EmailVerifyRegister: false,
+		SMTPEnabled:          false,
+		SMTPPort:             465,
+		SMTPTLS:              "tls",
+		EmailVerifyRegister:  false,
+		EmailDomainWhitelist: "",
+		AllowEmailChange:     true,
 	}
 }
 

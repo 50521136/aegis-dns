@@ -224,18 +224,27 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"member_reward_days":    set.MemberRewardDays,
 		"allow_user_invite":     set.AllowUserInvite,
 		"user_invite_max_codes": set.UserInviteMaxCodes,
+		"signup_member_days":    set.SignupMemberDays,
+		"checkin_enabled":       set.CheckinEnabled,
+		"checkin_days":          set.CheckinDays,
+		"checkin_streak_days":   set.CheckinStreakDays,
+		"checkin_streak_bonus":  set.CheckinStreakBonus,
+		"enable_ecs":            set.EnableECS,
+		"enable_dnssec":         set.EnableDNSSEC,
 
 		// 邮件服务。密码不回传：后台表单只需要知道「有没有配」，
 		// 把明文密码发到浏览器等于把它暴露在任何一次截图/日志里。
-		"smtp_enabled":          set.SMTPEnabled,
-		"smtp_host":             set.SMTPHost,
-		"smtp_port":             set.SMTPPort,
-		"smtp_user":             set.SMTPUser,
-		"smtp_pass_set":         set.SMTPPass != "",
-		"smtp_from":             set.SMTPFrom,
-		"smtp_from_name":        set.SMTPFromName,
-		"smtp_tls":              set.SMTPTLS,
-		"email_verify_register": set.EmailVerifyRegister,
+		"smtp_enabled":           set.SMTPEnabled,
+		"smtp_host":              set.SMTPHost,
+		"smtp_port":              set.SMTPPort,
+		"smtp_user":              set.SMTPUser,
+		"smtp_pass_set":          set.SMTPPass != "",
+		"smtp_from":              set.SMTPFrom,
+		"smtp_from_name":         set.SMTPFromName,
+		"smtp_tls":               set.SMTPTLS,
+		"email_verify_register":  set.EmailVerifyRegister,
+		"email_domain_whitelist": set.EmailDomainWhitelist,
+		"allow_email_change":     set.AllowEmailChange,
 
 		// 主域名开关、清理周期、自助重置上限、租户侧总开关。
 		// 这个 map 是手写的，加字段时这里必须同步 —— 漏了的话设置存进去了
@@ -291,16 +300,25 @@ type settingsPatch struct {
 	UpdateRepo     *string   `json:"update_repo"`
 	UpdateChannel  *string   `json:"update_channel"`
 
-	MaxSubEntries      *int   `json:"max_sub_entries"`
-	FreeMaxRules       *int   `json:"free_max_rules"`
-	FreeMaxSubs        *int   `json:"free_max_subs"`
-	FreeDailyQueries   *int64 `json:"free_daily_queries"`
-	VipMaxRules        *int   `json:"vip_max_rules"`
-	VipMaxSubs         *int   `json:"vip_max_subs"`
-	VipDailyQueries    *int64 `json:"vip_daily_queries"`
-	MemberRewardDays   *int   `json:"member_reward_days"`
-	AllowUserInvite    *bool  `json:"allow_user_invite"`
-	UserInviteMaxCodes *int   `json:"user_invite_max_codes"`
+	MaxSubEntries        *int    `json:"max_sub_entries"`
+	FreeMaxRules         *int    `json:"free_max_rules"`
+	FreeMaxSubs          *int    `json:"free_max_subs"`
+	FreeDailyQueries     *int64  `json:"free_daily_queries"`
+	VipMaxRules          *int    `json:"vip_max_rules"`
+	VipMaxSubs           *int    `json:"vip_max_subs"`
+	VipDailyQueries      *int64  `json:"vip_daily_queries"`
+	MemberRewardDays     *int    `json:"member_reward_days"`
+	AllowUserInvite      *bool   `json:"allow_user_invite"`
+	UserInviteMaxCodes   *int    `json:"user_invite_max_codes"`
+	SignupMemberDays     *int    `json:"signup_member_days"`
+	CheckinEnabled       *bool   `json:"checkin_enabled"`
+	CheckinDays          *int    `json:"checkin_days"`
+	CheckinStreakDays    *int    `json:"checkin_streak_days"`
+	CheckinStreakBonus   *int    `json:"checkin_streak_bonus"`
+	EnableECS            *bool   `json:"enable_ecs"`
+	EnableDNSSEC         *bool   `json:"enable_dnssec"`
+	EmailDomainWhitelist *string `json:"email_domain_whitelist"`
+	AllowEmailChange     *bool   `json:"allow_email_change"`
 
 	SMTPEnabled         *bool   `json:"smtp_enabled"`
 	SMTPHost            *string `json:"smtp_host"`
@@ -362,6 +380,17 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.MemberRewardDays, p.MemberRewardDays)
 	setBool(&dst.AllowUserInvite, p.AllowUserInvite)
 	setInt(&dst.UserInviteMaxCodes, p.UserInviteMaxCodes)
+	setInt(&dst.SignupMemberDays, p.SignupMemberDays)
+	setBool(&dst.CheckinEnabled, p.CheckinEnabled)
+	setInt(&dst.CheckinDays, p.CheckinDays)
+	setInt(&dst.CheckinStreakDays, p.CheckinStreakDays)
+	setInt(&dst.CheckinStreakBonus, p.CheckinStreakBonus)
+	setBool(&dst.EnableECS, p.EnableECS)
+	setBool(&dst.EnableDNSSEC, p.EnableDNSSEC)
+	setBool(&dst.AllowEmailChange, p.AllowEmailChange)
+	if p.EmailDomainWhitelist != nil {
+		dst.EmailDomainWhitelist = normalizeDomainList(*p.EmailDomainWhitelist)
+	}
 	setStr(&dst.SMTPHost, p.SMTPHost)
 	setInt(&dst.SMTPPort, p.SMTPPort)
 	setStr(&dst.SMTPUser, p.SMTPUser)
@@ -724,6 +753,18 @@ func validateSettings(s *model.GlobalSettings) error {
 	}
 	if s.UserInviteMaxCodes < 0 || s.UserInviteMaxCodes > 200 {
 		return errValidation("user_invite_max_codes 需在 0 到 200 之间（0 = 不允许用户自建）")
+	}
+	if s.SignupMemberDays < 0 || s.SignupMemberDays > 3650 {
+		return errValidation("signup_member_days 需在 0 到 3650 之间（0 = 不赠送）")
+	}
+	if s.CheckinDays < 0 || s.CheckinDays > 365 {
+		return errValidation("checkin_days 需在 0 到 365 之间")
+	}
+	if s.CheckinStreakDays < 0 || s.CheckinStreakDays > 3650 {
+		return errValidation("checkin_streak_days 需在 0 到 3650 之间（0 = 不设连签奖励）")
+	}
+	if s.CheckinStreakBonus < 0 || s.CheckinStreakBonus > 3650 {
+		return errValidation("checkin_streak_bonus 需在 0 到 3650 之间")
 	}
 	// 邮件：只有启用时才要求配全，否则「先填一半保存」会被卡住。
 	if s.SMTPEnabled {

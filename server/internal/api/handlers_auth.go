@@ -61,6 +61,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, CodeForbidden, "当前已关闭公开注册，请联系管理员开通账号", nil)
 		return
 	}
+	// 邮箱后缀白名单：挡掉一次性邮箱。
+	// 在「注册送会员」的配置下，放开后缀等于把这笔赠送白送出去。
+	if settings.EmailDomainWhitelist != "" {
+		if !emailAllowed(strings.ToLower(strings.TrimSpace(req.Email)), settings.EmailDomainWhitelist) {
+			writeError(w, http.StatusForbidden, CodeForbidden,
+				"该邮箱后缀不在允许范围内，请使用常见邮箱（如 qq.com / 163.com / gmail.com）", nil)
+			return
+		}
+	}
+
 	// 邮箱验证：必须在建账号之前过。
 	// 放在后面就等于「先占住用户名，再慢慢验证」，验证码失效时用户名已经被占用。
 	if settings.EmailVerifyRegister {
@@ -116,6 +126,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
+	}
+
+	// 首次注册赠送会员天数。
+	// 放在邀请码核销之前：新人先拿到自己的见面礼，邀请奖励再叠加，
+	// 顺序反过来也能加，但日志里「新人得到多少」会算不清。
+	if settings.SignupMemberDays > 0 {
+		if _, err := s.store.AddMemberDays(r.Context(), user.ID, settings.SignupMemberDays); err != nil {
+			s.log.Warn("注册赠送会员失败", "user", user.ID, "err", err)
+		} else if fresh, err := s.store.GetUserByID(r.Context(), user.ID); err == nil && fresh != nil {
+			user = fresh
+		}
 	}
 
 	// 核销邀请码并给邀请人发奖励。

@@ -100,7 +100,7 @@ export async function deleteAnnouncement(id: number): Promise<void> {
 // === 邮件 ===
 
 /** 发送邮箱验证码（注册验证 / 找回密码） */
-export async function sendEmailCode(email: string, purpose: 'register' | 'reset') {
+export async function sendEmailCode(email: string, purpose: 'register' | 'reset' | 'change') {
   const { data } = await api.post('/auth/email/send-code', { email, purpose })
   return data as { sent: boolean; message: string }
 }
@@ -130,6 +130,8 @@ export interface PublicConfig {
   domain: string
   allow_user_invite: boolean
   invite_reward_days: number
+  signup_member_days: number
+  allow_email_change: boolean
 }
 
 export async function getPublicConfig(): Promise<PublicConfig> {
@@ -164,4 +166,47 @@ export async function createMyInviteCode(): Promise<InviteCode & { link: string 
 
 export async function deleteMyInviteCode(code: string): Promise<void> {
   await api.delete(`/me/invite-codes/${code}`)
+}
+
+// === 每日签到 ===
+
+export interface CheckinState {
+  enabled: boolean
+  daily_days: number
+  streak_days: number
+  streak_bonus: number
+  checked_today: boolean
+  streak: number
+  total_days: number
+  granted_today: number
+  member_until: number
+  member_days: number
+}
+
+export async function getCheckin(): Promise<CheckinState> {
+  const { data } = await api.get<CheckinState>('/me/checkin')
+  return data
+}
+
+export interface CheckinResult {
+  granted: number
+  bonus: number
+  streak: number
+  total_days: number
+  checked_today: boolean
+  member_until: number
+  member_days: number
+  bonus_message?: string
+}
+
+export async function doCheckin(): Promise<CheckinResult> {
+  const { data } = await api.post<CheckinResult>('/me/checkin')
+  return data
+}
+
+// === 更换邮箱 ===
+
+export async function changeEmail(email: string, code: string) {
+  const { data } = await api.post('/me/email', { email, code })
+  return data as { ok: boolean; email: string }
 }

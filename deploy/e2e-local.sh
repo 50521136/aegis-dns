@@ -846,6 +846,77 @@ done
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"free_daily_queries":50000}' >/dev/null
 
+hdr "注册赠送会员天数"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"signup_member_days":5,"allow_register":true,"invite_code":""}' >/dev/null
+GIFT=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"gift$$\",\"email\":\"gift$$@e2e.local\",\"password\":\"Passw0rd!23\"}")
+GTOK=$(echo "$GIFT" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+GDAYS=$(echo "$GIFT" | python3 -c "import json,sys; print(json.load(sys.stdin)['user']['member_days'])" 2>/dev/null)
+[[ "${GDAYS:-0}" == "5" ]] && ok "注册即送 5 天会员" || bad "注册赠送没生效: member_days=$GDAYS"
+echo "$GIFT" | grep -q '"tier":"vip"' && ok "赠送后档位是 vip" || bad "档位没跟着变"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"signup_member_days":0}' >/dev/null
+
+hdr "每日签到"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"checkin_enabled":true,"checkin_days":2,"checkin_streak_days":3,"checkin_streak_bonus":5}' >/dev/null
+CK0=$(curl -fsS "$API/me/checkin" -H "Authorization: Bearer $GTOK")
+echo "$CK0" | grep -q '"checked_today":false' && ok "签到状态初始为未签到" || bad "初始状态不对: $CK0"
+CK1=$(curl -s -X POST "$API/me/checkin" -H "Authorization: Bearer $GTOK")
+echo "$CK1" | grep -q '"granted":2' && ok "首次签到得 2 天" || bad "签到没发天数: $CK1"
+echo "$CK1" | grep -q '"streak":1' && ok "连续天数从 1 开始" || bad "连签计数不对"
+# 重复签到必须被拒
+code=$(curl -s -o /tmp/e2e_ck.json -w '%{http_code}' -X POST "$API/me/checkin" -H "Authorization: Bearer $GTOK")
+[[ "$code" == "409" ]] && ok "同一天重复签到被拒（409）" || bad "重复签到没拦住: $code"
+grep -qi '已经签到' /tmp/e2e_ck.json && ok "重复签到提示明确" || bad "提示不对"
+curl -fsS "$API/me/checkin" -H "Authorization: Bearer $GTOK" | grep -q '"checked_today":true' \
+  && ok "签到状态已落库" || bad "状态没更新"
+# 关掉签到后不能签
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"checkin_enabled":false}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/checkin" -H "Authorization: Bearer $GTOK")
+[[ "$code" == "403" ]] && ok "关闭签到后不能签（403）" || bad "关闭后仍可签: $code"
+
+hdr "邮箱后缀白名单"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"email_domain_whitelist":"qq.com, 163.com"}' >/dev/null
+SETWL=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | grep -o '"email_domain_whitelist":"[^"]*"')
+echo "$SETWL" | grep -q 'qq.com,163.com' && ok "白名单已规范化（去空格/小写/去重）" || bad "白名单没规范化: $SETWL"
+WL=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"wl$$\",\"email\":\"wl$$@tempmail.io\",\"password\":\"Passw0rd!23\"}")
+echo "$WL" | grep -qi '后缀不在允许范围' && ok "白名单外的邮箱被拒" || bad "白名单没生效: $(echo "$WL" | head -c 120)"
+WL2=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"wl2$$\",\"email\":\"wl2$$@qq.com\",\"password\":\"Passw0rd!23\"}")
+echo "$WL2" | grep -q '"access_token"' && ok "白名单内的邮箱可注册" || bad "白名单内被误拒: $(echo "$WL2" | head -c 120)"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"email_domain_whitelist":""}' >/dev/null
+
+hdr "自助更换邮箱（未配邮件时如实拒绝）"
+code=$(curl -s -o /tmp/e2e_em.json -w '%{http_code}' -X POST "$API/auth/email/send-code" \
+  -H "Authorization: Bearer $GTOK" -H 'Content-Type: application/json' \
+  -d '{"email":"new@e2e.local","purpose":"change"}')
+[[ "$code" == "503" ]] && ok "未启用邮件时换邮箱被拒（503）" || bad "未启用仍发信: $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/email" \
+  -H "Authorization: Bearer $GTOK" -H 'Content-Type: application/json' \
+  -d '{"email":"new@e2e.local","code":"000000"}')
+[[ "$code" == "400" ]] && ok "没有验证码时换邮箱被拒" || bad "无码也能换: $code"
+
+hdr "DNS 设置：EDNS 与 DNSSEC 开关"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_ecs":true,"enable_dnssec":true}' >/dev/null
+DS=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$DS" | grep -q '"enable_ecs":true' && ok "ECS 可持久化" || bad "ECS 没存住"
+echo "$DS" | grep -q '"enable_dnssec":true' && ok "DNSSEC 可持久化" || bad "DNSSEC 没存住"
+# 开启后解析必须仍然正常（改报文不能把查询搞坏）
+sleep 6
+DNCID=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+EDNSOUT=$($PROBE dot 127.0.0.1:18853 www.baidu.com A --sni "$DNCID.dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "  $EDNSOUT"
+echo "$EDNSOUT" | grep -qiE 'NOERROR|OK' && ok "开启 ECS+DNSSEC 后仍能正常解析" || bad "改报文把查询搞坏了: $EDNSOUT"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_ecs":false,"enable_dnssec":false}' >/dev/null
+
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——
 # 真实 index.html 开头是一段内联主题脚本，assets/ 引用在后面，

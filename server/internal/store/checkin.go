@@ -1,0 +1,156 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// CheckinState 是某用户的签到状态。
+type CheckinState struct {
+	// CheckedToday 今天是否已签到。
+	CheckedToday bool `json:"checked_today"`
+	// Streak 当前连续签到天数（今天签过则含今天）。
+	Streak int `json:"streak"`
+	// TotalDays 累计签到天数。
+	TotalDays int `json:"total_days"`
+	// GrantedToday 今天实际发放的会员天数。
+	GrantedToday int `json:"granted_today"`
+	// LastDay 最后一次签到的自然日序号。
+	LastDay int64 `json:"last_day"`
+}
+
+// dayIndex 把时间换算成 UTC 自然日序号。
+func dayIndex(t time.Time) int64 { return t.Unix() / 86400 }
+
+// GetCheckinState 读取签到状态。
+func (s *Store) GetCheckinState(ctx context.Context, uid string) (*CheckinState, error) {
+	today := dayIndex(time.Now())
+	st := &CheckinState{}
+	var lastDay int64
+	var streak, granted int
+	err := s.read.QueryRowContext(ctx,
+		`SELECT day, streak, days_granted FROM checkins WHERE user_id = ? ORDER BY day DESC LIMIT 1`, uid).
+		Scan(&lastDay, &streak, &granted)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("查询签到状态失败: %w", err)
+	}
+	var total int
+	if err := s.read.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM checkins WHERE user_id = ?`, uid).Scan(&total); err != nil {
+		return nil, fmt.Errorf("统计签到次数失败: %w", err)
+	}
+	st.TotalDays = total
+	st.LastDay = lastDay
+	st.CheckedToday = lastDay == today
+	// 连续天数只在「昨天或今天」时才算数：断了就归零，
+	// 否则界面上会一直显示一个早已断掉的历史记录。
+	switch lastDay {
+	case today:
+		st.Streak = streak
+		st.GrantedToday = granted
+	case today - 1:
+		st.Streak = streak
+	default:
+		st.Streak = 0
+	}
+	return st, nil
+}
+
+// CheckinResult 是签到的结果。
+type CheckinResult struct {
+	CheckinState
+	// AlreadyDone 表示今天已经签过（此时 Granted=0）。
+	AlreadyDone bool `json:"already_done"`
+	// Granted 是本次发放的天数。
+	Granted int `json:"granted"`
+	// Bonus 是其中来自连签奖励的天数。
+	Bonus int `json:"bonus"`
+	// MemberUntil 是签到后的会员到期时间。
+	MemberUntil int64 `json:"member_until"`
+}
+
+// Checkin 执行签到：记录、计算连签、发放会员天数。
+//
+// 全过程在一个事务里：签到记录与会员天数必须同时成立。
+// 分开写会出现「签到成功但天数没加」或「天数加了还能再签一次」。
+func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, streakDays, streakBonus int) (*CheckinResult, error) {
+	now := time.Now()
+	today := dayIndex(now)
+	res := &CheckinResult{}
+
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		// 锁内再查一次当天记录：并发连点两次不能都成功。
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM checkins WHERE user_id = ? AND day = ?`, uid, today).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			res.AlreadyDone = true
+			return nil
+		}
+
+		// 昨天签过就 +1，否则重新从 1 开始
+		var prevStreak int
+		err := tx.QueryRowContext(ctx,
+			`SELECT streak FROM checkins WHERE user_id = ? AND day = ?`, uid, today-1).Scan(&prevStreak)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		streak := prevStreak + 1
+
+		granted := dailyDays
+		bonus := 0
+		// 连签奖励：达到门槛的整数倍才给，避免第 8 天又给一次第 7 天的奖励
+		if streakDays > 0 && streakBonus > 0 && streak%streakDays == 0 {
+			bonus = streakBonus
+			granted += bonus
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO checkins (user_id, day, streak, days_granted, created_at) VALUES (?,?,?,?,?)`,
+			uid, today, streak, granted, now.Unix()); err != nil {
+			return err
+		}
+		if granted > 0 {
+			var cur int64
+			if err := tx.QueryRowContext(ctx, `SELECT member_until FROM users WHERE id = ?`, uid).Scan(&cur); err != nil {
+				return err
+			}
+			base := now.Unix()
+			if cur > base {
+				base = cur
+			}
+			next := base + int64(granted)*86400
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE users SET member_until = ? WHERE id = ?`, next, uid); err != nil {
+				return err
+			}
+			res.MemberUntil = next
+		}
+		res.Streak = streak
+		res.Granted = granted
+		res.Bonus = bonus
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// 事务结束再读一次完整状态，避免事务内多查一次
+	st, err := s.GetCheckinState(ctx, uid)
+	if err == nil && st != nil {
+		st.Streak = res.Streak
+		if res.Granted > 0 {
+			st.CheckedToday = true
+			st.GrantedToday = res.Granted
+		}
+		res.CheckinState = *st
+	}
+	if res.MemberUntil == 0 {
+		_ = s.read.QueryRowContext(ctx, `SELECT member_until FROM users WHERE id = ?`, uid).Scan(&res.MemberUntil)
+	}
+	return res, nil
+}

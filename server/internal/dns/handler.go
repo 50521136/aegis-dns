@@ -165,6 +165,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 
 	d := *h.defaults.Load()
+	applyECS := d.EnableECS
+	applyDNSSEC := d.EnableDNSSEC
 
 	// Stage 2 前置校验：并发闸门。
 	select {
@@ -337,7 +339,28 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	resp, upSrc, err := pool.ExchangeWithSource(ctx, req)
+	// EDNS / DNSSEC：这两个开关只在「要发出去的报文」上动手，
+	// 不影响缓存键 —— ECS 开了以后缓存仍按域名共享，
+	// 所以严格来说 ECS 的 CDN 就近效果会被缓存削弱（第一个用户的网段
+	// 决定了这次应答，后续用户直接命中）。要彻底生效得把网段并进缓存键，
+	// 那会让命中率再掉一大截，这里选择「先不破坏命中率」。
+	upReq := req
+	if applyDNSSEC || applyECS {
+		upReq = req.Copy()
+		if applyDNSSEC {
+			// 置 DO 位：让上游把 DNSSEC 记录一起回来，并把验证结果放进 AD 位。
+			upReq.SetEdns0(4096, true)
+		}
+		if applyECS {
+			// 只在客户端没自带 ECS 时注入，避免覆盖客户端自己的意图。
+			if !hasECS(upReq) {
+				if sub := clientSubnet(w); sub != nil && upReq.IsEdns0() != nil {
+					upReq.IsEdns0().Option = append(upReq.IsEdns0().Option, sub)
+				}
+			}
+		}
+	}
+	resp, upSrc, err := pool.ExchangeWithSource(ctx, upReq)
 	det.Upstream = upSrc
 	if err != nil {
 		h.upstreamErrs.Add(1)
@@ -350,6 +373,15 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// 上游返回的 ID 可能被改写，统一回填成请求 ID。
 	resp.Id = req.Id
 	resp.Compress = true
+
+	// AD 位只在客户端自己要了 DNSSEC 时才透传。
+	//
+	// 我们可能替客户端置了 DO 位去问上游，上游因此做了验证并置 AD；
+	// 但客户端没要过 DNSSEC，把这个 AD 转发过去等于凭空给了一个
+	// 「已校验」的承诺 —— 而客户端根本没有能力也没有意愿去用它。
+	if applyDNSSEC && !clientWantsDNSSEC(req) {
+		resp.AuthenticatedData = false
+	}
 
 	// Stage 6 响应后处理：写缓存 + 统计。
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
@@ -652,4 +684,38 @@ func protoOf(hint *IdentifyHint, w dns.ResponseWriter) string {
 		return w.RemoteAddr().Network()
 	}
 	return ""
+}
+
+// clientSubnet 按客户端来源 IP 构造 /24（IPv4）或 /56（IPv6）的 ECS 选项。
+//
+// 只给到 /24 而不是精确 IP：ECS 的目的只是让 CDN 判断大致区域，
+// 精确到单 IP 会把用户地址暴露得更细，且缓存分片会碎到几乎没用。
+//
+// 私有地址不注入 —— 上游拿到 192.168.x.x 只会当成无效数据丢掉，
+// 还可能让某些权威服务器返回错误结果。
+func clientSubnet(w dns.ResponseWriter) *dns.EDNS0_SUBNET {
+	ip := remoteIP(w.RemoteAddr())
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
+		return nil
+	}
+	sub := &dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceScope: 0}
+	if v4 := ip.To4(); v4 != nil {
+		sub.Family = 1
+		sub.SourceNetmask = 24
+		sub.Address = v4.Mask(net.CIDRMask(24, 32))
+		return sub
+	}
+	sub.Family = 2
+	sub.SourceNetmask = 56
+	sub.Address = ip.Mask(net.CIDRMask(56, 128))
+	return sub
+}
+
+// clientWantsDNSSEC 判断客户端自己是否请求了 DNSSEC。
+func clientWantsDNSSEC(req *dns.Msg) bool {
+	if req.AuthenticatedData || req.CheckingDisabled {
+		return true
+	}
+	opt := req.IsEdns0()
+	return opt != nil && opt.Do()
 }

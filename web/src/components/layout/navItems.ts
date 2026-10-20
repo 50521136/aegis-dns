@@ -8,6 +8,12 @@ import {
   ScrollText,
   Settings,
   Shield,
+  SlidersHorizontal,
+  Users,
+  Gift,
+  Megaphone,
+  Mail,
+  Cpu,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -42,7 +48,14 @@ export const navItems: NavItem[] = [
   // ── 仅管理员 ──
   // 管理员落地页是总览（全站统计 + 流量排行），和租户侧的总览是同一个页面组件
   { to: '/admin', label: '总览', icon: LayoutDashboard, adminOnly: true, mobile: true, end: true, group: 'admin' },
-  { to: '/admin/manage', label: '管理后台', icon: Activity, adminOnly: true, mobile: true, group: 'admin' },
+  // 管理后台按主题拆成独立入口：设置项四十多个，堆在一个页面里改一个值要滚过整屏
+  { to: '/admin/users', label: '用户', icon: Users, adminOnly: true, group: 'admin' },
+  { to: '/admin/member', label: '会员与邀请', icon: Gift, adminOnly: true, group: 'admin' },
+  { to: '/admin/announcements', label: '公告', icon: Megaphone, adminOnly: true, group: 'admin' },
+  { to: '/admin/email', label: '邮箱', icon: Mail, adminOnly: true, group: 'admin' },
+  { to: '/admin/dns', label: 'DNS 设置', icon: Activity, adminOnly: true, group: 'admin' },
+  { to: '/admin/general', label: '常规设置', icon: SlidersHorizontal, adminOnly: true, group: 'admin' },
+  { to: '/admin/system', label: '系统状态', icon: Cpu, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/logs', label: '全局日志', icon: ScrollText, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/rules', label: '全局规则', icon: ListFilter, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/subscriptions', label: '全局订阅', icon: Shield, adminOnly: true, group: 'admin' },

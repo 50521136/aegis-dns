@@ -119,6 +119,8 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 			QueryTimeout:    settings.QueryTimeoutMS,
 			QueryLogSize:    settings.QueryLogSize,
 			EnableQueryLog:  settings.EnableQueryLog,
+			EnableECS:       settings.EnableECS,
+			EnableDNSSEC:    settings.EnableDNSSEC,
 			AllowRootDomain: settings.AllowRootDomain,
 		},
 		Global: model.GlobalSnap{

@@ -14,6 +14,9 @@ import (
 const (
 	EmailPurposeRegister = "register"
 	EmailPurposeReset    = "reset"
+	// EmailPurposeChange 用于用户更换邮箱：验证的是「新邮箱」，
+	// 与 reset 分开，避免拿找回密码的码去改邮箱。
+	EmailPurposeChange = "change"
 )
 
 // 验证码策略。

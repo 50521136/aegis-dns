@@ -125,6 +125,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/me/export", s.handleExport)
 			// 会员档位、配额与邀请战绩
 			r.Get("/me/membership", s.handleMyMembership)
+			// 每日签到
+			r.Get("/me/checkin", s.handleGetCheckin)
+			r.Post("/me/checkin", s.handleCheckin)
+			// 更换邮箱：必须登录 + 新邮箱验证码。
+			// 之前误挂在 /auth 组下变成了 /auth/me/email，正常路径 404。
+			r.Post("/me/email", s.handleChangeEmail)
 			// 用户自建邀请码与分享链接
 			r.Get("/me/invite-codes", s.handleMyInviteCodes)
 			r.Post("/me/invite-codes", s.handleCreateMyInviteCode)

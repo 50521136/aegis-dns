@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LogOut, Menu, User as UserIcon } from 'lucide-react'
+import { KeyRound, LogOut, Menu, User as UserIcon } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ThemeToggle } from './ThemeToggle'
 import { AnnouncementBell } from '@/components/AnnouncementBell'
+import { ChangePasswordDialog } from '@/components/ChangePasswordDialog'
 
 interface TopBarProps {
   title?: string
@@ -20,7 +22,7 @@ interface TopBarProps {
 }
 
 export function TopBar({ title, onOpenNav }: TopBarProps) {
-  const { user, logout } = useAuth()
+  const { user, logout, isAdmin } = useAuth()
   const toast = useToast()
   const navigate = useNavigate()
 
@@ -33,6 +35,8 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
       toast.error('退出失败', '请重试')
     }
   }
+
+  const [pwOpen, setPwOpen] = useState(false)
 
   return (
     <header className="m-rail hairline-b sticky top-0 z-30 flex h-16 items-center gap-3 px-4 md:px-6">
@@ -73,9 +77,16 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => navigate('/app/settings')}>
-            <UserIcon />
-            账号设置
+          {/* 管理员没有租户侧设置页，只需要改密码；普通用户两者都要 */}
+          {!isAdmin && (
+            <DropdownMenuItem onClick={() => navigate('/app/settings')}>
+              <UserIcon />
+              账号设置
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onClick={() => setPwOpen(true)}>
+            <KeyRound />
+            修改密码
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -87,6 +98,8 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ChangePasswordDialog open={pwOpen} onOpenChange={setPwOpen} />
     </header>
   )
 }
