@@ -122,6 +122,49 @@ func isGitHubRaw(u string) bool {
 	return false
 }
 
+// githubPagesBranches 是映射 GitHub Pages 时依次尝试的分支名。
+//
+// Pages 的源分支无从得知，只能试。main 是现在的默认，master 是老仓库。
+var githubPagesBranches = []string{"main", "master"}
+
+// githubPagesCandidates 把 GitHub Pages 项目页地址映射成 raw 等价地址。
+//
+//	<org>.github.io/<repo>/<path> → raw.githubusercontent.com/<org>/<repo>/<branch>/<path>
+//
+// 为什么必须做：AdGuard 官方规则库整站都在 adguardteam.github.io 上，而国内机房
+// 直连 github.io 基本不通（实测 60s 超时、零字节），也不在现有镜像的支持范围里
+// （gh-proxy 对 github.io 直接回 404）。但同一份内容换成 raw 形式、走镜像，
+// 实测 2.3 秒就能拉完 4.7MB。
+//
+// 不是项目页（没有 repo 段）时返回 nil：那属于用户主页，映射规则不同，
+// 猜错只会拉到 404，不如老实回退到原地址。
+func githubPagesCandidates(u string) []string {
+	pu, err := url.Parse(u)
+	if err != nil {
+		return nil
+	}
+	host := strings.ToLower(pu.Host)
+	if !strings.HasSuffix(host, ".github.io") {
+		return nil
+	}
+	org := strings.TrimSuffix(host, ".github.io")
+	if org == "" {
+		return nil
+	}
+	parts := strings.Split(strings.Trim(pu.Path, "/"), "/")
+	if len(parts) < 2 || parts[0] == "" {
+		return nil
+	}
+	repo := parts[0]
+	rest := strings.Join(parts[1:], "/")
+	out := make([]string, 0, len(githubPagesBranches))
+	for _, br := range githubPagesBranches {
+		out = append(out, fmt.Sprintf(
+			"https://raw.githubusercontent.com/%s/%s/%s/%s", org, repo, br, rest))
+	}
+	return out
+}
+
 // retryBackoff 是第 n 次重试前的等待。
 func retryBackoff(n int) time.Duration {
 	switch n {
@@ -158,6 +201,21 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 			// 镜像返回 4xx/5xx 属于确定性失败，换下一个镜像
 		}
 	}
+
+	// GitHub Pages（*.github.io）先映射成 raw 再走镜像。
+	// 这类地址在公共规则源里极常见，而现有镜像都不支持 github.io 本身。
+	for _, cand := range githubPagesCandidates(url) {
+		for _, m := range githubMirrors {
+			if res, err := f.tryWithRetry(ctx, m+cand, etag, lastModified); err == nil {
+				return res, nil
+			}
+		}
+		// 镜像全挂再试一次 raw 直连（少数机房 raw 反而通）
+		if res, err := f.tryWithRetry(ctx, cand, etag, lastModified); err == nil {
+			return res, nil
+		}
+	}
+
 	return f.tryWithRetry(ctx, url, etag, lastModified)
 }
 
