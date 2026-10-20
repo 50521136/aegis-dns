@@ -54,3 +54,20 @@ export async function getQueryLog(params: QueryLogParams = {}): Promise<QueryLog
   const { data } = await api.get<QueryLogResponse>('/stats/querylog', { params })
   return data
 }
+
+/** 首页公开统计（无需登录，只含聚合数字） */
+export interface PublicStats {
+  available: boolean
+  window: string
+  total?: number
+  blocked?: number
+  allowed?: number
+  block_rate?: number
+  cache_hit_rate?: number
+  unique_domains?: number
+}
+
+export async function getPublicStats(): Promise<PublicStats> {
+  const { data } = await api.get<PublicStats>('/public/stats')
+  return data
+}

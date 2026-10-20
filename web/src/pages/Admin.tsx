@@ -9,6 +9,8 @@ import {
   Check,
   Cpu,
   Database,
+  DatabaseBackup,
+  Download,
   HardDriveDownload,
   KeyRound,
   LogOut,
@@ -36,7 +38,7 @@ import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
-import { testUpstream, type UpstreamTestResult } from '@/api/admin'
+import { downloadBackup, testUpstream, type UpstreamTestResult } from '@/api/admin'
 import { PasswordCard, UpdateCard } from './Settings'
 import { useAuth } from '@/hooks/useAuth'
 import { UsersPanel } from './AdminUsersPanel'
@@ -73,6 +75,8 @@ const settingsSchema = z.object({
   domain: z.string().min(1, '请输入主域名'),
   upstreams: z.string(),
   bootstrap_dns: z.string(),
+  proxy_url: z.string(),
+  proxy_enabled: z.boolean(),
   blocking_mode: z.enum(['nxdomain', 'null_ip', 'refused', 'custom_ip']),
   custom_ip: z.string(),
   fallback_policy: z.enum(['passthrough', 'refused', 'blocklist_only']),
@@ -121,6 +125,8 @@ function SettingsPanel() {
       ...s,
       upstreams: (s.upstreams ?? []).join('\n'),
       bootstrap_dns: (s.bootstrap_dns ?? []).join('\n'),
+      proxy_url: s.proxy_url ?? '',
+      proxy_enabled: s.proxy_enabled ?? false,
     } as unknown as SettingsForm)
     setHydrated(true)
   }
@@ -198,6 +204,31 @@ function SettingsPanel() {
             upstream={form.watch('upstreams')}
             bootstrap={form.watch('bootstrap_dns')}
           />
+
+          <div className="space-y-3 rounded-xl border border-border/60 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <Label htmlFor="proxy_url">出口代理</Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  在线更新与订阅拉取共用。国内机房访问 GitHub 常完全不通，这里填运维现成的代理即可，不影响解析。
+                </p>
+              </div>
+              <Switch
+                checked={form.watch('proxy_enabled')}
+                onCheckedChange={(v) => form.setValue('proxy_enabled', v)}
+                aria-label="启用代理"
+              />
+            </div>
+            <Input
+              id="proxy_url"
+              className="font-mono"
+              placeholder="socks5://127.0.0.1:1080 或 http://user:pass@1.2.3.4:7890"
+              {...form.register('proxy_url')}
+            />
+            <p className="text-xs text-muted-foreground">
+              支持 http / https / socks5。必须带协议前缀；开关关掉时代理地址保留但不生效。
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -537,6 +568,7 @@ export default function Admin() {
         <TabsContent value="system">
           <div className="space-y-6">
             <SystemPanel />
+            <BackupCard />
             {/* 在线更新是运维动作，放在系统状态里而不是租户设置页 */}
             <UpdateCard />
           </div>
@@ -714,5 +746,54 @@ function UpstreamTester({ upstream, bootstrap }: { upstream: string; bootstrap: 
         </div>
       )}
     </div>
+  )
+}
+
+/* ---------- 系统备份 ---------- */
+
+/**
+ * BackupCard 一键下载整站备份。
+ *
+ * 内容：数据库（VACUUM INTO 一致性快照）、config.yaml、证书目录。
+ * 数据库是 WAL 模式，直接拷主文件会漏掉未 checkpoint 的部分 ——
+ * 那种「备份成功但恢复后数据是旧的」比没有备份更危险。
+ */
+function BackupCard() {
+  const toast = useToast()
+  const [busy, setBusy] = useState(false)
+
+  const run = async () => {
+    setBusy(true)
+    try {
+      await downloadBackup()
+      toast.success('备份已开始下载', '包含数据库、配置与证书，请妥善保管')
+    } catch (err) {
+      toast.error('备份失败', errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <DatabaseBackup className="size-5 text-primary" />
+          系统备份
+        </CardTitle>
+        <CardDescription>
+          打包下载数据库快照、配置与证书。恢复方式见包内 README。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Button variant="outline" onClick={run} loading={busy}>
+          <Download />
+          下载备份包
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          包内含用户数据与证书私钥（含私钥才能原地恢复），请按凭据管理，不要放公开位置。
+        </p>
+      </CardContent>
+    </Card>
   )
 }

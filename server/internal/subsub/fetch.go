@@ -10,7 +10,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/50521136/aegis-dns/server/internal/netproxy"
 )
 
 // MaxBodySize 是订阅内容的大小上限（文档 6.2）。
@@ -52,6 +55,29 @@ const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, li
 // Fetcher 拉取订阅内容。
 type Fetcher struct {
 	client *http.Client
+	// proxy 是当前出口代理（http/https/socks5），空表示直连。
+	// 用 atomic 是因为设置页改完要立刻生效，而拉取跑在后台 goroutine 里 ——
+	// 重建 Fetcher 会丢掉正在进行的下载。
+	proxy atomic.Pointer[string]
+}
+
+// SetProxy 设置出口代理；空字符串表示直连。返回错误表示地址不合法（此时不改动）。
+func (f *Fetcher) SetProxy(raw string) error {
+	tr, err := netproxy.Transport(raw, nil)
+	if err != nil {
+		return err
+	}
+	f.client.Transport = tr
+	f.proxy.Store(&raw)
+	return nil
+}
+
+// Proxy 返回当前代理地址。
+func (f *Fetcher) Proxy() string {
+	if v := f.proxy.Load(); v != nil {
+		return *v
+	}
+	return ""
 }
 
 // NewFetcher 用默认超时创建拉取器。

@@ -191,6 +191,8 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"domain":                   set.Domain,
 		"upstreams":                set.Upstreams,
 		"bootstrap_dns":            set.BootstrapDNS,
+		"proxy_url":                set.ProxyURL,
+		"proxy_enabled":            set.ProxyEnabled,
 		"blocking_mode":            set.BlockingMode,
 		"custom_ip":                set.CustomIP,
 		"fallback_policy":          set.FallbackPolicy,
@@ -250,6 +252,8 @@ type settingsPatch struct {
 	Domain         *string   `json:"domain"`
 	Upstreams      *[]string `json:"upstreams"`
 	BootstrapDNS   *[]string `json:"bootstrap_dns"`
+	ProxyURL       *string   `json:"proxy_url"`
+	ProxyEnabled   *bool     `json:"proxy_enabled"`
 	BlockingMode   *string   `json:"blocking_mode"`
 	CustomIP       *string   `json:"custom_ip"`
 	FallbackPolicy *string   `json:"fallback_policy"`
@@ -292,6 +296,10 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	if p.BootstrapDNS != nil {
 		dst.BootstrapDNS = cleanList(*p.BootstrapDNS)
 	}
+	if p.ProxyURL != nil {
+		dst.ProxyURL = strings.TrimSpace(*p.ProxyURL)
+	}
+	setBool(&dst.ProxyEnabled, p.ProxyEnabled)
 	if p.BlockingMode != nil {
 		dst.BlockingMode = *p.BlockingMode
 	}
@@ -377,6 +385,9 @@ func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 		writeStoreError(w, err, "")
 		return
 	}
+	// 代理改了要立刻生效，不必等重启。
+	s.applyProxy(r.Context(), cur)
+
 	// 全局设置影响所有租户，必须全量重建快照。
 	if _, err := s.coord.Changed(r.Context()); err != nil {
 		writeStoreError(w, err, "")
@@ -545,6 +556,34 @@ func (s *Server) handleTestUpstream(w http.ResponseWriter, r *http.Request) {
 		"elapsed_ms": elapsed, "answers": answers,
 		"bootstrap_dns": bootstrap,
 	})
+}
+
+// applyProxy 把设置里的代理应用到订阅拉取与在线更新。
+//
+// 两处都要同步：改完代理只影响订阅、更新还在直连的话，
+// 排查「订阅能拉了但更新还是超时」会非常费解。
+func (s *Server) applyProxy(ctx context.Context, set *model.GlobalSettings) {
+	raw := ""
+	if set.ProxyEnabled {
+		raw = set.ProxyURL
+	}
+	if s.subs != nil {
+		if err := s.subs.SetProxy(raw); err != nil {
+			s.log.Warn("订阅拉取的代理地址无效，保持原设置", "err", err)
+		}
+	}
+	if err := selfupdate.SetProxy(raw); err != nil {
+		s.log.Warn("在线更新的代理地址无效，保持原设置", "err", err)
+	}
+}
+
+// ApplyProxyFromSettings 在启动时按已保存的设置初始化代理。
+func (s *Server) ApplyProxyFromSettings(ctx context.Context) {
+	set, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return
+	}
+	s.applyProxy(ctx, set)
 }
 
 func validateSettings(s *model.GlobalSettings) error {

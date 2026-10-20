@@ -18,6 +18,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+
+	"github.com/50521136/aegis-dns/server/internal/netproxy"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +73,34 @@ type CheckResult struct {
 // 不用 http.DefaultClient：默认没有超时，GitHub API 偶尔挂起会把
 // 6 小时一次的检查协程永久卡住（虽然无害，但会让「上次检查时间」失真）。
 func client() *http.Client {
+	if tr := currentTransport(); tr != nil {
+		return &http.Client{Timeout: httpTimeout, Transport: tr}
+	}
 	return &http.Client{Timeout: httpTimeout}
+}
+
+// proxyTransport 保存当前代理 Transport；nil 表示直连。
+var proxyTransport atomic.Pointer[http.Transport]
+
+// SetProxy 设置在线更新用的出口代理；空字符串恢复直连。
+//
+// 在线更新要访问 api.github.com 与 release 资产，国内机房经常完全不通，
+// 而运维手里通常已经有可用代理 —— 没有这个开关就只能改系统代理。
+func SetProxy(raw string) error {
+	tr, err := netproxy.Transport(raw, nil)
+	if err != nil {
+		return err
+	}
+	if raw == "" {
+		proxyTransport.Store(nil)
+		return nil
+	}
+	proxyTransport.Store(tr)
+	return nil
+}
+
+func currentTransport() *http.Transport {
+	return proxyTransport.Load()
 }
 
 // apiBase 可在测试中替换。

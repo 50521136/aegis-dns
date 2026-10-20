@@ -159,3 +159,20 @@ export async function testUpstream(
   })
   return data
 }
+
+/**
+ * 下载系统备份（数据库 + 配置 + 证书）。
+ *
+ * 走 blob：这是管理员手动触发的运维动作，不是可缓存的接口。
+ */
+export async function downloadBackup(): Promise<void> {
+  const { data } = await api.get('/admin/backup', { responseType: 'blob' })
+  const url = URL.createObjectURL(data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `aegis-backup-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.tar.gz`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

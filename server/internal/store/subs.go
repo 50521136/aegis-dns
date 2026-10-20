@@ -134,8 +134,13 @@ func (s *Store) DeleteSub(ctx context.Context, uid, sid string) error {
 // 用途：把「同步中」这个瞬时状态落库。只放在内存里没用 —— 前端创建完会重新拉列表，
 // 列表读的是数据库，读回来是空状态就会显示成「未同步」，看着像坏了。
 func (s *Store) SetSubStatus(ctx context.Context, sid, status string) error {
+	// 顺带把 last_fetched 刷成当前时间：pending 是有起点的，
+	// 没有起点就没法判断「同步中」到底是刚发起，还是已经卡死了。
+	// 进程被重启、后台 goroutine 被掐掉时不会有人来清这个状态，
+	// 只能靠读取侧按起点算超时。
 	if _, err := s.write.ExecContext(ctx,
-		`UPDATE subscriptions SET last_status=? WHERE id=?`, status, sid); err != nil {
+		`UPDATE subscriptions SET last_status=?, last_fetched=? WHERE id=?`,
+		status, time.Now().Unix(), sid); err != nil {
 		return fmt.Errorf("更新订阅状态失败: %w", err)
 	}
 	return nil

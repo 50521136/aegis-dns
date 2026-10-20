@@ -110,6 +110,12 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["upstreams"]; ok && v != "" {
 		set.Upstreams = strings.Split(v, ",")
 	}
+	if v, ok := kv["proxy_url"]; ok {
+		set.ProxyURL = v
+	}
+	if v, ok := kv["proxy_enabled"]; ok {
+		set.ProxyEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
 	if v, ok := kv["bootstrap_dns"]; ok {
 		// 允许显式清空（空串 → 空切片），此时回退到系统解析器。
 		set.BootstrapDNS = splitList(v)
@@ -186,6 +192,8 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"domain":                   set.Domain,
 		"upstreams":                strings.Join(set.Upstreams, ","),
 		"bootstrap_dns":            strings.Join(set.BootstrapDNS, ","),
+		"proxy_url":                set.ProxyURL,
+		"proxy_enabled":            boolStr(set.ProxyEnabled),
 		"blocking_mode":            set.BlockingMode,
 		"custom_ip":                set.CustomIP,
 		"fallback_policy":          set.FallbackPolicy,

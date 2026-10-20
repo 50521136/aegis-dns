@@ -216,24 +216,28 @@ type GlobalSettings struct {
 	Domain    string   `json:"domain"`
 	Upstreams []string `json:"upstreams"`
 	// BootstrapDNS 用于解析 DoH/DoT 上游里的主机名，只接受 IP 字面量。
-	BootstrapDNS   []string `json:"bootstrap_dns"`
-	BlockingMode   string   `json:"blocking_mode"`
-	CustomIP       string   `json:"custom_ip"`
-	FallbackPolicy string   `json:"fallback_policy"`
-	CacheSize      int      `json:"cache_size"`
-	CacheMinTTL    int      `json:"cache_min_ttl"`
-	CacheMaxTTL    int      `json:"cache_max_ttl"`
-	RateLimitQPS   int      `json:"rate_limit_qps"`
-	MaxInflight    int      `json:"max_inflight"`
-	QueryTimeoutMS int      `json:"query_timeout_ms"`
-	QueryLogSize   int      `json:"query_log_size"`
-	EnableQueryLog bool     `json:"enable_query_log"`
-	SubIntervalH   int      `json:"sub_interval_hours"`
-	LogRetentionD  int      `json:"query_log_retention_days"`
-	AllowRegister  bool     `json:"allow_register"`
-	InviteCode     string   `json:"invite_code"`
-	UpdateRepo     string   `json:"update_repo"`
-	UpdateChannel  string   `json:"update_channel"`
+	BootstrapDNS []string `json:"bootstrap_dns"`
+	// ProxyURL 是出口代理（http/https/socks5），给在线更新与订阅拉取用。
+	// 空表示不走代理。
+	ProxyURL       string `json:"proxy_url"`
+	ProxyEnabled   bool   `json:"proxy_enabled"`
+	BlockingMode   string `json:"blocking_mode"`
+	CustomIP       string `json:"custom_ip"`
+	FallbackPolicy string `json:"fallback_policy"`
+	CacheSize      int    `json:"cache_size"`
+	CacheMinTTL    int    `json:"cache_min_ttl"`
+	CacheMaxTTL    int    `json:"cache_max_ttl"`
+	RateLimitQPS   int    `json:"rate_limit_qps"`
+	MaxInflight    int    `json:"max_inflight"`
+	QueryTimeoutMS int    `json:"query_timeout_ms"`
+	QueryLogSize   int    `json:"query_log_size"`
+	EnableQueryLog bool   `json:"enable_query_log"`
+	SubIntervalH   int    `json:"sub_interval_hours"`
+	LogRetentionD  int    `json:"query_log_retention_days"`
+	AllowRegister  bool   `json:"allow_register"`
+	InviteCode     string `json:"invite_code"`
+	UpdateRepo     string `json:"update_repo"`
+	UpdateChannel  string `json:"update_channel"`
 
 	// --- 配额：不限制的话单个用户就能把内存打爆 ---
 	//

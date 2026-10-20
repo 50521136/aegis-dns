@@ -267,3 +267,11 @@ func pick(a, b string) string {
 	}
 	return b
 }
+
+// SetProxy 更新订阅拉取的出口代理，立即对所有后续拉取生效。
+func (m *Manager) SetProxy(raw string) error {
+	if m.fetcher == nil {
+		return nil
+	}
+	return m.fetcher.SetProxy(raw)
+}

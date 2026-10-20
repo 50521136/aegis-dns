@@ -11,7 +11,10 @@ import {
   Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/hooks/useAuth'
+import { getPublicStats } from '@/api/stats'
+import { formatNumber, formatPercent } from '@/lib/format'
 
 const features = [
   {
@@ -57,6 +60,16 @@ const item = {
 
 export default function Landing() {
   const { isAuthenticated } = useAuth()
+
+  // 首页数字：只取聚合量，24 小时滚动窗口，后台读不到时整块隐藏而不是显示 0
+  const stats = useQuery({
+    queryKey: ['public', 'stats'],
+    queryFn: getPublicStats,
+    refetchInterval: 60000,
+    staleTime: 30000,
+  })
+  const ps = stats.data
+  const showStats = Boolean(ps?.available && (ps?.total ?? 0) > 0)
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 md:px-6">
@@ -146,6 +159,18 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* 实时数字：给访客一个「这服务真的在跑」的直接观感 */}
+      {showStats && (
+        <section className="pb-16">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <PublicStat label="近 24 小时解析" value={formatNumber(ps!.total ?? 0)} tone="primary" />
+            <PublicStat label="已拦截请求" value={formatNumber(ps!.blocked ?? 0)} tone="danger" />
+            <PublicStat label="拦截率" value={formatPercent(ps!.block_rate ?? 0)} tone="danger" />
+            <PublicStat label="独立域名" value={formatNumber(ps!.unique_domains ?? 0)} tone="success" />
+          </div>
+        </section>
+      )}
+
       {/* Features */}
       <section className="pb-20">
         <div className="mb-10 text-center">
@@ -197,6 +222,26 @@ export default function Landing() {
           </Button>
         </div>
       </section>
+    </div>
+  )
+}
+
+/**
+ * PublicStat 是首页的数字卡。
+ *
+ * 刻意做得很轻：没有图表、没有交互 —— 访客扫一眼就走，
+ * 这一屏的作用是「证明服务在正常工作」，不是给他分析数据。
+ */
+function PublicStat({ label, value, tone }: { label: string; value: string; tone: 'primary' | 'danger' | 'success' }) {
+  const toneClass = {
+    primary: 'text-primary',
+    danger: 'text-danger',
+    success: 'text-success',
+  }[tone]
+  return (
+    <div className="rounded-2xl border border-border/50 bg-card p-4 text-center shadow-sm">
+      <p className={`font-mono text-2xl font-semibold tabular-nums ${toneClass}`}>{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{label}</p>
     </div>
   )
 }

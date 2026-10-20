@@ -89,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/readyz", s.handleReadyz)
 		r.Get("/version", s.handleVersion)
 		r.Get("/docs", s.handleDocs)
+		// 首页用的公开统计（无需认证，只含聚合数字）
+		r.Get("/public/stats", s.handlePublicStats)
 
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/register", s.handleRegister)
@@ -185,6 +187,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/users/{id}/client-id", s.handleAdminSetClientID)
 				// 上游连通性自测：DoH/DoT 配错时现象是「全部超时」，得能当场验
 				r.Post("/settings/test-upstream", s.handleTestUpstream)
+				// 系统级备份：数据库 + 配置 + 证书打包下载
+				r.Get("/backup", s.handleAdminBackup)
 				r.Get("/users/usage", s.handleAdminUsersQuota)
 				r.Post("/maintenance/cleanup", s.handleAdminCleanup)
 				r.Get("/settings", s.handleAdminGetSettings)
@@ -226,6 +230,9 @@ func (s *Server) Run(ctx context.Context) error {
 		IdleTimeout:       120 * time.Second,
 		WriteTimeout:      120 * time.Second,
 	}
+
+	// 按已保存的设置初始化出口代理（订阅拉取 + 在线更新）。
+	s.ApplyProxyFromSettings(context.Background())
 
 	errCh := make(chan error, 2)
 

@@ -142,6 +142,29 @@ func (s *Server) handleAdminListSubs(w http.ResponseWriter, r *http.Request) {
 	s.listSubs(w, r, true)
 }
 
+// stalePendingAfter 是「同步中」允许停留的最长时间。
+//
+// 比一次拉取的超时（subsub.FetchTimeout）多留两分钟做解析与入库。
+// 超过这个时间还停在 pending，说明后台任务已经没了（进程重启、
+// goroutine 被掐、下载卡死），状态不会有人来改 —— 界面上就永远转圈。
+const stalePendingAfter = subsub.FetchTimeout + 2*time.Minute
+
+// normalizeStalePending 把卡死的「同步中」改写成明确的失败。
+//
+// 只改内存里的展示值，不动数据库：真正卡住的原因（进程重启）无法在这里修复，
+// 但至少要让用户看到「超时了，点刷新重试」而不是无限转圈。
+func normalizeStalePending(sub *model.Subscription) {
+	if sub == nil || !strings.HasPrefix(sub.LastStatus, "pending") {
+		return
+	}
+	if sub.LastFetched <= 0 {
+		return
+	}
+	if time.Since(time.Unix(sub.LastFetched, 0)) > stalePendingAfter {
+		sub.LastStatus = "error: 同步超时，请点刷新重试"
+	}
+}
+
 func (s *Server) listSubs(w http.ResponseWriter, r *http.Request, global bool) {
 	u := currentUser(r)
 	list, err := s.store.ListSubs(r.Context(), u.ID, global)
@@ -151,6 +174,7 @@ func (s *Server) listSubs(w http.ResponseWriter, r *http.Request, global bool) {
 	}
 	items := make([]map[string]any, 0, len(list))
 	for _, sub := range list {
+		normalizeStalePending(sub)
 		items = append(items, subToJSON(sub))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

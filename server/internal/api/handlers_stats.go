@@ -276,3 +276,32 @@ func (s *Server) handleAdminQueryLog(w http.ResponseWriter, r *http.Request) {
 		"offset": offset,
 	})
 }
+
+// handlePublicStats 给首页用的公开统计（无需登录）。
+//
+// 只暴露聚合后的总量与比率，不含任何域名、租户、IP 信息 ——
+// 首页要的是「这个服务在跑、拦了多少」的说服力，不是运营数据。
+func (s *Server) handlePublicStats(w http.ResponseWriter, r *http.Request) {
+	// 固定 24 小时窗口：首页数字每天滚动一次，不给前端传参的余地，
+	// 免得有人拿它当免费统计接口刷。
+	since := time.Now().Add(-24 * time.Hour).Unix()
+	sum, err := s.store.Summary(r.Context(), "", since)
+	if err != nil {
+		// 首页不该因为统计读失败而报错
+		writeJSON(w, http.StatusOK, map[string]any{
+			"available": false, "window": "24h",
+		})
+		return
+	}
+	unique, _ := s.store.UniqueDomains(r.Context(), "", since)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available":      true,
+		"window":         "24h",
+		"total":          sum.Total,
+		"blocked":        sum.Blocked,
+		"allowed":        sum.Allowed,
+		"block_rate":     sum.BlockRate,
+		"cache_hit_rate": sum.CacheRate,
+		"unique_domains": unique,
+	})
+}

@@ -209,6 +209,29 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		return
 	}
 
+	// 带了 client_id 但查不到对应租户：直接拒绝。
+	//
+	// 判断必须独立于来源 IP 兜底。之前挂在 isFallback 上，结果客户端 IP
+	// 登记过的话会被 IP 兜底认成租户、绕过这条检查 —— 用户拿着写错的
+	// 子域名照样能用，永远发现不了自己配错了。
+	//
+	// 语义上也该拒绝：这不是「没带身份」，而是「带了一个不存在的身份」
+	// （用户被删、地址抄错、旧二维码）。放行等于让陌生人白嫖解析服务。
+	if hint != nil && (hint.ClientID != "" || hint.AltClientID != "") {
+		matched := false
+		if hint.ClientID != "" && snap.LookupClientID(hint.ClientID) != nil {
+			matched = true
+		}
+		if !matched && hint.AltClientID != "" && snap.LookupClientID(hint.AltClientID) != nil {
+			matched = true
+		}
+		if !matched {
+			h.record("", q, "blocked", "REFUSED", time.Since(start), w)
+			_ = w.WriteMsg(refusedResponse(req))
+			return
+		}
+	}
+
 	// 未识别请求的 refused 策略。
 	if isFallback && d.FallbackPolicy == model.FallbackRefused {
 		h.record("", q, "blocked", "REFUSED", time.Since(start), w)

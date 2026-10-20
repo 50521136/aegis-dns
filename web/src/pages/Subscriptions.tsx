@@ -249,10 +249,12 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
               <Plus />
               添加订阅
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => setPresetsOpen(true)}>
-              <ListPlus />
-              推荐列表
-            </Button>
+            {isGlobal && (
+              <Button variant="secondary" size="sm" onClick={() => setPresetsOpen(true)}>
+                <ListPlus />
+                推荐列表
+              </Button>
+            )}
           </>
         }
       />
@@ -269,11 +271,15 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
         <EmptyState
           icon={<Shield className="size-6" />}
           title="还没有订阅"
-          description="从推荐列表一键添加常用的广告拦截或白名单订阅源。"
+          description={
+            isGlobal
+              ? '从推荐列表一键添加常用的广告拦截或白名单订阅源。'
+              : '粘贴一个订阅地址即可，支持 adblock / hosts / 域名列表格式。'
+          }
           action={
-            <Button onClick={() => setPresetsOpen(true)}>
+            <Button onClick={() => (isGlobal ? setPresetsOpen(true) : openCreate())}>
               <ListPlus />
-              浏览推荐订阅
+              {isGlobal ? '浏览推荐订阅' : '添加订阅'}
             </Button>
           }
         />

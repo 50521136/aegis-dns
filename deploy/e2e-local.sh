@@ -446,8 +446,11 @@ OUT2=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "dns.e2e.local" 
 echo "  开: $OUT2"
 echo "$OUT2" | grep -qiE 'REFUSED|拒绝' && bad "开启后裸域名仍被拒: $OUT2" || ok "开启后裸域名可解析"
 
-# 子域名不受开关影响
-OUT3=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "$CID.dns.e2e.local" --insecure 2>&1 | tail -1)
+# 子域名不受开关影响。
+# 必须从 /me 取当前 ID：前面的「重置接入 ID」「自定义接入 ID」用例已经把它换掉了，
+# 用注册时的 $CID 会命中「未知 client_id 直接拒绝」，测出来的根本不是主域名开关。
+LIVE_CID=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+OUT3=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "$LIVE_CID.dns.e2e.local" --insecure 2>&1 | tail -1)
 echo "$OUT3" | grep -qiE 'REFUSED|拒绝' && bad "子域名被误伤: $OUT3" || ok "子域名不受主域名开关影响"
 
 hdr "设置部分更新不得误关开关"
@@ -574,6 +577,51 @@ grep -q 'CLIENT_ID_TAKEN' /tmp/e2e_cid4.json && ok "错误码是 CLIENT_ID_TAKEN
 # 管理员设置不消耗用户的次数
 curl -fsS "$API/admin/users?q=cid2" -H "Authorization: Bearer $ADMTOK" | grep -q '"custom_id_used":false' \
   && ok "管理员设置不消耗用户机会" || bad "管理员设置消耗了用户机会"
+
+hdr "未知 client_id 直接拒绝"
+# 带了 client_id 但查不到对应租户：不能放行。放行等于让陌生人白嫖，
+# 而用户侧看到的是「能解析但规则不生效」，比明确拒绝更难排查。
+OUT=$($PROBE dot 127.0.0.1:18853 nonexistent.example.com A --sni "zzzzzzzzzz.dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "  $OUT"
+echo "$OUT" | grep -qiE 'REFUSED|拒绝' && ok "不存在的 client_id → REFUSED" || bad "未知 client_id 未被拒: $OUT"
+
+hdr "首页公开统计（免认证）"
+PS=$(curl -s "$API/public/stats")
+echo "$PS" | grep -q '"available":true' && ok "公开统计可用" || bad "公开统计异常: $(echo "$PS" | head -c 120)"
+echo "$PS" | grep -q '"window":"24h"' && ok "窗口固定 24h" || bad "窗口不对"
+# 不该泄露任何域名/租户信息
+echo "$PS" | grep -qiE '"[a-z0-9-]+\.(com|net|cn)"' && bad "公开统计泄露了域名" || ok "公开统计不含域名细节"
+
+hdr "系统备份"
+code=$(curl -s -o /tmp/e2e_backup.tgz -w '%{http_code}' "$API/admin/backup" -H "Authorization: Bearer $ADMTOK")
+[[ "$code" == "200" ]] && ok "备份接口返回 200" || bad "备份失败：$code"
+# 必须是能解开的 tar.gz，且含数据库与说明
+if tar tzf /tmp/e2e_backup.tgz >/tmp/e2e_backup.list 2>/dev/null; then
+  ok "备份包可解压"
+  grep -q '^aegis.db$' /tmp/e2e_backup.list && ok "含 aegis.db" || bad "备份缺数据库"
+  grep -q '^README.txt$' /tmp/e2e_backup.list && ok "含 README" || bad "备份缺说明"
+else
+  bad "备份包损坏"
+fi
+# 普通用户不能下备份
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/admin/backup" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "403" ]] && ok "普通用户不能下载备份（403）" || bad "越权下载备份：$code"
+
+hdr "出口代理设置"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"proxy_url":"socks5://127.0.0.1:1080","proxy_enabled":true}' >/dev/null
+SET=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SET" | grep -q '"proxy_url":"socks5://127.0.0.1:1080"' && ok "代理地址可持久化" || bad "代理没存住"
+echo "$SET" | grep -q '"proxy_enabled":true' && ok "代理开关可持久化" || bad "开关没存住"
+# 关掉开关后地址仍在（用户回来不用重填）
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"proxy_enabled":false}' >/dev/null
+SET2=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SET2" | grep -q '"proxy_url":"socks5://127.0.0.1:1080"' && ok "关开关不清空地址" || bad "关开关把地址清了"
+echo "$SET2" | grep -q '"proxy_enabled":false' && ok "开关能关" || bad "开关关不掉"
+# 清理：恢复成不启用
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"proxy_url":"","proxy_enabled":false}' >/dev/null
 
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——

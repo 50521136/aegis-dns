@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -223,4 +224,19 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// BackupTo 导出一份一致性快照到 dest。
+//
+// 必须用 VACUUM INTO，不能直接拷 aegis.db 文件：库是 WAL 模式，
+// 直接拷主文件会漏掉还没 checkpoint 的 WAL 内容 —— 拿到手的是一份
+// 「旧的」数据库，而且没有任何报错，等到真需要恢复时才发现丢数据。
+//
+// dest 指向的文件必须不存在（SQLite 的要求），由调用方保证。
+func (s *Store) BackupTo(ctx context.Context, dest string) error {
+	_ = os.Remove(dest)
+	if _, err := s.write.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("导出数据库快照失败: %w", err)
+	}
+	return nil
 }

@@ -243,6 +243,9 @@ export interface AdminSettings {
   upstreams: string[]
   /** 引导 DNS：只接受 IP，用于解析 DoH/DoT 上游的主机名 */
   bootstrap_dns: string[]
+  /** 出口代理（http/https/socks5），给在线更新与订阅拉取用 */
+  proxy_url: string
+  proxy_enabled: boolean
   blocking_mode: 'nxdomain' | 'null_ip' | 'refused' | 'custom_ip'
   custom_ip: string
   fallback_policy: 'passthrough' | 'refused' | 'blocklist_only'
