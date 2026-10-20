@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   Clock,
   ListPlus,
@@ -130,6 +131,10 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
     queryFn: listPresets,
     enabled: presetsOpen,
   })
+
+  // 已经在列表里的源不能再加一次：同一份列表重复导入只会白占配额、
+  // 把订阅列表撑得看不出重点，而用户点下去之前是不知道的。
+  const existingUrls = new Set((listQuery.data ?? []).map((s) => s.url))
 
   const items = listQuery.data ?? []
 
@@ -446,11 +451,14 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
             ) : (presetsQuery.data?.length ?? 0) === 0 ? (
               <EmptyState icon={<Shield className="size-6" />} title="暂无推荐订阅" className="py-8" />
             ) : (
-              presetsQuery.data!.map((p) => (
+              presetsQuery.data!.map((p) => {
+                const added = existingUrls.has(p.url)
+                return (
                 <div
                   key={p.url}
                   className={cn(
                     'flex items-center justify-between gap-3 rounded-xl border border-border bg-background p-4',
+                    added && 'opacity-60',
                   )}
                 >
                   <div className="min-w-0">
@@ -462,18 +470,26 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                     </div>
                     <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{p.description}</p>
                   </div>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setPresetsOpen(false)
-                      openCreate({ name: p.name, url: p.url, list_type: p.list_type })
-                    }}
-                  >
-                    <Plus />
-                    添加
-                  </Button>
+                  {added ? (
+                    <Button size="sm" variant="secondary" disabled title="该订阅已在列表中">
+                      <Check />
+                      已添加
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setPresetsOpen(false)
+                        openCreate({ name: p.name, url: p.url, list_type: p.list_type })
+                      }}
+                    >
+                      <Plus />
+                      添加
+                    </Button>
+                  )}
                 </div>
-              ))
+                )
+              })
             )}
           </div>
         </DialogContent>

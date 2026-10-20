@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ScrollText, Search, ShieldAlert } from 'lucide-react'
+import {
+  RefreshCw,
+  ScrollText,
+  Search,
+  ShieldAlert,
+} from 'lucide-react'
 import { getAdminQueryLog } from '@/api/adminStats'
 import { listUsers } from '@/api/admin'
 import { errorMessage } from '@/api/client'
@@ -86,6 +91,17 @@ export default function AdminLogs() {
         title="全局日志"
         description="所有用户的 DNS 查询记录，每 15 秒自动刷新"
         icon={<ScrollText className="size-5" />}
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => query.refetch()}
+            disabled={query.isFetching}
+          >
+            <RefreshCw className={query.isFetching ? 'animate-spin' : undefined} />
+            刷新
+          </Button>
+        }
       />
 
       <Card>

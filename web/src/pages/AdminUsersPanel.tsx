@@ -318,7 +318,13 @@ export function UsersPanel() {
                           </p>
                         </TableCell>
                         <TableCell className="hidden lg:table-cell">
-                          <code className="font-mono text-xs">{u.client_id}</code>
+                          {/* 管理员是控制面角色，不用 DNS 接入，给他一个 client_id
+                              只会让人以为那是个能用的子域名 */}
+                          {u.role === 'admin' ? (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          ) : (
+                            <code className="font-mono text-xs">{u.client_id}</code>
+                          )}
                         </TableCell>
                         <TableCell className="hidden xl:table-cell">
                           <span
@@ -403,6 +409,7 @@ export function UsersPanel() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              disabled={u.role === 'admin'}
                               onClick={() => {
                                 setCidUser(u)
                                 setCidValue(u.client_id)
@@ -415,6 +422,7 @@ export function UsersPanel() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              disabled={u.role === 'admin'}
                               onClick={() => setResetUser(u)}
                               aria-label="重置接入 ID"
                               title="重置接入 ID"

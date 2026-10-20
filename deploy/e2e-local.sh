@@ -450,6 +450,46 @@ echo "$OUT2" | grep -qiE 'REFUSED|拒绝' && bad "开启后裸域名仍被拒: $
 OUT3=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "$CID.dns.e2e.local" --insecure 2>&1 | tail -1)
 echo "$OUT3" | grep -qiE 'REFUSED|拒绝' && bad "子域名被误伤: $OUT3" || ok "子域名不受主域名开关影响"
 
+hdr "设置部分更新不得误关开关"
+# 这条守着一个大坑：布尔字段曾用值类型接收，导致任何「只改一个字段」的请求
+# 都会把没提到的开关按零值写回去 —— 改完 fallback_policy 之后查询日志悄悄停了。
+BEFORE=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+QLOG_BEFORE=$(echo "$BEFORE" | grep -o '"enable_query_log":[a-z]*' | cut -d: -f2)
+REG_BEFORE=$(echo "$BEFORE" | grep -o '"allow_register":[a-z]*' | cut -d: -f2)
+ROOT_BEFORE=$(echo "$BEFORE" | grep -o '"allow_root_domain":[a-z]*' | cut -d: -f2)
+# 只传一个字符串字段
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"fallback_policy":"blocklist_only"}' >/dev/null
+AFTER=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+QLOG_AFTER=$(echo "$AFTER" | grep -o '"enable_query_log":[a-z]*' | cut -d: -f2)
+REG_AFTER=$(echo "$AFTER" | grep -o '"allow_register":[a-z]*' | cut -d: -f2)
+ROOT_AFTER=$(echo "$AFTER" | grep -o '"allow_root_domain":[a-z]*' | cut -d: -f2)
+[[ "$QLOG_BEFORE" == "$QLOG_AFTER" ]] && ok "部分更新没关掉 enable_query_log（$QLOG_AFTER）" || bad "enable_query_log 被误改：$QLOG_BEFORE -> $QLOG_AFTER"
+[[ "$REG_BEFORE" == "$REG_AFTER" ]] && ok "部分更新没关掉 allow_register" || bad "allow_register 被误改：$REG_BEFORE -> $REG_AFTER"
+[[ "$ROOT_BEFORE" == "$ROOT_AFTER" ]] && ok "部分更新没关掉 allow_root_domain" || bad "allow_root_domain 被误改：$ROOT_BEFORE -> $ROOT_AFTER"
+echo "$AFTER" | grep -q '"fallback_policy":"blocklist_only"' && ok "目标字段确实改到了" || bad "目标字段没改到"
+# 显式传 false 仍要生效
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_query_log":false}' >/dev/null
+curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | grep -q '"enable_query_log":false' \
+  && ok "显式传 false 能关掉（不是忽略）" || bad "显式 false 没生效"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_query_log":true}' >/dev/null
+
+hdr "上游连通性自测"
+TU=$(curl -s -X POST "$API/admin/settings/test-upstream" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"upstream":"127.0.0.1:15353"}')
+echo "$TU" | grep -q '"ok":true' && ok "能测通本机上游" || bad "自测失败: $(echo "$TU" | head -c 160)"
+echo "$TU" | grep -q '"answers"' && ok "返回了解析结果" || bad "没返回 answers"
+TU2=$(curl -s -X POST "$API/admin/settings/test-upstream" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"upstream":"127.0.0.1:1"}')
+echo "$TU2" | grep -q '"ok":false' && ok "坏上游如实报错（不是静默成功）" || bad "坏上游未报错: $(echo "$TU2" | head -c 160)"
+# bootstrap_dns 要能存能读
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"bootstrap_dns":["223.5.5.5","119.29.29.29"]}' >/dev/null
+curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | grep -q '"bootstrap_dns":\["223.5.5.5","119.29.29.29"\]' \
+  && ok "bootstrap_dns 可持久化" || bad "bootstrap_dns 没存住"
+
 hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')

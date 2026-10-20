@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -19,14 +20,24 @@ import {
   RefreshCw,
   ShieldCheck,
   TrendingUp,
+  Users,
 } from 'lucide-react'
-import { getSummary, getTimeseries, getTop } from '@/api/stats'
+import { getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
+import { getAdminUserTraffic } from '@/api/adminStats'
+import type { Scope } from '@/api/types'
 import { useAuth } from '@/hooks/useAuth'
 import { StatCard } from '@/components/StatCard'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { EmptyState } from '@/components/EmptyState'
@@ -39,23 +50,53 @@ function formatTs(ts: string | number): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`
 }
 
-export default function Dashboard() {
-  const { user, dnsConfig } = useAuth()
+const RANGES: { value: StatsRange; label: string }[] = [
+  { value: '1h', label: '1 小时' },
+  { value: '24h', label: '24 小时' },
+  { value: '7d', label: '7 天' },
+  { value: '30d', label: '30 天' },
+]
 
+export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
+  const { user, dnsConfig } = useAuth()
+  const isAdmin = scope === 'global'
+  const [range, setRange] = useState<StatsRange>('24h')
+
+  // 区间同时决定三个查询：改一次区间要一起变，否则卡片和图对不上。
   const summary = useQuery({
-    queryKey: ['stats', 'summary', '24h'],
-    queryFn: () => getSummary('24h'),
+    queryKey: ['stats', 'summary', scope, range],
+    queryFn: () => getSummary(range, scope),
+    refetchInterval: 30000,
   })
 
   const timeseries = useQuery({
-    queryKey: ['stats', 'timeseries', '7d', '1h'],
-    queryFn: () => getTimeseries('7d', '1h'),
+    queryKey: ['stats', 'timeseries', scope, range],
+    queryFn: () => getTimeseries(range, undefined, scope),
+    refetchInterval: 60000,
   })
 
   const top = useQuery({
-    queryKey: ['stats', 'top', '24h', 'blocked'],
-    queryFn: () => getTop('24h', 8, 'blocked'),
+    queryKey: ['stats', 'top', scope, range],
+    queryFn: () => getTop(range, 8, 'blocked', scope),
+    refetchInterval: 30000,
   })
+
+  // 流量排行只对管理员有意义（租户侧只有一个用户）
+  const traffic = useQuery({
+    queryKey: ['stats', 'traffic', range],
+    queryFn: () => getAdminUserTraffic(range === '1h' ? '1h' : range === '30d' ? '30d' : range === '7d' ? '7d' : '24h'),
+    enabled: isAdmin,
+    refetchInterval: 30000,
+  })
+
+  const refreshing =
+    summary.isFetching || timeseries.isFetching || top.isFetching || traffic.isFetching
+  const refreshAll = () => {
+    void summary.refetch()
+    void timeseries.refetch()
+    void top.refetch()
+    if (isAdmin) void traffic.refetch()
+  }
 
   const s = summary.data
   const chartData = (timeseries.data?.points ?? []).map((p) => ({
@@ -66,16 +107,36 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title={`你好，${user?.username ?? ''}`}
-        description="这里是你的 DNS 服务总览"
+        title={isAdmin ? '全站总览' : `你好，${user?.username ?? ''}`}
+        description={isAdmin ? '所有租户的查询与拦截情况' : '这里是你的 DNS 服务总览'}
         icon={<Activity className="size-5" />}
         actions={
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/app/setup">
-              <BookOpen />
-              接入配置
-            </Link>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={range} onValueChange={(v) => setRange(v as StatsRange)}>
+              <SelectTrigger className="h-9 w-28 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RANGES.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm" onClick={refreshAll} disabled={refreshing}>
+              <RefreshCw className={refreshing ? 'animate-spin' : undefined} />
+              刷新
+            </Button>
+            {!isAdmin && (
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/app/setup">
+                  <BookOpen />
+                  接入配置
+                </Link>
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -130,7 +191,7 @@ export default function Dashboard() {
         {/* 时间序列 */}
         <Card className="lg:col-span-2">
           <CardHeader className="flex-row items-center justify-between">
-            <CardTitle>查询趋势（近 7 天）</CardTitle>
+            <CardTitle>查询趋势（{RANGES.find((r) => r.value === range)?.label}）</CardTitle>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5">
                 <span className="size-2.5 rounded-full bg-primary" /> 总量
@@ -250,8 +311,56 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* 快捷入口 */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {/* 流量排行：只有管理员看得到（租户侧只有一个用户，排行没意义）*/}
+      {isAdmin && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <div>
+              <CardTitle>流量排行</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">按租户统计请求量与拦截率</p>
+            </div>
+            <Badge variant="secondary" className="tabular-nums">
+              {traffic.data?.total_users ?? 0} 个租户
+            </Badge>
+          </CardHeader>
+          <CardContent>
+            {traffic.isLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10 rounded-lg" />
+                ))}
+              </div>
+            ) : traffic.isError ? (
+              <ErrorState message={errorMessage(traffic.error)} onRetry={() => traffic.refetch()} />
+            ) : (traffic.data?.items?.length ?? 0) === 0 ? (
+              <EmptyState icon={<Users className="size-6" />} title="暂无租户流量" className="py-8" />
+            ) : (
+              <div className="space-y-1">
+                {traffic.data!.items.map((row, i) => (
+                  <div
+                    key={row.user_id}
+                    className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/50"
+                  >
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold tabular-nums text-muted-foreground">
+                      {i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{row.username}</span>
+                    <span className="w-24 text-right font-mono text-xs tabular-nums">
+                      {formatNumber(row.total)}
+                    </span>
+                    <Badge variant="danger" className="w-16 justify-center tabular-nums">
+                      {formatPercent(row.block_rate)}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 快捷入口：租户侧才有意义 */}
+      <div className={isAdmin ? 'hidden' : 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'}>
         <QuickLink
           to="/app/setup"
           icon={<BookOpen className="size-5" />}

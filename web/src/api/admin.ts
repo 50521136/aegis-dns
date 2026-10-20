@@ -129,3 +129,33 @@ export async function runCleanup(): Promise<CleanupResult> {
   const { data } = await api.post<CleanupResult>('/admin/maintenance/cleanup', {})
   return data
 }
+
+/** 上游连通性自测结果 */
+export interface UpstreamTestResult {
+  ok: boolean
+  upstream: string
+  domain?: string
+  elapsed_ms?: number
+  answers?: string[]
+  bootstrap_dns?: string[]
+  error?: string
+}
+
+/**
+ * 试解析一次，验证上游（含引导 DNS）能不能用。
+ *
+ * DoH/DoT 上游配错、或引导 DNS 没配时，现象是「所有查询都超时」，
+ * 而保存设置本身是成功的 —— 没有这个接口只能靠猜。
+ */
+export async function testUpstream(
+  upstream: string,
+  bootstrapDNS: string[],
+  domain?: string,
+): Promise<UpstreamTestResult> {
+  const { data } = await api.post<UpstreamTestResult>('/admin/settings/test-upstream', {
+    upstream,
+    bootstrap_dns: bootstrapDNS,
+    domain,
+  })
+  return data
+}

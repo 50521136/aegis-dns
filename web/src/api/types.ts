@@ -241,6 +241,8 @@ export interface AdminUserListResponse {
 export interface AdminSettings {
   domain: string
   upstreams: string[]
+  /** 引导 DNS：只接受 IP，用于解析 DoH/DoT 上游的主机名 */
+  bootstrap_dns: string[]
   blocking_mode: 'nxdomain' | 'null_ip' | 'refused' | 'custom_ip'
   custom_ip: string
   fallback_policy: 'passthrough' | 'refused' | 'blocklist_only'

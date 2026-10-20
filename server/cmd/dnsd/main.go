@@ -161,7 +161,7 @@ func main() {
 func flushLoop(ctx context.Context, st *store.Store, c *stats.Collector, cfg *config.Config, log *slog.Logger) {
 	interval := time.Duration(cfg.DNS.StatsFlushSeconds) * time.Second
 	if interval <= 0 {
-		interval = 60 * time.Second
+		interval = 10 * time.Second
 	}
 	log.Info("统计落库循环已启动", "interval", interval.String())
 	t := time.NewTicker(interval)

@@ -133,8 +133,14 @@ type UserIP struct {
 
 // Defaults 是快照里的全局默认项，dnsd 在用户未覆盖时使用。
 type Defaults struct {
-	Domain         string   `json:"domain"`
-	Upstreams      []string `json:"upstreams"`
+	Domain    string   `json:"domain"`
+	Upstreams []string `json:"upstreams"`
+	// BootstrapDNS 用于解析 DoH/DoT 上游里的主机名。
+	//
+	// 只接受 IP 字面量：用 DoH 地址做引导是循环依赖（要先解析才能连）。
+	// 不配的话，DoH 上游的主机名会走系统解析器，容器里经常没有可用解析器，
+	// 表现为「上游配好了却全部超时」。
+	BootstrapDNS   []string `json:"bootstrap_dns"`
 	BlockingMode   string   `json:"blocking_mode"`
 	CustomIP       string   `json:"custom_ip"`
 	FallbackPolicy string   `json:"fallback_policy"`
@@ -207,8 +213,10 @@ const SnapshotSchema = 2
 
 // GlobalSettings 是管理员可改的全局设置（存 meta 表，前缀 setting.）。
 type GlobalSettings struct {
-	Domain         string   `json:"domain"`
-	Upstreams      []string `json:"upstreams"`
+	Domain    string   `json:"domain"`
+	Upstreams []string `json:"upstreams"`
+	// BootstrapDNS 用于解析 DoH/DoT 上游里的主机名，只接受 IP 字面量。
+	BootstrapDNS   []string `json:"bootstrap_dns"`
 	BlockingMode   string   `json:"blocking_mode"`
 	CustomIP       string   `json:"custom_ip"`
 	FallbackPolicy string   `json:"fallback_policy"`
@@ -271,11 +279,13 @@ func DefaultSettings() GlobalSettings {
 		QueryTimeoutMS: 10000,
 		QueryLogSize:   10000,
 		EnableQueryLog: true,
-		SubIntervalH:   24,
-		LogRetentionD:  7,
-		AllowRegister:  true,
-		InviteCode:     "",
-		UpdateChannel:  "stable",
+		// 国内可达的两个公共解析器，用于解析 DoH/DoT 上游的主机名。
+		BootstrapDNS:  []string{"223.5.5.5", "119.29.29.29"},
+		SubIntervalH:  24,
+		LogRetentionD: 7,
+		AllowRegister: true,
+		InviteCode:    "",
+		UpdateChannel: "stable",
 
 		AllowRootDomain: true,
 		StatsRetentionD: 30,

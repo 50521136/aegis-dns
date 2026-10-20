@@ -6,14 +6,19 @@ import { z } from 'zod'
 import {
   Activity,
   BarChart3,
+  Check,
   Cpu,
   Database,
   HardDriveDownload,
+  KeyRound,
+  LogOut,
+  PlugZap,
   Save,
   Search,
   ShieldCheck,
   Trash2,
   Users,
+  X,
 } from 'lucide-react'
 import {
   deleteUser,
@@ -31,6 +36,9 @@ import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
+import { testUpstream, type UpstreamTestResult } from '@/api/admin'
+import { PasswordCard, UpdateCard } from './Settings'
+import { useAuth } from '@/hooks/useAuth'
 import { UsersPanel } from './AdminUsersPanel'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -64,6 +72,7 @@ import { formatDateTime, formatNumber, formatUptime } from '@/lib/format'
 const settingsSchema = z.object({
   domain: z.string().min(1, '请输入主域名'),
   upstreams: z.string(),
+  bootstrap_dns: z.string(),
   blocking_mode: z.enum(['nxdomain', 'null_ip', 'refused', 'custom_ip']),
   custom_ip: z.string(),
   fallback_policy: z.enum(['passthrough', 'refused', 'blocklist_only']),
@@ -111,6 +120,7 @@ function SettingsPanel() {
     form.reset({
       ...s,
       upstreams: (s.upstreams ?? []).join('\n'),
+      bootstrap_dns: (s.bootstrap_dns ?? []).join('\n'),
     } as unknown as SettingsForm)
     setHydrated(true)
   }
@@ -119,6 +129,10 @@ function SettingsPanel() {
     mutationFn: (values: SettingsForm) => {
       const payload: Partial<AdminSettings> = {
         ...values,
+        bootstrap_dns: values.bootstrap_dns
+          .split('\n')
+          .map((v) => v.trim())
+          .filter(Boolean),
         upstreams: values.upstreams
           .split('\n')
           .map((u) => u.trim())
@@ -165,6 +179,25 @@ function SettingsPanel() {
             />
             <p className="text-xs text-muted-foreground">支持 IP、udp://、tls://、https:// 形式。</p>
           </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="bootstrap_dns">引导 DNS（每行一个 IP）</Label>
+            <textarea
+              id="bootstrap_dns"
+              {...form.register('bootstrap_dns')}
+              className="min-h-[70px] w-full rounded-xl border border-border bg-background px-3.5 py-2.5 font-mono text-[13px] focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+              placeholder={'223.5.5.5\n119.29.29.29'}
+            />
+            <p className="text-xs text-muted-foreground">
+              只填 IP：DoH/DoT 上游要先解析主机名才能连，而解析又依赖它，所以不能用域名做引导。
+              留空则回退系统解析器（容器里经常没有，会表现为「上游全部超时」）。
+            </p>
+          </div>
+
+          <UpstreamTester
+            upstream={form.watch('upstreams')}
+            bootstrap={form.watch('bootstrap_dns')}
+          />
         </CardContent>
       </Card>
 
@@ -471,16 +504,12 @@ export default function Admin() {
     <div className="space-y-6">
       <PageHeader
         title="管理后台"
-        description="用户、全局设置与系统状态"
+        description="用户、全局设置、系统状态与账号安全"
         icon={<ShieldCheck className="size-5" />}
       />
 
-      <Tabs defaultValue="traffic">
+      <Tabs defaultValue="users">
         <TabsList className="flex-wrap">
-          <TabsTrigger value="traffic">
-            <BarChart3 className="size-4" />
-            流量排行
-          </TabsTrigger>
           <TabsTrigger value="users">
             <Users className="size-4" />
             用户
@@ -493,11 +522,12 @@ export default function Admin() {
             <Cpu className="size-4" />
             系统状态
           </TabsTrigger>
+          <TabsTrigger value="account">
+            <KeyRound className="size-4" />
+            账号安全
+          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="traffic">
-          <TrafficPanel />
-        </TabsContent>
         <TabsContent value="users">
           <UsersPanel />
         </TabsContent>
@@ -505,132 +535,17 @@ export default function Admin() {
           <SettingsPanel />
         </TabsContent>
         <TabsContent value="system">
-          <SystemPanel />
+          <div className="space-y-6">
+            <SystemPanel />
+            {/* 在线更新是运维动作，放在系统状态里而不是租户设置页 */}
+            <UpdateCard />
+          </div>
+        </TabsContent>
+        <TabsContent value="account">
+          <AdminAccountPanel />
         </TabsContent>
       </Tabs>
     </div>
-  )
-}
-
-/* ---------- 流量排行 ---------- */
-
-const TRAFFIC_RANGES: { value: AdminStatsRange; label: string }[] = [
-  { value: '1h', label: '近 1 小时' },
-  { value: '24h', label: '近 24 小时' },
-  { value: '7d', label: '近 7 天' },
-  { value: '30d', label: '近 30 天' },
-]
-
-/**
- * TrafficPanel 展示每个用户的请求量排行。
- *
- * 数据来自 query_rollup 按 user_id 聚合，管理员用它判断谁在重度使用、
- * 谁的拦截率异常（拦截率接近 1 说明规则把它全拦了，八成是配错了）。
- */
-function TrafficPanel() {
-  const [range, setRange] = useState<AdminStatsRange>('24h')
-
-  const q = useQuery({
-    queryKey: ['admin', 'stats', 'users', range],
-    queryFn: () => getAdminUserTraffic(range, 20),
-    refetchInterval: 30000,
-  })
-
-  const items = q.data?.items ?? []
-  const grandTotal = items.reduce((a, b) => a + b.total, 0)
-  const max = items.length > 0 ? items[0].total : 0
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <BarChart3 className="size-5 text-primary" />
-          用户请求量排行
-        </CardTitle>
-        <CardDescription>
-          {q.data ? `共 ${items.length} 个用户有流量，合计 ${formatNumber(grandTotal)} 次查询` : '按解析请求量排序'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="m-groove inline-flex flex-wrap gap-1 rounded-xl p-1">
-          {TRAFFIC_RANGES.map((r) => (
-            <button
-              key={r.value}
-              onClick={() => setRange(r.value)}
-              className={cn(
-                'rounded-lg px-3 py-1.5 text-sm transition-colors',
-                range === r.value
-                  ? 'm-pill font-medium text-foreground'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        {q.isError ? (
-          <ErrorState message={errorMessage(q.error)} onRetry={() => q.refetch()} />
-        ) : q.isLoading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 rounded-xl" />
-            ))}
-          </div>
-        ) : items.length === 0 ? (
-          <EmptyState
-            icon={<BarChart3 className="size-6" />}
-            title="还没有流量数据"
-            description="用户产生解析请求后，排行会显示在这里。"
-          />
-        ) : (
-          <ol className="space-y-2">
-            {items.map((u, i) => {
-              const pct = max > 0 ? Math.round((u.total / max) * 100) : 0
-              return (
-                <li
-                  key={u.user_id}
-                  className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2.5"
-                >
-                  {/* 名次：前三名用主色强调 */}
-                  <span
-                    className={cn(
-                      'readout w-7 shrink-0 text-center text-sm',
-                      i === 0 ? 'text-primary' : i < 3 ? 'text-foreground' : 'text-muted-foreground',
-                    )}
-                  >
-                    {i + 1}
-                  </span>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {u.username || '已删除用户'}
-                      </span>
-                      <span className="shrink-0 font-mono text-sm tabular-nums">
-                        {formatNumber(u.total)}
-                      </span>
-                    </div>
-                    {/* 占比条 + 拦截率 */}
-                    <div className="mt-1 flex items-center gap-2">
-                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <span className="shrink-0 text-2xs text-muted-foreground">
-                        拦截 {Math.round(u.block_rate * 100)}%
-                      </span>
-                    </div>
-                  </div>
-                </li>
-              )
-            })}
-          </ol>
-        )}
-      </CardContent>
-    </Card>
   )
 }
 
@@ -674,6 +589,130 @@ function CleanupButton() {
         <Trash2 />
         立即清理
       </Button>
+    </div>
+  )
+}
+
+/* ---------- 账号安全 ---------- */
+
+/**
+ * AdminAccountPanel 承载管理员自己的账号安全。
+ *
+ * 管理员是控制面角色，不参与租户侧功能，所以不再给他一个「设置」页
+ * （那页里全是接入 ID、外观、租户数据这类对他没意义的东西）。
+ * 改密码和退出登录就放在这里。
+ */
+function AdminAccountPanel() {
+  const { logout } = useAuth()
+  return (
+    <div className="space-y-6">
+      <PasswordCard />
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <LogOut className="size-5 text-danger" />
+            退出登录
+          </CardTitle>
+          <CardDescription>退出后需要重新登录才能继续管理。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="danger" onClick={logout}>
+            <LogOut />
+            退出登录
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+/* ---------- 上游连通性自测 ---------- */
+
+/**
+ * UpstreamTester 逐个试解析上游，把「连不上 / 解析不出 / 正常」摊开。
+ *
+ * 为什么需要：DoH/DoT 上游配错、或引导 DNS 缺失时，保存设置是成功的，
+ * 现象却是「所有查询都超时」。没有这个按钮，管理员只能改一处试一次。
+ */
+function UpstreamTester({ upstream, bootstrap }: { upstream: string; bootstrap: string }) {
+  const [results, setResults] = useState<UpstreamTestResult[]>([])
+  const [testing, setTesting] = useState(false)
+
+  const list = upstream
+    .split('\n')
+    .map((v) => v.trim())
+    .filter(Boolean)
+  const boot = bootstrap
+    .split('\n')
+    .map((v) => v.trim())
+    .filter(Boolean)
+
+  const run = async () => {
+    setTesting(true)
+    setResults([])
+    const out: UpstreamTestResult[] = []
+    for (const up of list) {
+      try {
+        out.push(await testUpstream(up, boot))
+      } catch (err) {
+        out.push({ ok: false, upstream: up, error: errorMessage(err) })
+      }
+      setResults([...out])
+    }
+    setTesting(false)
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium">上游连通性测试</p>
+          <p className="text-xs text-muted-foreground">
+            用当前填写的上游与引导 DNS 试解析 www.baidu.com（未保存也会用输入框里的值）
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={run}
+          loading={testing}
+          disabled={list.length === 0}
+        >
+          <PlugZap />
+          测试全部
+        </Button>
+      </div>
+
+      {results.length > 0 && (
+        <div className="space-y-1.5">
+          {results.map((r) => (
+            <div
+              key={r.upstream}
+              className={cn(
+                'flex flex-wrap items-center gap-2 rounded-lg px-2.5 py-2 text-xs',
+                r.ok ? 'bg-success/10' : 'bg-danger/10',
+              )}
+            >
+              {r.ok ? (
+                <Check className="size-3.5 shrink-0 text-success" />
+              ) : (
+                <X className="size-3.5 shrink-0 text-danger" />
+              )}
+              <span className="min-w-0 flex-1 truncate font-mono" title={r.upstream}>
+                {r.upstream}
+              </span>
+              {r.ok ? (
+                <span className="tabular-nums text-muted-foreground">
+                  {r.elapsed_ms}ms · {(r.answers ?? []).join(', ') || '无应答记录'}
+                </span>
+              ) : (
+                <span className="min-w-0 text-danger">{r.error}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

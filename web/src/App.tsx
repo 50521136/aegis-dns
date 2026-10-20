@@ -16,7 +16,6 @@ import Dashboard from '@/pages/Dashboard'
 import DnsSetup from '@/pages/DnsSetup'
 import Rules from '@/pages/Rules'
 import Subscriptions from '@/pages/Subscriptions'
-import Stats from '@/pages/Stats'
 import QueryLog from '@/pages/QueryLog'
 import Settings from '@/pages/Settings'
 import Admin from '@/pages/Admin'
@@ -100,17 +99,21 @@ export default function App() {
                       <Route path="/app/setup" element={<DnsSetup />} />
                       <Route path="/app/rules" element={<Rules />} />
                       <Route path="/app/subscriptions" element={<Subscriptions />} />
-                      <Route path="/app/stats" element={<Stats />} />
                       <Route path="/app/logs" element={<QueryLog />} />
                       <Route path="/app/feedback" element={<Feedback />} />
                     </Route>
 
                     {/* 账号设置两边都要：管理员也要改密码、管令牌 */}
-                    <Route path="/app/settings" element={<Settings />} />
+                    <Route element={<UserOnlyRoute />}>
+                      <Route path="/app/settings" element={<Settings />} />
+                    </Route>
 
                     {/* 仅管理员 */}
                     <Route element={<AdminRoute />}>
-                      <Route path="/admin" element={<Admin />} />
+                      {/* 管理员落地页是总览（全站统计 + 流量排行）；
+                          用户/设置/系统这些控制面功能挪到 /admin/manage */}
+                      <Route path="/admin" element={<Dashboard scope="global" />} />
+                      <Route path="/admin/manage" element={<Admin />} />
                       {/* 全局层与个人层共用同一份页面组件，只换 scope */}
                       <Route path="/admin/rules" element={<Rules scope="global" />} />
                       <Route path="/admin/subscriptions" element={<Subscriptions scope="global" />} />

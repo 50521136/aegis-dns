@@ -183,6 +183,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/users/{id}/password", s.handleAdminSetPassword)
 				// 管理员直接指定 client_id，不消耗用户那次自定义机会
 				r.Post("/users/{id}/client-id", s.handleAdminSetClientID)
+				// 上游连通性自测：DoH/DoT 配错时现象是「全部超时」，得能当场验
+				r.Post("/settings/test-upstream", s.handleTestUpstream)
 				r.Get("/users/usage", s.handleAdminUsersQuota)
 				r.Post("/maintenance/cleanup", s.handleAdminCleanup)
 				r.Get("/settings", s.handleAdminGetSettings)
@@ -194,6 +196,10 @@ func (s *Server) Handler() http.Handler {
 
 				// 管理员的全局统计与日志：普通用户只能看自己的，
 				// 横向对比和全站排查必须走这里。
+				// 全站汇总：管理员的「总览」用，与租户版同一套逻辑、uid 传空
+				r.Get("/stats/summary", s.handleAdminStatsSummary)
+				r.Get("/stats/timeseries", s.handleAdminStatsTimeseries)
+				r.Get("/stats/top", s.handleAdminStatsTop)
 				r.Get("/stats/users", s.handleAdminStatsUsers)
 				r.Get("/stats/querylog", s.handleAdminQueryLog)
 			})

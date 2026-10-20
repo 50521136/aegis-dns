@@ -210,7 +210,7 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 				newSnap.users = append(newSnap.users, old)
 				if old.Pool != nil {
 					// 让池继续被引用，Sweep 不会关掉它。
-					if _, err := r.pools.Get(upstreamsFor(old.Upstreams, snap.Defaults)); err == nil {
+					if _, err := r.pools.Get(upstreamsFor(old.Upstreams, snap.Defaults), snap.Defaults.BootstrapDNS); err == nil {
 						// 引用计数已累加，忽略返回值。
 					}
 				}
@@ -248,7 +248,7 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 		ur.Rules.Store(rs)
 
 		addrs := upstreamsFor(us.Upstreams, snap.Defaults)
-		pool, err := r.pools.Get(addrs)
+		pool, err := r.pools.Get(addrs, snap.Defaults.BootstrapDNS)
 		if err != nil {
 			return fmt.Errorf("为用户 %s 创建上游池失败: %w", us.UserID, err)
 		}
@@ -270,7 +270,7 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 	if err != nil {
 		fallbackRules, _ = rules.Build(rules.Layers{})
 	}
-	fallbackPool, err := r.pools.Get(snap.Defaults.Upstreams)
+	fallbackPool, err := r.pools.Get(snap.Defaults.Upstreams, snap.Defaults.BootstrapDNS)
 	if err != nil {
 		return fmt.Errorf("创建默认上游池失败: %w", err)
 	}

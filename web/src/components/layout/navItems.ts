@@ -1,6 +1,5 @@
 import {
   Activity,
-  BarChart3,
   BookOpen,
   LayoutDashboard,
   ListFilter,
@@ -32,15 +31,18 @@ export const navItems: NavItem[] = [
   { to: '/app/setup', label: '我的 DNS', icon: BookOpen, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/rules', label: '规则', icon: ListFilter, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/subscriptions', label: '订阅', icon: Shield, mobile: true, userOnly: true, group: 'main' },
-  { to: '/app/stats', label: '统计', icon: BarChart3, userOnly: true, group: 'main' },
   { to: '/app/logs', label: '查询日志', icon: ScrollText, userOnly: true, group: 'main' },
   { to: '/app/feedback', label: '反馈', icon: MessageSquareWarning, mobile: true, userOnly: true, group: 'main' },
 
   // ── 账号设置：两边都要（改密码、令牌）──
-  { to: '/app/settings', label: '设置', icon: Settings, mobile: true, group: 'main' },
+  // 设置只给普通用户：管理员的改密码在「管理后台 → 系统」里，
+  // 接入 ID / 外观 / 更新这些对他没意义
+  { to: '/app/settings', label: '设置', icon: Settings, mobile: true, userOnly: true, group: 'main' },
 
   // ── 仅管理员 ──
-  { to: '/admin', label: '管理后台', icon: Activity, adminOnly: true, mobile: true, end: true, group: 'admin' },
+  // 管理员落地页是总览（全站统计 + 流量排行），和租户侧的总览是同一个页面组件
+  { to: '/admin', label: '总览', icon: LayoutDashboard, adminOnly: true, mobile: true, end: true, group: 'admin' },
+  { to: '/admin/manage', label: '管理后台', icon: Activity, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/logs', label: '全局日志', icon: ScrollText, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/rules', label: '全局规则', icon: ListFilter, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/subscriptions', label: '全局订阅', icon: Shield, adminOnly: true, group: 'admin' },

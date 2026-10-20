@@ -102,6 +102,7 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 		Defaults: model.Defaults{
 			Domain:          settings.Domain,
 			Upstreams:       settings.Upstreams,
+			BootstrapDNS:    settings.BootstrapDNS,
 			BlockingMode:    settings.BlockingMode,
 			CustomIP:        settings.CustomIP,
 			FallbackPolicy:  settings.FallbackPolicy,

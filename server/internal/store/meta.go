@@ -110,6 +110,10 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["upstreams"]; ok && v != "" {
 		set.Upstreams = strings.Split(v, ",")
 	}
+	if v, ok := kv["bootstrap_dns"]; ok {
+		// 允许显式清空（空串 → 空切片），此时回退到系统解析器。
+		set.BootstrapDNS = splitList(v)
+	}
 	if v, ok := kv["blocking_mode"]; ok && v != "" {
 		set.BlockingMode = v
 	}
@@ -181,6 +185,7 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 	pairs := map[string]string{
 		"domain":                   set.Domain,
 		"upstreams":                strings.Join(set.Upstreams, ","),
+		"bootstrap_dns":            strings.Join(set.BootstrapDNS, ","),
 		"blocking_mode":            set.BlockingMode,
 		"custom_ip":                set.CustomIP,
 		"fallback_policy":          set.FallbackPolicy,
@@ -268,4 +273,15 @@ func (s *Store) LogAudit(ctx context.Context, userID, action, detail, ip string)
 	_, _ = s.write.ExecContext(ctx,
 		`INSERT INTO audit_log (ts, user_id, action, detail, ip) VALUES (?,?,?,?,?)`,
 		time.Now().Unix(), userID, action, detail, ip)
+}
+
+// splitList 把逗号分隔的字符串拆成切片，去空白与空项。
+func splitList(v string) []string {
+	out := make([]string, 0, 4)
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

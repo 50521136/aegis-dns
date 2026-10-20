@@ -11,7 +11,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/miekg/dns"
+
 	"github.com/50521136/aegis-dns/server/internal/model"
+	"github.com/50521136/aegis-dns/server/internal/resolver"
 	"github.com/50521136/aegis-dns/server/internal/selfupdate"
 	"github.com/50521136/aegis-dns/server/internal/version"
 )
@@ -187,6 +190,7 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 	out := map[string]any{
 		"domain":                   set.Domain,
 		"upstreams":                set.Upstreams,
+		"bootstrap_dns":            set.BootstrapDNS,
 		"blocking_mode":            set.BlockingMode,
 		"custom_ip":                set.CustomIP,
 		"fallback_policy":          set.FallbackPolicy,
@@ -233,19 +237,137 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 	return out
 }
 
+// settingsPatch 是 PUT /admin/settings 的请求体。
+//
+// 所有字段都用指针：只有「请求里真的出现过」才覆盖当前值。
+//
+// 这是必须的，不是洁癖 —— 用值类型时无法区分「没传」和「传了 false」，
+// 于是任何部分更新（例如只想改 fallback_policy）都会把没提到的开关
+// 全部按零值写回去：enable_query_log 被关掉、allow_register 被关掉……
+// 实测踩到过：改完兜底策略后查询日志再也不更新，从任何日志里都看不出
+// 是「被同一次设置请求顺手关掉了」。
+type settingsPatch struct {
+	Domain         *string   `json:"domain"`
+	Upstreams      *[]string `json:"upstreams"`
+	BootstrapDNS   *[]string `json:"bootstrap_dns"`
+	BlockingMode   *string   `json:"blocking_mode"`
+	CustomIP       *string   `json:"custom_ip"`
+	FallbackPolicy *string   `json:"fallback_policy"`
+	CacheSize      *int      `json:"cache_size"`
+	CacheMinTTL    *int      `json:"cache_min_ttl"`
+	CacheMaxTTL    *int      `json:"cache_max_ttl"`
+	RateLimitQPS   *int      `json:"rate_limit_qps"`
+	MaxInflight    *int      `json:"max_inflight"`
+	QueryTimeoutMS *int      `json:"query_timeout_ms"`
+	QueryLogSize   *int      `json:"query_log_size"`
+	EnableQueryLog *bool     `json:"enable_query_log"`
+	SubIntervalH   *int      `json:"sub_interval_hours"`
+	LogRetentionD  *int      `json:"query_log_retention_days"`
+	AllowRegister  *bool     `json:"allow_register"`
+	InviteCode     *string   `json:"invite_code"`
+	UpdateRepo     *string   `json:"update_repo"`
+	UpdateChannel  *string   `json:"update_channel"`
+
+	MaxRulesPerUser *int `json:"max_rules_per_user"`
+	MaxSubsPerUser  *int `json:"max_subs_per_user"`
+	MaxSubEntries   *int `json:"max_sub_entries"`
+	MaxRulesGlobal  *int `json:"max_rules_global"`
+	MaxSubsGlobal   *int `json:"max_subs_global"`
+
+	AllowRootDomain *bool `json:"allow_root_domain"`
+	StatsRetentionD *int  `json:"stats_retention_days"`
+	MaxIDResets     *int  `json:"max_id_resets"`
+	AllowUserRules  *bool `json:"allow_user_rules"`
+	AllowUserSubs   *bool `json:"allow_user_subs"`
+}
+
+// applySettingsPatch 把请求里出现过的字段写到 dst 上。
+func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
+	if p.Domain != nil {
+		dst.Domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(*p.Domain), "."))
+	}
+	if p.Upstreams != nil {
+		dst.Upstreams = cleanList(*p.Upstreams)
+	}
+	if p.BootstrapDNS != nil {
+		dst.BootstrapDNS = cleanList(*p.BootstrapDNS)
+	}
+	if p.BlockingMode != nil {
+		dst.BlockingMode = *p.BlockingMode
+	}
+	if p.CustomIP != nil {
+		dst.CustomIP = strings.TrimSpace(*p.CustomIP)
+	}
+	if p.FallbackPolicy != nil {
+		dst.FallbackPolicy = *p.FallbackPolicy
+	}
+	setInt(&dst.CacheSize, p.CacheSize)
+	setInt(&dst.CacheMinTTL, p.CacheMinTTL)
+	setInt(&dst.CacheMaxTTL, p.CacheMaxTTL)
+	setInt(&dst.RateLimitQPS, p.RateLimitQPS)
+	setInt(&dst.MaxInflight, p.MaxInflight)
+	setInt(&dst.QueryTimeoutMS, p.QueryTimeoutMS)
+	setInt(&dst.QueryLogSize, p.QueryLogSize)
+	setInt(&dst.SubIntervalH, p.SubIntervalH)
+	setInt(&dst.LogRetentionD, p.LogRetentionD)
+	setInt(&dst.MaxRulesPerUser, p.MaxRulesPerUser)
+	setInt(&dst.MaxSubsPerUser, p.MaxSubsPerUser)
+	setInt(&dst.MaxSubEntries, p.MaxSubEntries)
+	setInt(&dst.MaxRulesGlobal, p.MaxRulesGlobal)
+	setInt(&dst.MaxSubsGlobal, p.MaxSubsGlobal)
+	setInt(&dst.StatsRetentionD, p.StatsRetentionD)
+	setInt(&dst.MaxIDResets, p.MaxIDResets)
+	setBool(&dst.EnableQueryLog, p.EnableQueryLog)
+	setBool(&dst.AllowRegister, p.AllowRegister)
+	setBool(&dst.AllowRootDomain, p.AllowRootDomain)
+	setBool(&dst.AllowUserRules, p.AllowUserRules)
+	setBool(&dst.AllowUserSubs, p.AllowUserSubs)
+	if p.InviteCode != nil {
+		dst.InviteCode = strings.TrimSpace(*p.InviteCode)
+	}
+	if p.UpdateRepo != nil {
+		dst.UpdateRepo = *p.UpdateRepo
+	}
+	if p.UpdateChannel != nil {
+		dst.UpdateChannel = *p.UpdateChannel
+	}
+}
+
+func setInt(dst *int, src *int) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setBool(dst *bool, src *bool) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+// cleanList 去空白、去空项；返回非 nil 空切片表示「显式清空」。
+func cleanList(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	var req model.GlobalSettings
+	var req settingsPatch
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	// 先取当前值，用请求里的非零字段覆盖 —— 避免前端漏传一个字段
-	// 就把设置重置成零值（例如漏传 cache_size 会变成 0，缓存直接失效）。
+	// 先取当前值，只覆盖请求里出现过的字段。
 	cur, err := s.store.GetSettings(r.Context())
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
-	mergeSettings(cur, &req)
+	applySettingsPatch(cur, &req)
 
 	if err := validateSettings(cur); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
@@ -354,6 +476,75 @@ func mergeSettings(dst *model.GlobalSettings, src *model.GlobalSettings) {
 	dst.AllowUserRules = src.AllowUserRules
 	dst.AllowUserSubs = src.AllowUserSubs
 	dst.InviteCode = strings.TrimSpace(src.InviteCode)
+}
+
+// handleTestUpstream 试解析一次，验证上游（含引导 DNS）是否可用。
+//
+// 为什么要这个接口：DoH/DoT 上游配错、或引导 DNS 没配导致主机名解析不了时，
+// 现象是「所有查询都超时」，而设置页保存本身是成功的 —— 管理员只能靠猜。
+// 这里直接把「连不上 / 解析不出 / 正常返回」摊开给出来。
+func (s *Server) handleTestUpstream(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Upstream     string   `json:"upstream"`
+		BootstrapDNS []string `json:"bootstrap_dns"`
+		Domain       string   `json:"domain"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	up := strings.TrimSpace(req.Upstream)
+	if up == "" {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "请填写要测试的上游地址", nil)
+		return
+	}
+	qname := strings.TrimSpace(req.Domain)
+	if qname == "" {
+		qname = "www.baidu.com"
+	}
+	// 没传 bootstrap_dns 就用当前已保存的设置，测的才是「保存后实际会用到的组合」。
+	bootstrap := req.BootstrapDNS
+	if bootstrap == nil {
+		if cur, err := s.store.GetSettings(r.Context()); err == nil {
+			bootstrap = cur.BootstrapDNS
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	pool, err := resolver.NewPool([]string{up}, bootstrap)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "upstream": up, "error": "上游不可用: " + err.Error(),
+		})
+		return
+	}
+	defer pool.Close()
+
+	msg := new(dns.Msg)
+	msg.SetQuestion(dns.Fqdn(qname), dns.TypeA)
+	start := time.Now()
+	resp, err := pool.Exchange(ctx, msg)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "upstream": up, "domain": qname,
+			"elapsed_ms": elapsed, "error": "解析失败: " + err.Error(),
+		})
+		return
+	}
+
+	answers := make([]string, 0, 8)
+	for _, rr := range resp.Answer {
+		if a, ok := rr.(*dns.A); ok {
+			answers = append(answers, a.A.String())
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "upstream": up, "domain": qname,
+		"elapsed_ms": elapsed, "answers": answers,
+		"bootstrap_dns": bootstrap,
+	})
 }
 
 func validateSettings(s *model.GlobalSettings) error {

@@ -91,7 +91,7 @@ const pwdSchema = z
 
 type PwdForm = z.infer<typeof pwdSchema>
 
-function PasswordCard() {
+export function PasswordCard() {
   const toast = useToast()
   const form = useForm<PwdForm>({
     resolver: zodResolver(pwdSchema),
@@ -149,155 +149,6 @@ function PasswordCard() {
 }
 
 /* ---------- API Token ---------- */
-
-function TokensCard() {
-  const qc = useQueryClient()
-  const toast = useToast()
-  const [createOpen, setCreateOpen] = useState(false)
-  const [name, setName] = useState('')
-  const [createdToken, setCreatedToken] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<ApiToken | null>(null)
-  const { copied, copy } = useCopy()
-
-  const tokensQuery = useQuery({ queryKey: ['me', 'tokens'], queryFn: listTokens })
-
-  const createMutation = useMutation({
-    mutationFn: (n: string) => createToken(n),
-    onSuccess: (res) => {
-      setCreatedToken(res.token)
-      setCreateOpen(false)
-      setName('')
-      qc.invalidateQueries({ queryKey: ['me', 'tokens'] })
-    },
-    onError: (err) => toast.error('创建失败', errorMessage(err)),
-  })
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteToken(id),
-    onSuccess: () => {
-      toast.success('Token 已撤销')
-      setPendingDelete(null)
-      qc.invalidateQueries({ queryKey: ['me', 'tokens'] })
-    },
-    onError: (err) => toast.error('撤销失败', errorMessage(err)),
-  })
-
-  const tokens = tokensQuery.data ?? []
-
-  return (
-    <Card>
-      <CardHeader className="flex-row items-start justify-between">
-        <div className="space-y-1.5">
-          <CardTitle className="flex items-center gap-2">
-            <KeyRound className="size-5 text-primary" />
-            长期 API Token
-          </CardTitle>
-          <CardDescription>用于脚本、CLI 或第三方面板直接调用 API，可随时撤销。</CardDescription>
-        </div>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus />
-          新建
-        </Button>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {tokensQuery.isLoading ? (
-          Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)
-        ) : tokens.length === 0 ? (
-          <EmptyState icon={<KeyRound className="size-6" />} title="暂无 API Token" className="py-8" />
-        ) : (
-          tokens.map((t) => (
-            <div
-              key={t.id}
-              className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-medium">{t.name || '未命名'}</p>
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{t.prefix}…</code>
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  创建于 {formatDateTime(t.created_at)}
-                  {t.last_used_at ? ` · 最近使用 ${formatDateTime(t.last_used_at)}` : ''}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-danger hover:bg-danger/10"
-                onClick={() => setPendingDelete(t)}
-                aria-label="撤销"
-              >
-                <Trash2 />
-              </Button>
-            </div>
-          ))
-        )}
-      </CardContent>
-
-      {/* 新建 token */}
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="md:max-w-md">
-          <DialogHeader>
-            <DialogTitle>新建 API Token</DialogTitle>
-            <DialogDescription>给它起个名字，便于日后识别用途。</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="token-name">名称</Label>
-            <Input
-              id="token-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="例如 ci-deploy"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={() => createMutation.mutate(name)} loading={createMutation.isPending} disabled={!name.trim()}>
-              创建
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 展示 token（仅一次） */}
-      <Dialog open={Boolean(createdToken)} onOpenChange={(o) => !o && setCreatedToken(null)}>
-        <DialogContent className="md:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <CheckCircle2 className="size-5 text-success" />
-              Token 已创建
-            </DialogTitle>
-            <DialogDescription>
-              请立即复制保存，此 Token 仅显示这一次，关闭后无法再次查看。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-2 pl-3.5">
-            <code className="min-w-0 flex-1 break-all font-mono text-[13px]">{createdToken}</code>
-            <Button variant="ghost" size="icon-sm" onClick={() => createdToken && copy(createdToken)} aria-label="复制">
-              {copied ? <CheckCircle2 className="text-success" /> : <Copy />}
-            </Button>
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setCreatedToken(null)}>我已保存</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <ConfirmDialog
-        open={Boolean(pendingDelete)}
-        onOpenChange={(o) => !o && setPendingDelete(null)}
-        title="撤销 Token"
-        description={pendingDelete ? `确定要撤销「${pendingDelete.name}」吗？使用该 Token 的调用将立即失效。` : ''}
-        destructive
-        confirmText="撤销"
-        loading={deleteMutation.isPending}
-        onConfirm={() => pendingDelete && deleteMutation.mutate(pendingDelete.id)}
-      />
-    </Card>
-  )
-}
 
 /* ---------- 导入 / 导出 ---------- */
 
@@ -374,7 +225,7 @@ function ImportExportCard() {
 
 /* ---------- 在线更新 ---------- */
 
-function UpdateCard() {
+export function UpdateCard() {
   const toast = useToast()
   const [component, setComponent] = useState<'apid' | 'dnsd' | 'all'>('all')
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -509,7 +360,6 @@ export default function Settings() {
           {!isAdmin && <TabsTrigger value="rules">规则</TabsTrigger>}
           <TabsTrigger value="security">安全</TabsTrigger>
           {!isAdmin && <TabsTrigger value="data">数据</TabsTrigger>}
-          <TabsTrigger value="update">更新</TabsTrigger>
         </TabsList>
 
         <TabsContent value="account" className="space-y-6">
@@ -582,7 +432,10 @@ export default function Settings() {
 
         <TabsContent value="security" className="space-y-6">
           <PasswordCard />
-          <TokensCard />
+          {/* API 令牌（PAT）已从界面移除：它是给脚本化调用用的，
+              而这里的目标用户是手机/电脑上的终端用户，不会去写脚本 ——
+              对他们来说这一屏只有「这串东西是干嘛的」这一个疑问。
+              后端接口保留，需要自动化时由管理员直接调用 API 生成。 */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -604,9 +457,6 @@ export default function Settings() {
           <ImportExportCard />
         </TabsContent>
 
-        <TabsContent value="update">
-          <UpdateCard />
-        </TabsContent>
       </Tabs>
     </div>
   )

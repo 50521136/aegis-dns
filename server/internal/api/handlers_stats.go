@@ -8,15 +8,26 @@ import (
 )
 
 func (s *Server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
+	s.statsSummary(w, r, currentUser(r).ID)
+}
+
+// handleAdminStatsSummary 返回全站汇总。
+//
+// uid 传空串表示「所有用户」—— store 层已经支持，管理员的「总览」
+// 和普通用户的「总览」就是同一套逻辑换个作用域，不必写两遍。
+func (s *Server) handleAdminStatsSummary(w http.ResponseWriter, r *http.Request) {
+	s.statsSummary(w, r, "")
+}
+
+func (s *Server) statsSummary(w http.ResponseWriter, r *http.Request, uid string) {
 	since := timeRange(r.URL.Query().Get("range"), time.Now())
 
-	sum, err := s.store.Summary(r.Context(), u.ID, since.Unix())
+	sum, err := s.store.Summary(r.Context(), uid, since.Unix())
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
-	unique, err := s.store.UniqueDomains(r.Context(), u.ID, since.Unix())
+	unique, err := s.store.UniqueDomains(r.Context(), uid, since.Unix())
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
@@ -36,14 +47,21 @@ func (s *Server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatsTimeseries(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
+	s.statsTimeseries(w, r, currentUser(r).ID)
+}
+
+func (s *Server) handleAdminStatsTimeseries(w http.ResponseWriter, r *http.Request) {
+	s.statsTimeseries(w, r, "")
+}
+
+func (s *Server) statsTimeseries(w http.ResponseWriter, r *http.Request, uid string) {
 	q := r.URL.Query()
 	since := timeRange(q.Get("range"), time.Now())
 
 	// 默认粒度跟着区间走：24h 用 1h 桶，7d 用 6h，30d+ 用 1d。
 	interval := intervalSeconds(q.Get("interval"), defaultIntervalFor(q.Get("range")))
 
-	points, err := s.store.Timeseries(r.Context(), u.ID, since.Unix(), interval)
+	points, err := s.store.Timeseries(r.Context(), uid, since.Unix(), interval)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
@@ -80,7 +98,14 @@ func defaultIntervalFor(rng string) int64 {
 }
 
 func (s *Server) handleStatsTop(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
+	s.statsTop(w, r, currentUser(r).ID)
+}
+
+func (s *Server) handleAdminStatsTop(w http.ResponseWriter, r *http.Request) {
+	s.statsTop(w, r, "")
+}
+
+func (s *Server) statsTop(w http.ResponseWriter, r *http.Request, uid string) {
 	q := r.URL.Query()
 	since := timeRange(q.Get("range"), time.Now())
 
@@ -93,7 +118,7 @@ func (s *Server) handleStatsTop(w http.ResponseWriter, r *http.Request) {
 	}
 	blockedOnly := q.Get("type") == "blocked"
 
-	list, err := s.store.TopDomains(r.Context(), u.ID, since.Unix(), limit, blockedOnly)
+	list, err := s.store.TopDomains(r.Context(), uid, since.Unix(), limit, blockedOnly)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return

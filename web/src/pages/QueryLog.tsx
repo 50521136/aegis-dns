@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ScrollText, Search } from 'lucide-react'
+import {
+  RefreshCw,
+  ScrollText,
+  Search,
+} from 'lucide-react'
 import { getQueryLog } from '@/api/stats'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
@@ -69,6 +73,17 @@ export default function QueryLog() {
         title="查询日志"
         description="最近的 DNS 查询记录，每 15 秒自动刷新"
         icon={<ScrollText className="size-5" />}
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => query.refetch()}
+            disabled={query.isFetching}
+          >
+            <RefreshCw className={query.isFetching ? 'animate-spin' : undefined} />
+            刷新
+          </Button>
+        }
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -34,9 +36,15 @@ type Pool struct {
 //
 // 地址支持 "1.1.1.1"、"udp://1.1.1.1:53"、"tcp://..."、"tls://dns.google:853"、
 // "https://dns.google/dns-query" —— 由 dnsproxy 的 upstream 包统一解析。
-func NewPool(addrs []string) (*Pool, error) {
+func NewPool(addrs []string, bootstrap []string) (*Pool, error) {
 	opts := &upstream.Options{
 		Timeout: PerUpstreamTimeout,
+	}
+	// 引导解析器：DoH/DoT 上游要先解析主机名才能连。
+	// 不给的话 dnsproxy 会走系统解析器，容器/最小化系统里常常没有可用解析器，
+	// 表现就是「上游配好了却全部超时」，而且日志里只说解析失败，看不出缺引导。
+	if br := staticBootstrap(bootstrap); br != nil {
+		opts.Bootstrap = br
 	}
 	p := &Pool{addrs: normalizeAddrs(addrs)}
 	for _, a := range p.addrs {
@@ -239,15 +247,17 @@ func NewCache() *Cache {
 }
 
 // Get 取得（必要时创建）某组上游地址对应的池。
-func (c *Cache) Get(addrs []string) (*Pool, error) {
-	key := strings.Join(normalizeAddrs(addrs), ",")
+func (c *Cache) Get(addrs []string, bootstrap []string) (*Pool, error) {
+	// 池的 key 必须包含引导地址：同一组上游配不同引导是不同行为，
+	// 只按上游做 key 会让后配的引导被先建的池静默复用。
+	key := strings.Join(normalizeAddrs(addrs), ",") + "|" + strings.Join(bootstrap, ",")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if p, ok := c.pools[key]; ok {
 		c.refs[key]++
 		return p, nil
 	}
-	p, err := NewPool(addrs)
+	p, err := NewPool(addrs, bootstrap)
 	if err != nil {
 		return nil, err
 	}
@@ -291,4 +301,26 @@ func (c *Cache) Close() error {
 	c.pools = map[string]*Pool{}
 	c.refs = map[string]int{}
 	return errors.Join(errs...)
+}
+
+// staticBootstrap 把引导 DNS 地址列表转成 dnsproxy 的静态解析器。
+//
+// 只接受 IP 字面量：用域名或 DoH 地址做引导是循环依赖 —— 要先解析才能连上，
+// 而解析又依赖它。非法项直接忽略，全部非法时返回 nil（回退系统解析器）。
+func staticBootstrap(addrs []string) upstream.Resolver {
+	var ips []netip.Addr
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		// 容忍带端口的写法，端口对引导无意义（静态解析只提供地址）。
+		if host, _, err := net.SplitHostPort(a); err == nil {
+			a = host
+		}
+		if ip, err := netip.ParseAddr(a); err == nil && !ip.IsUnspecified() {
+			ips = append(ips, ip)
+		}
+	}
+	if len(ips) == 0 {
+		return nil
+	}
+	return upstream.StaticResolver(ips)
 }
