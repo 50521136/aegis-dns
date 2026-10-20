@@ -101,7 +101,7 @@ func (m *Manager) Refresh(ctx context.Context, sub *model.Subscription) (*Refres
 		return res, nil
 	}
 
-	parsed, err := Parse(fr.Content, Format(sub.Format))
+	parsed, err := Parse(fr.Content, Format(sub.Format), sub.ListType)
 	if err != nil {
 		status := DescribeStatus(err)
 		failCount := sub.FailCount + 1
@@ -141,12 +141,18 @@ func (m *Manager) Refresh(ctx context.Context, sub *model.Subscription) (*Refres
 
 	count, _ := m.st.CountSubEntries(ctx, sub.ID)
 	now := time.Now().Unix()
-	if err := m.st.UpdateSubStatus(ctx, sub.ID, fr.ETag, fr.LastModified, "ok", now, count, 0); err != nil {
+	// 有降级时把数字写进状态：这份源是靠把 $dnsrewrite 降级成拦/放才生效的，
+	// 状态里不体现的话，排查「为什么某条规则没按改写生效」时无从下手。
+	status := "ok"
+	if parsed.RewriteDowngraded > 0 {
+		status = fmt.Sprintf("ok: 含 %d 条改写降级为拦截", parsed.RewriteDowngraded)
+	}
+	if err := m.st.UpdateSubStatus(ctx, sub.ID, fr.ETag, fr.LastModified, status, now, count, 0); err != nil {
 		m.log.Warn("更新订阅状态失败", "sub", sub.ID, "err", err)
 	}
 
 	res.LastCount = count
-	res.LastStatus = "ok"
+	res.LastStatus = status
 	res.FetchedAt = now
 	res.DurationMS = time.Since(start).Milliseconds()
 
@@ -155,6 +161,7 @@ func (m *Manager) Refresh(ctx context.Context, sub *model.Subscription) (*Refres
 		"url", sub.URL,
 		"entries", count,
 		"skipped", parsed.Skipped,
+		"rewrite_downgraded", parsed.RewriteDowngraded,
 		"format", parsed.Detected,
 		"truncated", fr.Truncated,
 		"took_ms", res.DurationMS,

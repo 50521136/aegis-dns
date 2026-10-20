@@ -41,6 +41,14 @@ type ParseResult struct {
 	Errors []error
 	// Detected 是嗅探出的格式（format=auto 时）。
 	Detected Format
+	// RewriteDowngraded 是被降级为拦/放（而非丢弃）的 $dnsrewrite 行数。
+	//
+	// 公共拦截列表大量用 ||x^$dnsrewrite=<黑洞域名> 表达「解析到拦截页」，
+	// 语义上就是拦截。原实现把带 value 的行一律丢弃，实测某个源 1072 行
+	// 全被跳过、订阅直接变成 0 条 —— 规则不是被拒绝，是**静默消失**，
+	// 从状态里也看不出少了什么。这里改成按列表类型降级，并把这个数字
+	// 带到状态里，至少让人知道「这份源是靠降级才生效的」。
+	RewriteDowngraded int
 }
 
 // Sniff 嗅探订阅格式（文档 6.1）。
@@ -118,7 +126,7 @@ func looksLikeDomain(line string) bool {
 // 关键约定（文档 6.4）：解析失败时**不返回部分结果**。
 // 调用方看到 err 就保留旧数据；如果这里返回「解析了一半」的列表，
 // 调用方会把规则集替换成残缺版本，那正是文档反复强调要避免的事。
-func Parse(content []byte, format Format) (*ParseResult, error) {
+func Parse(content []byte, format Format, listType string) (*ParseResult, error) {
 	if format == FormatAuto || format == "" {
 		format = Sniff(content)
 	}
@@ -175,14 +183,20 @@ func Parse(content []byte, format Format) (*ParseResult, error) {
 			res.Skipped++
 			continue
 		}
-		// 订阅只承载「拦/放」两类；改写规则来自用户自定义，不属于订阅能力。
-		if p.Value != "" {
-			res.Skipped++
-			continue
-		}
+		// 订阅只承载「拦/放」两类，不承载改写能力。但带 $dnsrewrite 的行
+		// 不能直接丢：公共列表用它表达「把这个域名解析到黑洞域名」，
+		// 本质上就是拦截。按列表类型降级成对应的类别。
 		kind := "block"
 		if p.Kind == "allow" {
 			kind = "allow"
+		}
+		if p.Value != "" {
+			kind = "block"
+			if listType == "allowlist" {
+				// 白名单源里出现改写，意图是「这条别拦」，按放行处理。
+				kind = "allow"
+			}
+			res.RewriteDowngraded++
 		}
 		if prev, ok := seen[p.Domain]; ok {
 			// 已存在：只在「新的这条是 allow 而旧的不是」时升级为白名单。

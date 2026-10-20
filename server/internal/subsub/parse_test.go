@@ -65,7 +65,7 @@ func TestParseFormats(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := Parse([]byte(tc.content), FormatAuto)
+			res, err := Parse([]byte(tc.content), FormatAuto, "blocklist")
 			if err != nil {
 				t.Fatalf("解析失败: %v", err)
 			}
@@ -86,7 +86,7 @@ func TestParseRejectsEmpty(t *testing.T) {
 		"# 只有注释\n! 也是注释\n",
 		"\n\n\n",
 	} {
-		if _, err := Parse([]byte(content), FormatAuto); err == nil {
+		if _, err := Parse([]byte(content), FormatAuto, "blocklist"); err == nil {
 			t.Fatalf("内容 %q 应返回错误，而不是空列表", content)
 		}
 	}
@@ -95,7 +95,7 @@ func TestParseRejectsEmpty(t *testing.T) {
 // TestParseDeduplicates 验证去重与 allow 优先。
 func TestParseDeduplicates(t *testing.T) {
 	content := "||dup.example.com^\n||dup.example.com^\n@@||dup.example.com^\n"
-	res, err := Parse([]byte(content), FormatAdblock)
+	res, err := Parse([]byte(content), FormatAdblock, "blocklist")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -107,18 +107,39 @@ func TestParseDeduplicates(t *testing.T) {
 	}
 }
 
-// TestParseSkipsRewrites 验证订阅不承载改写规则。
-func TestParseSkipsRewrites(t *testing.T) {
-	content := "||ads.example.com^\n||old.example.com^$dnsrewrite=1.2.3.4\n"
-	res, err := Parse([]byte(content), FormatAdblock)
+// TestParseDowngradesRewrites 验证订阅里的 $dnsrewrite 按列表类型降级。
+//
+// 公共拦截列表用 ||x^$dnsrewrite=<黑洞域名> 表达「解析到拦截页」，
+// 语义就是拦截。早先的实现把带 value 的行整条丢掉，实测某个源 1072 行
+// 全被跳过、订阅直接变成 0 条 —— 规则静默消失，比报错还难发现。
+func TestParseDowngradesRewrites(t *testing.T) {
+	content := "||ads.example.com^\n||sinkhole.example.com^$dnsrewrite=ad-block.dns.adguard.com\n"
+
+	res, err := Parse([]byte(content), FormatAdblock, "blocklist")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
-	if len(res.Entries) != 1 {
-		t.Fatalf("改写规则应被跳过，期望 1 条，实际 %d", len(res.Entries))
+	if len(res.Entries) != 2 {
+		t.Fatalf("改写行应降级为拦截而不是丢弃，期望 2 条，实际 %d", len(res.Entries))
 	}
-	if res.Skipped == 0 {
-		t.Error("跳过的行数应被统计")
+	if res.RewriteDowngraded != 1 {
+		t.Errorf("降级计数应为 1，实际 %d", res.RewriteDowngraded)
+	}
+	for _, e := range res.Entries {
+		if e.Domain == "sinkhole.example.com" && e.Kind != "block" {
+			t.Errorf("blocklist 里的改写应降级为 block，实际 %q", e.Kind)
+		}
+	}
+
+	// 白名单源里的改写意图是「别拦」，应降级为 allow。
+	res2, err := Parse([]byte(content), FormatAdblock, "allowlist")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	for _, e := range res2.Entries {
+		if e.Domain == "sinkhole.example.com" && e.Kind != "allow" {
+			t.Errorf("allowlist 里的改写应降级为 allow，实际 %q", e.Kind)
+		}
 	}
 }
 
