@@ -68,21 +68,21 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 	h := NewHandler(reg, c, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	l := NewLoader("/nonexistent/config.json", reg, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	prev := &model.Snapshot{
-		Version:           2,
-		GlobalFingerprint: "g1",
-		Users: []model.UserSnap{
-			{UserID: "usr_t1", Fingerprint: "u1"},
-			{UserID: "usr_t2", Fingerprint: "u2"},
-		},
+	// 上一次的指纹（Loader 现在只存这个，不存整份快照）
+	setPrev := func(global string) {
+		l.prevGlobalFP = global
+		l.prevUserFP = map[string]string{"usr_t1": "u1", "usr_t2": "u2"}
 	}
+	setPrev("g1")
+
+	setPrev("g1")
 
 	// 1) 全量重建但内容没变：缓存必须保留。
 	//    这正是线上 24 小时被清 33 次的原因 —— 订阅刷新、配额调整都会触发
 	//    全量重建，按 ChangedUsers 判断就会把整机缓存打光。
 	k1 := putCache(t, c, "usr_t1", "example.org")
 	k2 := putCache(t, c, "usr_t2", "example.org")
-	l.invalidateCache(prev, &model.Snapshot{
+	l.invalidateCache(&model.Snapshot{
 		Version: 3, GlobalFingerprint: "g1",
 		Users: []model.UserSnap{
 			{UserID: "usr_t1", Fingerprint: "u1"},
@@ -96,8 +96,10 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 		t.Error("规则没变的全量重建不该清缓存")
 	}
 
+	setPrev("g1")
+
 	// 2) 只有 usr_t1 的指纹变了：只清他 + fallback
-	l.invalidateCache(prev, &model.Snapshot{
+	l.invalidateCache(&model.Snapshot{
 		Version: 4, GlobalFingerprint: "g1",
 		Users: []model.UserSnap{
 			{UserID: "usr_t1", Fingerprint: "u1-changed"},
@@ -111,10 +113,12 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 		t.Error("usr_t2 没改规则，它的缓存不该被牵连")
 	}
 
+	setPrev("g1")
+
 	// 3) 全局指纹变了：所有租户都不可信
 	k1b := putCache(t, c, "usr_t1", "example.org")
 	k2b := putCache(t, c, "usr_t2", "example.org")
-	l.invalidateCache(prev, &model.Snapshot{
+	l.invalidateCache(&model.Snapshot{
 		Version: 5, GlobalFingerprint: "g2",
 		Users: []model.UserSnap{
 			{UserID: "usr_t1", Fingerprint: "u1-changed"},
@@ -128,9 +132,11 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 		t.Error("全局层变更后 usr_t2 的缓存也应清掉（拦截模式/上游变了影响所有人）")
 	}
 
+	setPrev("g2")
+
 	// 4) 用户被删除：他的缓存要清
 	k3 := putCache(t, c, "usr_t2", "gone.example")
-	l.invalidateCache(prev, &model.Snapshot{
+	l.invalidateCache(&model.Snapshot{
 		Version: 6, GlobalFingerprint: "g2",
 		Users: []model.UserSnap{{UserID: "usr_t1", Fingerprint: "u1-changed"}},
 	})

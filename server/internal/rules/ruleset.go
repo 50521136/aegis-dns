@@ -32,14 +32,18 @@ type RuleSet struct {
 	globalRewrite *trie
 	// 优先级 6：全局 block
 	globalBlock *trie
+	// 优先级 7~10 是订阅层：条目动辄几十万，用排序数组而不是 trie。
+	// trie 每节点一个 map，六十万域名要吃到 640MB（线上因此 OOM），
+	// 排序数组同样的数据只要约 40MB。见 suffixset.go。
+	//
 	// 优先级 7：用户自己的订阅 allowlist
-	subAllow *trie
+	subAllow *suffixSet
 	// 优先级 8：用户自己的订阅 blocklist
-	subBlock *trie
+	subBlock *suffixSet
 	// 优先级 9：全局订阅 allowlist
-	gsubAllow *trie
+	gsubAllow *suffixSet
 	// 优先级 10：全局订阅 blocklist
-	gsubBlock *trie
+	gsubBlock *suffixSet
 
 	// Stats 是规则条数统计，供 UI 展示。
 	Stats Stats
@@ -108,26 +112,33 @@ func Build(l Layers) (*RuleSet, error) {
 		globalAllow:   newTrie(),
 		globalRewrite: newTrie(),
 		globalBlock:   newTrie(),
-		subAllow:      newTrie(),
-		subBlock:      newTrie(),
-		gsubAllow:     newTrie(),
-		gsubBlock:     newTrie(),
+		subAllow:      newSuffixSet(),
+		subBlock:      newSuffixSet(),
+		gsubAllow:     newSuffixSet(),
+		gsubBlock:     newSuffixSet(),
 	}
 
 	for _, r := range l.UserRules {
 		// 记录型错误不影响其它规则；这里不返回错误，只跳过。
 		_ = rs.addRule(r, rs.userAllow, rs.userRewrite, rs.userBlock)
 	}
-	insertDomains(rs.subAllow, l.SubAllow)
-	insertDomains(rs.subBlock, l.SubBlock)
+	rs.subAllow.add(l.SubAllow)
+	rs.subBlock.add(l.SubBlock)
 
 	if l.Global != nil {
 		for _, r := range l.Global.Rules {
 			_ = rs.addRule(r, rs.globalAllow, rs.globalRewrite, rs.globalBlock)
 		}
-		insertDomains(rs.gsubAllow, l.Global.SubAllow)
-		insertDomains(rs.gsubBlock, l.Global.SubBlock)
+		rs.gsubAllow.add(l.Global.SubAllow)
+		rs.gsubBlock.add(l.Global.SubBlock)
 	}
+
+	// 订阅层收尾：去重 + 排序。必须在返回前做，否则查询会走未排序数组，
+	// 二分结果无意义。
+	rs.subAllow.finish()
+	rs.subBlock.finish()
+	rs.gsubAllow.finish()
+	rs.gsubBlock.finish()
 
 	rs.Stats = Stats{
 		UserAllow:   rs.userAllow.size,

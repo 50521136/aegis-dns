@@ -39,9 +39,14 @@ type Loader struct {
 	lastMTime time.Time
 	lastSize  int64
 	lastVer   int64
-	// prevSnap 是上一次成功应用的快照，用于按指纹判断哪些用户的缓存该失效。
-	// 只由 LoadOnce 单 goroutine 写，不需要额外加锁。
-	prevSnap *model.Snapshot
+	// 上一次快照的指纹快照（不是快照本身）。
+	//
+	// 这里曾经存的是 *model.Snapshot 本体，只为比对指纹 —— 而快照里有
+	// 几十万条订阅域名，等于把整份快照常驻内存一份，峰值翻倍。
+	// 线上 1.7G 的机器上 dnsd 直接吃到 1.3G，被 OOM 杀了两次。
+	// 只留 「全局指纹 + 每用户指纹」 就够判断，几十 KB 的量级。
+	prevGlobalFP string
+	prevUserFP   map[string]string
 	// onReload 在每次成功重载后回调（用于刷新 handler 的运行时参数）。
 	onReload func(*model.Snapshot)
 }
@@ -76,7 +81,7 @@ func (l *Loader) OnReload(fn func(*model.Snapshot)) { l.onReload = fn }
 // 无论哪种情况都要顺带清掉 fallback（UserID 为空）的条目：全局设置
 // （上游、拦截模式、缓存 TTL）变了会影响未识别请求的应答，而那些条目
 // 的键里没有租户 id，只清 ChangedUsers 是覆盖不到的。
-func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
+func (l *Loader) invalidateCache(snap *model.Snapshot) {
 	if l.handler == nil {
 		return
 	}
@@ -85,8 +90,8 @@ func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
 		return
 	}
 
-	// 第一次加载：没有旧快照可比，直接清空（此时缓存本来就是空的）。
-	if prev == nil {
+	// 第一次加载：没有旧指纹可比，直接清空（此时缓存本来就是空的）。
+	if l.prevUserFP == nil {
 		c.Flush()
 		return
 	}
@@ -97,7 +102,7 @@ func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
 	// 一次订阅刷新、一次配额调整都会触发全量重建，而绝大多数用户的规则
 	// 一个字节都没动。按 ChangedUsers 判断的结果是缓存被反复整体清空
 	// （线上实测 24 小时 33 次），命中率从理论 86% 掉到 12%。
-	if prev.GlobalFingerprint != snap.GlobalFingerprint {
+	if l.prevGlobalFP != snap.GlobalFingerprint {
 		before := c.Len()
 		c.Flush()
 		l.log.Info("全局层或默认值变更，缓存已整体清空", "entries_dropped", before)
@@ -105,20 +110,16 @@ func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
 	}
 
 	// 逐用户比对指纹，只清真的变了的那些。
-	prevFP := make(map[string]string, len(prev.Users))
-	for _, u := range prev.Users {
-		prevFP[u.UserID] = u.Fingerprint
-	}
+	// prevUserFP 就地消费（删除已比对过的），剩下的就是「已删除的用户」。
 	changed := make([]string, 0, 8)
 	for _, u := range snap.Users {
-		if prevFP[u.UserID] != u.Fingerprint {
+		if l.prevUserFP[u.UserID] != u.Fingerprint {
 			changed = append(changed, u.UserID)
 			continue
 		}
-		delete(prevFP, u.UserID)
+		delete(l.prevUserFP, u.UserID)
 	}
-	// 删掉的用户也要清（他们的缓存条目不该继续占着）
-	for id := range prevFP {
+	for id := range l.prevUserFP {
 		changed = append(changed, id)
 	}
 
@@ -157,9 +158,15 @@ func (l *Loader) LoadOnce() error {
 	// 这种情况下什么都没变，不该清缓存 —— 否则空转重载会把缓存打光。
 	// 用版本号是否推进来判断「这次真的应用了新配置」。
 	if l.registry.Version() != verBefore {
-		l.invalidateCache(l.prevSnap, snap)
+		l.invalidateCache(snap)
 	}
-	l.prevSnap = snap
+	// 只保留指纹，快照本身用完即弃 —— 这是内存占用的关键。
+	l.prevGlobalFP = snap.GlobalFingerprint
+	next := make(map[string]string, len(snap.Users))
+	for _, u := range snap.Users {
+		next[u.UserID] = u.Fingerprint
+	}
+	l.prevUserFP = next
 
 	if l.onReload != nil {
 		l.onReload(snap)
