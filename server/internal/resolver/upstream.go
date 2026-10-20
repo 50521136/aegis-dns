@@ -60,7 +60,7 @@ func newPool(addrs []string, bootstrap []string, timeout time.Duration) (*Pool, 
 	// 引导解析器：DoH/DoT 上游要先解析主机名才能连。
 	// 不给的话 dnsproxy 会走系统解析器，容器/最小化系统里常常没有可用解析器，
 	// 表现就是「上游配好了却全部超时」，而且日志里只说解析失败，看不出缺引导。
-	if br := staticBootstrap(bootstrap); br != nil {
+	if br := bootstrapResolver(bootstrap); br != nil {
 		opts.Bootstrap = br
 	}
 	p := &Pool{addrs: normalizeAddrs(addrs), timeout: timeout}
@@ -324,24 +324,40 @@ func (c *Cache) Close() error {
 	return errors.Join(errs...)
 }
 
-// staticBootstrap 把引导 DNS 地址列表转成 dnsproxy 的静态解析器。
+// bootstrapResolver 用配置里的引导 DNS 服务器解析上游主机名。
 //
-// 只接受 IP 字面量：用域名或 DoH 地址做引导是循环依赖 —— 要先解析才能连上，
-// 而解析又依赖它。非法项直接忽略，全部非法时返回 nil（回退系统解析器）。
-func staticBootstrap(addrs []string) upstream.Resolver {
-	var ips []netip.Addr
+// 这里绝不能图省事用 upstream.StaticResolver —— 那个类型不是「要去问的
+// DNS 服务器」，而是**静态的主机名→IP 映射**：它会把任意主机名都解析成
+// 列表里给的那几个地址。实测踩过这个坑：配 [223.5.5.5] 时「能通」纯属巧合
+// （223.5.5.5 恰好就是 dns.alidns.com 的 IP），配 [119.29.29.29] 时就去连
+// 119.29.29.29:443 然后超时，表现为「上游配好了却全部失败」。
+//
+// 正确做法是给一个真正的解析器：net.Resolver 配上自定义 Dial，把查询打到
+// 引导服务器上。net.Resolver 本身实现了 dnsproxy 的 Resolver 接口。
+//
+// 只接受 IP 字面量：用域名或 DoH 地址做引导是循环依赖。
+func bootstrapResolver(addrs []string) upstream.Resolver {
+	server := ""
 	for _, a := range addrs {
 		a = strings.TrimSpace(a)
-		// 容忍带端口的写法，端口对引导无意义（静态解析只提供地址）。
 		if host, _, err := net.SplitHostPort(a); err == nil {
 			a = host
 		}
 		if ip, err := netip.ParseAddr(a); err == nil && !ip.IsUnspecified() {
-			ips = append(ips, ip)
+			server = ip.String()
+			break
 		}
 	}
-	if len(ips) == 0 {
+	if server == "" {
 		return nil
 	}
-	return upstream.StaticResolver(ips)
+	addr := net.JoinHostPort(server, "53")
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			// 固定走 udp：引导只查 A/AAAA，TCP 回退由 Go 解析器自己处理。
+			d := &net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, "udp", addr)
+		},
+	}
 }
