@@ -114,6 +114,8 @@ const settingsSchema = z.object({
   vip_max_subs: z.coerce.number().int().min(0),
   vip_daily_queries: z.coerce.number().int().min(0),
   member_reward_days: z.coerce.number().int().min(1),
+  allow_user_invite: z.boolean(),
+  user_invite_max_codes: z.coerce.number().int().min(0),
   smtp_enabled: z.boolean(),
   smtp_host: z.string(),
   smtp_port: z.coerce.number().int().min(1),
@@ -386,6 +388,20 @@ function SettingsPanel() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <NumberField form={form} name="member_reward_days" label="邀请奖励默认天数" />
+            <NumberField form={form} name="user_invite_max_codes" label="每用户最多邀请码数" />
+          </div>
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">允许用户自建邀请码</p>
+              <p className="text-xs text-muted-foreground">
+                开启后普通用户能生成自己的邀请链接拉新，奖励天数固定用上面的值
+              </p>
+            </div>
+            <Switch
+              checked={form.watch('allow_user_invite')}
+              onCheckedChange={(v) => form.setValue('allow_user_invite', v)}
+              aria-label="允许用户自建邀请码"
+            />
           </div>
           <p className="text-xs text-muted-foreground">
             0 表示不限制。每日请求量按 UTC 自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。

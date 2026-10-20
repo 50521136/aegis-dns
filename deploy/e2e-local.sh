@@ -718,6 +718,49 @@ INV2=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' 
   -d "{\"username\":\"invited2$$\",\"email\":\"invited2$$@e2e.local\",\"password\":\"Passw0rd!23\",\"invite_code\":\"$NEWCODE\"}")
 echo "$INV2" | grep -qiE '次数已用完|不存在' && ok "次数用完的码被拒" || bad "超次数仍可用: $(echo "$INV2" | head -c 120)"
 
+hdr "普通用户自建邀请码"
+# 拉新激励的关键：用户自己能生成码和链接。只有管理员能发码的话，
+# 这套东西就退化成「管理员发福利」，用户没有动力分享。
+MYIC=$(curl -s -X POST "$API/me/invite-codes" -H "Authorization: Bearer $TOKEN")
+UCODE=$(echo "$MYIC" | grep -o '"code":"[^"]*"' | head -1 | cut -d'"' -f4)
+[[ -n "$UCODE" ]] && ok "普通用户能生成邀请码（$UCODE）" || bad "生成失败: $(echo "$MYIC" | head -c 140)"
+echo "$MYIC" | grep -q '"link":"https://[^"]*/register?invite=' \
+  && ok "返回了可直接分享的邀请链接" || bad "缺邀请链接"
+GLOBAL_REWARD=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  | grep -o '"member_reward_days":[0-9]*' | cut -d: -f2)
+echo "$MYIC" | grep -q "\"reward_days\":$GLOBAL_REWARD" \
+  && ok "奖励天数取全局值（$GLOBAL_REWARD）" || bad "奖励天数不对（期望 $GLOBAL_REWARD）: $(echo "$MYIC" | grep -o '\"reward_days\":[0-9]*')"
+# 列表里能看到自己的码
+curl -fsS "$API/me/invite-codes" -H "Authorization: Bearer $TOKEN" | grep -q "$UCODE" \
+  && ok "自己的码出现在列表里" || bad "列表里没有自己的码"
+# 用用户的码注册，奖励要给到该用户
+REC_BEFORE=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['member_days'])")
+curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"viacode$$\",\"email\":\"viacode$$@e2e.local\",\"password\":\"Passw0rd!23\",\"invite_code\":\"$UCODE\"}" \
+  | grep -q '"access_token"' && ok "用用户的码能注册" || bad "用用户码注册失败"
+sleep 2
+REC_AFTER=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['member_days'])")
+[[ "$REC_AFTER" -gt "$REC_BEFORE" ]] && ok "邀请人会员天数增加（$REC_BEFORE → $REC_AFTER）" \
+  || bad "奖励没给到邀请人：$REC_BEFORE → $REC_AFTER"
+# 别人的码不能删
+ADMCODE=$(curl -s -X POST "$API/admin/invite-codes" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"note":"admin-only"}' | grep -o '"code":"[^"]*"' | cut -d'"' -f4)
+code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/me/invite-codes/$ADMCODE" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "403" ]] && ok "不能删别人的邀请码（403）" || bad "越权删除：$code"
+# 能删自己的
+code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/me/invite-codes/$UCODE" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "204" ]] && ok "能删自己的邀请码" || bad "删自己的失败：$code"
+curl -fsS -X DELETE "$API/admin/invite-codes/$ADMCODE" -H "Authorization: Bearer $ADMTOK" >/dev/null
+# 关掉开关后不能再建
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"allow_user_invite":false}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/invite-codes" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "403" ]] && ok "关闭后用户不能自建（403）" || bad "关闭后仍可建：$code"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"allow_user_invite":true}' >/dev/null
+
 hdr "公告：静默 / 弹窗 / 已读"
 ANN=$(curl -s -X POST "$API/admin/announcements" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"title":"e2e 静默公告","body":"只进公告栏","level":"info","mode":"silent"}')
@@ -775,6 +818,14 @@ GS=$(curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK")
 echo "$GS" | grep -q '"limit":0' && ok "全局订阅 limit=0（不限）" || bad "全局订阅仍有上限"
 
 hdr "每日请求量上限（会员档）"
+# 先把会员撤掉：前面的邀请奖励让这个用户变成了会员，
+# 而会员档的每日请求量是不限的 —— 不撤销就永远测不出免费档的上限。
+Q_UID=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+curl -fsS -X POST "$API/admin/users/$Q_UID/member/revoke" -H "Authorization: Bearer $ADMTOK" >/dev/null
+sleep 2
+curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN" | grep -q '"tier":"free"' \
+  && ok "已降为免费档，可测请求量上限" || bad "撤销会员失败，测不了免费档上限"
+
 # 把免费档压到极小，验证超额被 REFUSED。
 # 注意不能只 sleep 几秒：dnsd 的兜底轮询是 30s（fsnotify 正常情况下会更快），
 # 固定 sleep 会变成「有时过有时不过」的假失败。这里改成边探边等，

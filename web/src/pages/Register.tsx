@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -38,6 +38,10 @@ export default function Register() {
   const { register: registerUser } = useAuth()
   const toast = useToast()
   const navigate = useNavigate()
+  // 邀请链接形如 /register?invite=CODE，直接预填，
+  // 别让用户从聊天窗口再手动抄一遍码
+  const [params] = useSearchParams()
+  const inviteFromLink = (params.get('invite') ?? '').toUpperCase()
   const [showPassword, setShowPassword] = useState(false)
   const [dnsConfig, setDnsConfig] = useState<DnsConfig | null>(null)
   const {
@@ -47,7 +51,7 @@ export default function Register() {
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { username: '', email: '', password: '', invite_code: '', email_code: '' },
+    defaultValues: { username: '', email: '', password: '', invite_code: inviteFromLink, email_code: '' },
   })
 
   // 公开配置决定表单要显示哪些字段：不要邀请码的站点不该摆一个空框
@@ -192,8 +196,8 @@ export default function Register() {
           </div>
         )}
 
-        {/* 需要邀请码时才出现 */}
-        {cfg?.require_invite && (
+        {/* 需要邀请码时必须显示；链接里带了码也显示，让用户看到它已被自动填入 */}
+        {(cfg?.require_invite || inviteFromLink) && (
           <div className="space-y-1.5">
             <Label htmlFor="invite_code">邀请码</Label>
             <Input
@@ -203,7 +207,11 @@ export default function Register() {
               autoComplete="off"
               {...register('invite_code')}
             />
-            <p className="text-xs text-muted-foreground">邀请码由管理员或已注册用户提供</p>
+            <p className="text-xs text-muted-foreground">
+              {inviteFromLink
+                ? `已从邀请链接自动填入，注册后邀请人将获得 ${cfg?.invite_reward_days ?? 0} 天会员`
+                : '邀请码由管理员或已注册用户提供'}
+            </p>
           </div>
         )}
 

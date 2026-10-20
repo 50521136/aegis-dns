@@ -125,6 +125,10 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/me/export", s.handleExport)
 			// 会员档位、配额与邀请战绩
 			r.Get("/me/membership", s.handleMyMembership)
+			// 用户自建邀请码与分享链接
+			r.Get("/me/invite-codes", s.handleMyInviteCodes)
+			r.Post("/me/invite-codes", s.handleCreateMyInviteCode)
+			r.Delete("/me/invite-codes/{code}", s.handleDeleteMyInviteCode)
 			// 公告：列表带未读数，已读与「不再弹出」分开记
 			r.Get("/me/announcements", s.handleMyAnnouncements)
 			r.Post("/me/announcements/{id}/read", s.handleReadAnnouncement)

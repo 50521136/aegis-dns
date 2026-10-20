@@ -128,9 +128,40 @@ export interface PublicConfig {
   require_email_verify: boolean
   email_available: boolean
   domain: string
+  allow_user_invite: boolean
+  invite_reward_days: number
 }
 
 export async function getPublicConfig(): Promise<PublicConfig> {
   const { data } = await api.get<PublicConfig>('/public/config')
   return data
+}
+
+// === 用户自建邀请码 ===
+
+export interface MyInviteCodes {
+  items: (InviteCode & { link?: string })[]
+  total: number
+  can_create: boolean
+  enabled: boolean
+  max_codes: number
+  reward_days: number
+  invited: number
+  earned_days: number
+  member_until: number
+  member_days: number
+}
+
+export async function getMyInviteCodes(): Promise<MyInviteCodes> {
+  const { data } = await api.get<MyInviteCodes>('/me/invite-codes')
+  return data
+}
+
+export async function createMyInviteCode(): Promise<InviteCode & { link: string }> {
+  const { data } = await api.post('/me/invite-codes')
+  return data
+}
+
+export async function deleteMyInviteCode(code: string): Promise<void> {
+  await api.delete(`/me/invite-codes/${code}`)
 }

@@ -215,13 +215,15 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		// 配额：前端据此显示「已用 x / 上限 y」并在新建时提前拦。
 		"max_sub_entries": set.MaxSubEntries,
 		// 会员两档配额
-		"free_max_rules":     set.FreeMaxRules,
-		"free_max_subs":      set.FreeMaxSubs,
-		"free_daily_queries": set.FreeDailyQueries,
-		"vip_max_rules":      set.VipMaxRules,
-		"vip_max_subs":       set.VipMaxSubs,
-		"vip_daily_queries":  set.VipDailyQueries,
-		"member_reward_days": set.MemberRewardDays,
+		"free_max_rules":        set.FreeMaxRules,
+		"free_max_subs":         set.FreeMaxSubs,
+		"free_daily_queries":    set.FreeDailyQueries,
+		"vip_max_rules":         set.VipMaxRules,
+		"vip_max_subs":          set.VipMaxSubs,
+		"vip_daily_queries":     set.VipDailyQueries,
+		"member_reward_days":    set.MemberRewardDays,
+		"allow_user_invite":     set.AllowUserInvite,
+		"user_invite_max_codes": set.UserInviteMaxCodes,
 
 		// 邮件服务。密码不回传：后台表单只需要知道「有没有配」，
 		// 把明文密码发到浏览器等于把它暴露在任何一次截图/日志里。
@@ -289,14 +291,16 @@ type settingsPatch struct {
 	UpdateRepo     *string   `json:"update_repo"`
 	UpdateChannel  *string   `json:"update_channel"`
 
-	MaxSubEntries    *int   `json:"max_sub_entries"`
-	FreeMaxRules     *int   `json:"free_max_rules"`
-	FreeMaxSubs      *int   `json:"free_max_subs"`
-	FreeDailyQueries *int64 `json:"free_daily_queries"`
-	VipMaxRules      *int   `json:"vip_max_rules"`
-	VipMaxSubs       *int   `json:"vip_max_subs"`
-	VipDailyQueries  *int64 `json:"vip_daily_queries"`
-	MemberRewardDays *int   `json:"member_reward_days"`
+	MaxSubEntries      *int   `json:"max_sub_entries"`
+	FreeMaxRules       *int   `json:"free_max_rules"`
+	FreeMaxSubs        *int   `json:"free_max_subs"`
+	FreeDailyQueries   *int64 `json:"free_daily_queries"`
+	VipMaxRules        *int   `json:"vip_max_rules"`
+	VipMaxSubs         *int   `json:"vip_max_subs"`
+	VipDailyQueries    *int64 `json:"vip_daily_queries"`
+	MemberRewardDays   *int   `json:"member_reward_days"`
+	AllowUserInvite    *bool  `json:"allow_user_invite"`
+	UserInviteMaxCodes *int   `json:"user_invite_max_codes"`
 
 	SMTPEnabled         *bool   `json:"smtp_enabled"`
 	SMTPHost            *string `json:"smtp_host"`
@@ -356,6 +360,8 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.VipMaxSubs, p.VipMaxSubs)
 	setInt64(&dst.VipDailyQueries, p.VipDailyQueries)
 	setInt(&dst.MemberRewardDays, p.MemberRewardDays)
+	setBool(&dst.AllowUserInvite, p.AllowUserInvite)
+	setInt(&dst.UserInviteMaxCodes, p.UserInviteMaxCodes)
 	setStr(&dst.SMTPHost, p.SMTPHost)
 	setInt(&dst.SMTPPort, p.SMTPPort)
 	setStr(&dst.SMTPUser, p.SMTPUser)
@@ -715,6 +721,9 @@ func validateSettings(s *model.GlobalSettings) error {
 	}
 	if s.MemberRewardDays < 1 || s.MemberRewardDays > 3650 {
 		return errValidation("member_reward_days 需在 1 到 3650 之间")
+	}
+	if s.UserInviteMaxCodes < 0 || s.UserInviteMaxCodes > 200 {
+		return errValidation("user_invite_max_codes 需在 0 到 200 之间（0 = 不允许用户自建）")
 	}
 	// 邮件：只有启用时才要求配全，否则「先填一半保存」会被卡住。
 	if s.SMTPEnabled {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -295,4 +296,125 @@ func randomCode(n int) string {
 		buf[i] = alphabet[int(buf[i])%len(alphabet)]
 	}
 	return string(buf)
+}
+
+// === 邀请码（普通用户自建）===
+
+// handleMyInviteCodes 返回当前用户名下的邀请码与分享链接。
+//
+// 普通用户能自建邀请码，这是拉新激励的关键：只有管理员能发码的话，
+// 这套东西就退化成「管理员发福利」，用户没有动力去分享。
+// 但奖励天数不给用户填 —— 能自选天数等于能给自己无限续会员。
+func (s *Server) handleMyInviteCodes(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	set, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	codes, err := s.store.ListInviteCodes(r.Context(), u.ID)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	stats, err := s.store.GetInviteStats(r.Context(), u.ID)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	now := time.Now().Unix()
+	items := make([]map[string]any, 0, len(codes))
+	for _, c := range codes {
+		item := inviteCodeJSON(c, now)
+		item["link"] = inviteLink(s.domain(r), c.Code)
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"total": len(items),
+		// 还能建几个：前端据此决定按钮是否可点，避免点了才报错
+		"can_create":   set.AllowUserInvite && set.UserInviteMaxCodes > len(codes),
+		"enabled":      set.AllowUserInvite,
+		"max_codes":    set.UserInviteMaxCodes,
+		"reward_days":  set.MemberRewardDays,
+		"invited":      stats.TotalUses,
+		"earned_days":  stats.RewardDays,
+		"member_until": u.MemberUntil,
+		"member_days":  u.MemberRemainingDays(time.Now()),
+	})
+}
+
+// inviteLink 拼出可直接分享的注册链接。
+func inviteLink(domain, code string) string {
+	return "https://" + domain + "/register?invite=" + code
+}
+
+// handleCreateMyInviteCode 普通用户自建邀请码。
+func (s *Server) handleCreateMyInviteCode(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	set, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	if !set.AllowUserInvite {
+		writeError(w, http.StatusForbidden, CodeFeatureDisabled, "本站未开放用户自建邀请码", nil)
+		return
+	}
+	if !set.AllowRegister {
+		// 注册都关着，码发出去也用不了
+		writeError(w, http.StatusForbidden, CodeFeatureDisabled, "当前已关闭公开注册，邀请码无法使用", nil)
+		return
+	}
+	mine, err := s.store.ListInviteCodes(r.Context(), u.ID)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	if set.UserInviteMaxCodes > 0 && len(mine) >= set.UserInviteMaxCodes {
+		writeError(w, http.StatusForbidden, CodeQuotaExceeded,
+			fmt.Sprintf("你最多持有 %d 个邀请码，先删掉不用的再建", set.UserInviteMaxCodes), nil)
+		return
+	}
+	// 奖励天数固定用全局值；次数不限（一个码可以分享给多人）。
+	c := &model.InviteCode{
+		Code:       randomCode(8),
+		OwnerID:    u.ID,
+		Note:       "用户自建",
+		RewardDays: set.MemberRewardDays,
+		MaxUses:    0,
+		Enabled:    true,
+	}
+	if err := s.store.CreateInviteCode(r.Context(), c); err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	out := inviteCodeJSON(*c, time.Now().Unix())
+	out["link"] = inviteLink(s.domain(r), c.Code)
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// handleDeleteMyInviteCode 删除自己的邀请码。
+func (s *Server) handleDeleteMyInviteCode(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	code := strings.ToUpper(chi.URLParam(r, "code"))
+	c, err := s.store.GetInviteCode(r.Context(), code)
+	if err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	if c == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "邀请码不存在", nil)
+		return
+	}
+	// 只能删自己的：不校验归属的话，任何用户都能把别人正在推广的码删掉
+	if c.OwnerID != u.ID {
+		writeError(w, http.StatusForbidden, CodeForbidden, "只能删除自己的邀请码", nil)
+		return
+	}
+	if err := s.store.DeleteInviteCode(r.Context(), code); err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -163,6 +163,10 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.VipMaxSubs = intOr(kv["vip_max_subs"], set.VipMaxSubs)
 	set.VipDailyQueries = int64Or(kv["vip_daily_queries"], set.VipDailyQueries)
 	set.MemberRewardDays = intOr(kv["member_reward_days"], set.MemberRewardDays)
+	set.UserInviteMaxCodes = intOr(kv["user_invite_max_codes"], set.UserInviteMaxCodes)
+	if v, ok := kv["allow_user_invite"]; ok {
+		set.AllowUserInvite = v == "1" || strings.EqualFold(v, "true")
+	}
 
 	set.SMTPHost = strOr(kv["smtp_host"], set.SMTPHost)
 	set.SMTPPort = intOr(kv["smtp_port"], set.SMTPPort)
@@ -230,14 +234,16 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"sub_interval_hours":       strconv.Itoa(set.SubIntervalH),
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
-		"max_sub_entries":    strconv.Itoa(set.MaxSubEntries),
-		"free_max_rules":     strconv.Itoa(set.FreeMaxRules),
-		"free_max_subs":      strconv.Itoa(set.FreeMaxSubs),
-		"free_daily_queries": strconv.FormatInt(set.FreeDailyQueries, 10),
-		"vip_max_rules":      strconv.Itoa(set.VipMaxRules),
-		"vip_max_subs":       strconv.Itoa(set.VipMaxSubs),
-		"vip_daily_queries":  strconv.FormatInt(set.VipDailyQueries, 10),
-		"member_reward_days": strconv.Itoa(set.MemberRewardDays),
+		"max_sub_entries":       strconv.Itoa(set.MaxSubEntries),
+		"free_max_rules":        strconv.Itoa(set.FreeMaxRules),
+		"free_max_subs":         strconv.Itoa(set.FreeMaxSubs),
+		"free_daily_queries":    strconv.FormatInt(set.FreeDailyQueries, 10),
+		"vip_max_rules":         strconv.Itoa(set.VipMaxRules),
+		"vip_max_subs":          strconv.Itoa(set.VipMaxSubs),
+		"vip_daily_queries":     strconv.FormatInt(set.VipDailyQueries, 10),
+		"member_reward_days":    strconv.Itoa(set.MemberRewardDays),
+		"allow_user_invite":     boolStr(set.AllowUserInvite),
+		"user_invite_max_codes": strconv.Itoa(set.UserInviteMaxCodes),
 
 		"smtp_enabled":          boolStr(set.SMTPEnabled),
 		"smtp_host":             set.SMTPHost,

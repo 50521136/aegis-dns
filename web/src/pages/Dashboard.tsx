@@ -44,6 +44,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { errorMessage } from '@/api/client'
 import { formatCompact, formatNumber, formatPercent } from '@/lib/format'
 import { MembershipCard } from '@/components/MembershipCard'
+import { InviteCard } from '@/components/InviteCard'
 
 function formatTs(ts: string | number): string {
   const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
@@ -143,6 +144,8 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
 
       {/* 管理员没有会员概念，只有普通用户看到 */}
       {!isAdmin && <MembershipCard />}
+      {/* 拉新入口：用户自己能生成邀请码与分享链接 */}
+      {!isAdmin && <InviteCard />}
 
       {/* 统计卡：1 -> 2 -> 4 列 */}
       {summary.isError ? (

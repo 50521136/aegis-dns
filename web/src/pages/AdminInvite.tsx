@@ -97,7 +97,9 @@ export function InvitePanel() {
             邀请码
           </CardTitle>
           <CardDescription>
-            被邀请人注册时填码，码的归属人自动获得奖励会员天数。次数为 0 表示不限。
+            这里管理<strong className="text-foreground">管理员发出的</strong>邀请码。
+            普通用户也能在「总览 → 邀请好友」里生成自己的邀请链接，奖励天数固定用全局设置里的值
+            —— 能自选天数等于能给自己无限续会员。
           </CardDescription>
         </div>
         <Button size="sm" onClick={() => setOpen(true)}>

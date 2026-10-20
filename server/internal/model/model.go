@@ -272,6 +272,14 @@ type GlobalSettings struct {
 	// MemberRewardDays 是邀请码的默认奖励天数（新建码时的预填值）。
 	MemberRewardDays int `json:"member_reward_days"`
 
+	// AllowUserInvite 允许普通用户自己生成邀请码。
+	//
+	// 奖励天数不开放给用户填：能自选天数等于能给自己无限续会员，
+	// 用户码一律用 MemberRewardDays，只能决定「发给谁」。
+	AllowUserInvite bool `json:"allow_user_invite"`
+	// UserInviteMaxCodes 是每个普通用户最多能同时持有的邀请码数量。
+	UserInviteMaxCodes int `json:"user_invite_max_codes"`
+
 	// --- 邮件服务 ---
 	//
 	// 用于注册邮箱验证与找回密码。SMTPPass 只写不读：
@@ -340,13 +348,15 @@ func DefaultSettings() GlobalSettings {
 		MaxSubEntries: 50000,
 
 		// 免费档刻意压得比原来的统一配额更低：会员的意义就在于这两档有差别。
-		FreeMaxRules:     20,
-		FreeMaxSubs:      1,
-		FreeDailyQueries: 50000,
-		VipMaxRules:      200,
-		VipMaxSubs:       10,
-		VipDailyQueries:  0, // 会员不限请求量
-		MemberRewardDays: 30,
+		FreeMaxRules:       20,
+		FreeMaxSubs:        1,
+		FreeDailyQueries:   50000,
+		VipMaxRules:        200,
+		VipMaxSubs:         10,
+		VipDailyQueries:    0, // 会员不限请求量
+		MemberRewardDays:   30,
+		AllowUserInvite:    true,
+		UserInviteMaxCodes: 5,
 
 		// 邮件默认关闭：没配 SMTP 就打开验证会让所有人都注册不了。
 		SMTPEnabled:         false,

@@ -339,5 +339,8 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		"require_email_verify": set.EmailVerifyRegister,
 		"email_available":      set.SMTPEnabled,
 		"domain":               s.domain(r),
+		// 注册页用来说明「填邀请码能拿什么」，以及是否展示邀请入口
+		"allow_user_invite":  set.AllowUserInvite,
+		"invite_reward_days": set.MemberRewardDays,
 	})
 }
