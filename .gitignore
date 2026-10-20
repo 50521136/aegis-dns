@@ -43,3 +43,5 @@ server/internal/api/webdist/dist/*
 .seed-*.sh
 .check-*.py
 .start-*.sh
+.[a-z]*check.py
+.[a-z]*probe.py
