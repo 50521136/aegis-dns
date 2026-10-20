@@ -743,9 +743,15 @@ function SystemPanel() {
             Object.entries(sys)
               .filter(([, v]) => typeof v !== 'object')
               .map(([k, v]) => (
-                <div key={k} className="flex items-center justify-between border-b border-border/50 py-2 text-sm last:border-0">
-                  <span className="text-muted-foreground">{k}</span>
-                  <span className="font-mono">{String(v)}</span>
+                <div
+                  key={k}
+                  className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 border-b border-border/50 py-2 text-sm last:border-0"
+                >
+                  <span className="shrink-0 text-muted-foreground">{k}</span>
+                  {/* 证书指纹这类长串必须能断行：它一个单词 95 个字符，
+                      不给 break-all 会把整行撑到 700 多像素，
+                      手机上整个页面横向滚动。 */}
+                  <span className="min-w-0 break-all text-right font-mono">{String(v)}</span>
                 </div>
               ))}
         </CardContent>
