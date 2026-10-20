@@ -58,6 +58,19 @@ func (m *Manager) subLock(subID string) *sync.Mutex {
 
 // Refresh 刷新单个订阅。
 func (m *Manager) Refresh(ctx context.Context, sub *model.Subscription) (*RefreshResult, error) {
+	return m.refresh(ctx, sub, false)
+}
+
+// RefreshForce 忽略 ETag / Last-Modified，强制完整重新拉取并重新解析。
+//
+// 存在的理由：条目上限、解析规则这类设置改完之后，已经缓存的订阅会一直走
+// 304，永远不会用新设置重新解析 —— 管理员改了配置却看不到任何变化，
+// 还以为是设置没生效。强制刷新给一个明确的「现在就按新规则重算」入口。
+func (m *Manager) RefreshForce(ctx context.Context, sub *model.Subscription) (*RefreshResult, error) {
+	return m.refresh(ctx, sub, true)
+}
+
+func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bool) (*RefreshResult, error) {
 	mu := m.subLock(sub.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -73,7 +86,12 @@ func (m *Manager) Refresh(ctx context.Context, sub *model.Subscription) (*Refres
 	start := time.Now()
 	res := &RefreshResult{SubID: sub.ID}
 
-	fr, err := m.fetcher.Fetch(ctx, sub.URL, sub.LastETag, sub.LastModified)
+	etag, lastMod := sub.LastETag, sub.LastModified
+	if force {
+		// 传空值让 Fetch 不带 If-None-Match / If-Modified-Since
+		etag, lastMod = "", ""
+	}
+	fr, err := m.fetcher.Fetch(ctx, sub.URL, etag, lastMod)
 	if err != nil {
 		status := DescribeStatus(err)
 		// 保留旧条目：只更新状态与失败计数（文档 6.4 核心原则）。

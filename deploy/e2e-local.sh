@@ -458,6 +458,21 @@ echo "$CL" | grep -q '"total"' && ok "手动清理接口可用" || bad "清理�
 # retention=0 时统计清理任务根本不会加入，key 直接不出现（而不是删了 0 行）
 echo "$CL" | grep -q '"query_rollup"' && bad "统计被误删: $CL" || ok "统计保留 0 天时不按时间删（保护生效）"
 
+hdr "订阅强制刷新"
+# 条目上限/解析规则改完后，缓存过的订阅会一直走 304 不重算，
+# 管理员改了设置却看不到变化。?force=1 给一个明确的「现在就重算」入口。
+# 用管理员令牌：/admin/* 对普通用户是 403，拿普通令牌测只会测出越权保护
+code=$(curl -s -o /tmp/e2e_force.json -w '%{http_code}' -X POST "$API/admin/subscriptions/refresh-all?force=1" \
+  -H "Authorization: Bearer $ADMTOK")
+[[ "$code" == "202" || "$code" == "200" ]] && ok "refresh-all 接受 force 参数（$code）" || bad "force 参数无效：$code"
+# 单个刷新也要支持
+SUBID=$(curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+if [ -n "$SUBID" ]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/subscriptions/$SUBID/refresh?force=1" \
+    -H "Authorization: Bearer $ADMTOK")
+  [[ "$code" == "202" || "$code" == "200" ]] && ok "单个刷新接受 force 参数（$code）" || bad "单个 force 无效：$code"
+fi
+
 hdr "自定义接入 ID（一次机会）"
 # 必须从 /me 取当前 ID：前面的「重置接入 ID」用例已经把注册时的 $CID 换掉了，
 # 拿旧变量去比会误判成「值不同」，进而把这一次机会白白用掉。

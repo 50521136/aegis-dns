@@ -12,18 +12,35 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/subsub"
 )
 
+// forceRefresh 解析 ?force=1。
+//
+// 用途：条目上限、解析规则这类设置改完后，缓存的订阅会一直走 304 不重算，
+// 管理员看不到任何变化。带 force 就忽略 ETag 完整重拉。
+func forceRefresh(r *http.Request) bool {
+	v := r.URL.Query().Get("force")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 // refreshSubAsync 在后台拉取订阅，成功后重建快照。
 //
 // 关键点：不能用 r.Context()。拉取在这条线路上要 60~90 秒，浏览器/代理先断开时
 // 请求上下文被取消，下载直接中断（日志里是 context canceled），订阅就永远停在
 // 「0 条目 / 未同步」。拉取是用户已经确认过的后台任务，应当脱离请求生命周期。
-func (s *Server) refreshSubAsync(userID string, sub *model.Subscription, global bool) {
+func (s *Server) refreshSubAsync(userID string, sub *model.Subscription, global bool, force bool) {
 	go func() {
 		// 比单次拉取超时多留一截，给解析和入库用。
 		fctx, cancel := context.WithTimeout(context.Background(), subsub.FetchTimeout+60*time.Second)
 		defer cancel()
 
-		res, err := s.subs.Refresh(fctx, sub)
+		var (
+			res *subsub.RefreshResult
+			err error
+		)
+		if force {
+			res, err = s.subs.RefreshForce(fctx, sub)
+		} else {
+			res, err = s.subs.Refresh(fctx, sub)
+		}
 		if err != nil {
 			s.log.Warn("订阅刷新失败（后台）", "sub", sub.ID, "url", sub.URL, "err", err)
 			return
@@ -208,7 +225,7 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 		if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
 			s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
 		}
-		s.refreshSubAsync(u.ID, sub, global)
+		s.refreshSubAsync(u.ID, sub, global, false) // 新建没有缓存，无需 force
 	}
 	writeJSON(w, http.StatusCreated, subToJSON(sub))
 }
@@ -334,7 +351,7 @@ func (s *Server) refreshSub(w http.ResponseWriter, r *http.Request, global bool)
 	if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
 		s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
 	}
-	s.refreshSubAsync(u.ID, sub, global)
+	s.refreshSubAsync(u.ID, sub, global, forceRefresh(r))
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id":          sub.ID,
 		"last_status": model.StatusPending,
@@ -372,7 +389,7 @@ func (s *Server) refreshAllSubs(w http.ResponseWriter, r *http.Request, global b
 		if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
 			s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
 		}
-		s.refreshSubAsync(u.ID, sub, global)
+		s.refreshSubAsync(u.ID, sub, global, forceRefresh(r))
 		pending++
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"pending": pending, "queued": true})
