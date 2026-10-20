@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { KeyRound, LogOut, Menu, User as UserIcon } from 'lucide-react'
+import { Crown, KeyRound, LogOut, Menu, User as UserIcon } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
@@ -79,10 +79,16 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
           <DropdownMenuSeparator />
           {/* 管理员没有租户侧设置页，只需要改密码；普通用户两者都要 */}
           {!isAdmin && (
-            <DropdownMenuItem onClick={() => navigate('/app/settings')}>
-              <UserIcon />
-              账号设置
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem onClick={() => navigate('/app/account')}>
+                <Crown />
+                我的账户
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate('/app/settings')}>
+                <UserIcon />
+                账号设置
+              </DropdownMenuItem>
+            </>
           )}
           <DropdownMenuItem onClick={() => setPwOpen(true)}>
             <KeyRound />

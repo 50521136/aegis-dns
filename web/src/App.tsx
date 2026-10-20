@@ -15,6 +15,7 @@ import Register from '@/pages/Register'
 import ForgotPassword from '@/pages/ForgotPassword'
 import Dashboard from '@/pages/Dashboard'
 import DnsSetup from '@/pages/DnsSetup'
+import Account from '@/pages/Account'
 import Rules from '@/pages/Rules'
 import Subscriptions from '@/pages/Subscriptions'
 import QueryLog from '@/pages/QueryLog'
@@ -108,6 +109,7 @@ export default function App() {
                     <Route element={<UserOnlyRoute />}>
                       <Route path="/app" element={<Dashboard />} />
                       <Route path="/app/setup" element={<DnsSetup />} />
+                      <Route path="/app/account" element={<Account />} />
                       <Route path="/app/rules" element={<Rules />} />
                       <Route path="/app/subscriptions" element={<Subscriptions />} />
                       <Route path="/app/logs" element={<QueryLog />} />

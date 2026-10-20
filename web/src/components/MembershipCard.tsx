@@ -52,7 +52,27 @@ export function MembershipCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="overflow-hidden rounded-xl border border-border">
+        {/* 三列表格在 390px 上会把「自定义规则」和「当前 200」都挤成两行。
+            窄屏改成「标题 + 当前值」一行，下面并排两个配额胶囊；
+            宽屏才用真正的三列表格。 */}
+        <div className="space-y-2 sm:hidden">
+          {rows.map((r) => (
+            <div key={r.label} className="rounded-xl border border-border px-3 py-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-sm">{r.label}</span>
+                <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                  当前 {r.mine === 0 ? '不限' : formatNumber(r.mine)}
+                </span>
+              </div>
+              <div className="mt-1.5 grid grid-cols-2 gap-2">
+                <Pill label="普通用户" value={r.free === 0 ? '不限' : formatNumber(r.free)} />
+                <Pill label="会员" value={r.vip === 0 ? '不限' : formatNumber(r.vip)} highlight />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="hidden overflow-hidden rounded-xl border border-border sm:block">
           <div className="grid grid-cols-3 gap-px bg-border text-xs">
             <div className="bg-muted/40 px-3 py-1.5 font-medium">配额项</div>
             <div className="bg-muted/40 px-3 py-1.5 font-medium">普通用户</div>
@@ -60,9 +80,9 @@ export function MembershipCard() {
           </div>
           {rows.map((r) => (
             <div key={r.label} className="grid grid-cols-3 gap-px border-t border-border bg-border text-sm">
-              <div className="flex items-center justify-between bg-background px-3 py-1.5">
-                <span>{r.label}</span>
-                <span className="font-mono text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 bg-background px-3 py-1.5">
+                <span className="whitespace-nowrap">{r.label}</span>
+                <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
                   当前 {r.mine === 0 ? '不限' : formatNumber(r.mine)}
                 </span>
               </div>
@@ -82,5 +102,20 @@ export function MembershipCard() {
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+/** Pill 是窄屏下的单档配额小方块 */
+function Pill({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div
+      className={cn(
+        'rounded-lg px-2 py-1 text-center',
+        highlight ? 'bg-primary/10' : 'bg-muted/40',
+      )}
+    >
+      <p className="text-[10px] text-muted-foreground">{label}</p>
+      <p className={cn('font-mono text-sm', highlight && 'text-primary')}>{value}</p>
+    </div>
   )
 }

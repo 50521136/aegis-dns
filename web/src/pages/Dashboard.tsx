@@ -43,9 +43,6 @@ import { ErrorState } from '@/components/ErrorState'
 import { EmptyState } from '@/components/EmptyState'
 import { errorMessage } from '@/api/client'
 import { formatCompact, formatNumber, formatPercent } from '@/lib/format'
-import { MembershipCard } from '@/components/MembershipCard'
-import { InviteCard } from '@/components/InviteCard'
-import { CheckinCard } from '@/components/CheckinCard'
 
 function formatTs(ts: string | number): string {
   const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
@@ -143,15 +140,7 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
         }
       />
 
-      {/* 管理员没有会员概念，只有普通用户看到 */}
-      {!isAdmin && <MembershipCard />}
-      {/* 签到与拉新并排：两个都是「每天来一趟」的钩子 */}
-      {!isAdmin && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <CheckinCard />
-          <InviteCard />
-        </div>
-      )}
+
 
       {/* 统计卡：1 -> 2 -> 4 列 */}
       {summary.isError ? (
@@ -161,7 +150,7 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
           onRetry={() => summary.refetch()}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
           {summary.isLoading
             ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[132px] rounded-2xl" />)
             : (

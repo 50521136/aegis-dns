@@ -7,6 +7,7 @@ import {
   MessageSquareWarning,
   ScrollText,
   Settings,
+  Crown,
   Shield,
   SlidersHorizontal,
   Users,
@@ -35,6 +36,8 @@ export const navItems: NavItem[] = [
   // ── 租户功能（管理员看不到）──
   { to: '/app', label: '总览', icon: LayoutDashboard, mobile: true, end: true, userOnly: true, group: 'main' },
   { to: '/app/setup', label: '我的 DNS', icon: BookOpen, mobile: true, userOnly: true, group: 'main' },
+  // 会员/签到/邀请从总览挪到这里：它们是低频操作，堆在总览会把统计数据顶出首屏
+  { to: '/app/account', label: '我的账户', icon: Crown, userOnly: true, group: 'main' },
   { to: '/app/rules', label: '规则', icon: ListFilter, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/subscriptions', label: '订阅', icon: Shield, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/logs', label: '查询日志', icon: ScrollText, userOnly: true, group: 'main' },

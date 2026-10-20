@@ -74,7 +74,7 @@ export default function Landing() {
   return (
     <div className="mx-auto w-full max-w-6xl px-4 md:px-6">
       {/* Hero */}
-      <section className="flex flex-col items-center py-16 text-center md:py-24">
+      <section className="flex flex-col items-center pb-10 pt-16 text-center md:pb-12 md:pt-24">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
