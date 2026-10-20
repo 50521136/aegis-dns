@@ -7,9 +7,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -34,6 +37,11 @@ func main() {
 		showVersion = flag.Bool("version", false, "打印版本并退出")
 		checkOnly   = flag.Bool("check", false, "只做启动前检查后退出")
 		genSecret   = flag.Bool("gen-secret", false, "生成一个 JWT 密钥并退出")
+		// 管理员密码找回：忘记密码时面板进不去、也没有任何接口能改回来。
+		// 参数是**用户名**，新密码从 stdin 读 —— 命令行参数会留在 ps 和
+		// shell 历史里，密码不该出现在那两个地方。
+		resetAdminPW = flag.String("reset-admin-password", "",
+			"重置指定管理员账号的密码（新密码从 stdin 读取），完成后退出")
 	)
 	flag.Parse()
 
@@ -42,6 +50,10 @@ func main() {
 	if *genSecret {
 		fmt.Println(auth.GenerateSecret())
 		return
+	}
+
+	if *resetAdminPW != "" {
+		os.Exit(runResetAdminPassword(*cfgPath, *resetAdminPW))
 	}
 
 	if *showVersion {
@@ -372,4 +384,71 @@ func newLogger(lc config.Log) *slog.Logger {
 	log := slog.New(h)
 	slog.SetDefault(log)
 	return log
+}
+
+// runResetAdminPassword 实现 -reset-admin-password。
+//
+// 新密码从 stdin 读一行，不走命令行参数：命令行会进 ps 输出和 shell 历史，
+// 而这里改的是最高权限账号的密码。
+func runResetAdminPassword(cfgPath, username string) int {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "配置加载失败:", err)
+		return 1
+	}
+
+	pw, err := readPasswordFromStdin()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "读取新密码失败:", err)
+		return 1
+	}
+	// 故意不设长度下限：这是逃生门，策略拦住的是「自己把自己锁在外面」。
+	// 但弱密码必须吼出来 —— 面板通常直接暴露在公网，admin/admin 这种
+	// 分分钟被扫到。
+	if len(pw) < 8 {
+		fmt.Fprintf(os.Stderr,
+			"警告：新密码只有 %d 位，面板若在公网上很容易被爆破。建议至少 12 位、混合大小写与数字。\n", len(pw))
+	}
+
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "生成密码哈希失败:", err)
+		return 1
+	}
+
+	ctx := context.Background()
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
+		return 1
+	}
+	defer st.Close()
+
+	uid, err := st.ResetAdminPassword(ctx, username, hash)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			fmt.Fprintf(os.Stderr, "没有找到管理员账号 %q\n", username)
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "重置失败:", err)
+		return 1
+	}
+
+	fmt.Printf("已重置管理员 %s 的密码（%s），该账号的全部登录会话已失效。\n", username, uid)
+	fmt.Println("请立即用新密码登录，并在「设置 → 安全」里改成强密码。")
+	return 0
+}
+
+// readPasswordFromStdin 读一行密码并去掉行尾换行。
+func readPasswordFromStdin() (string, error) {
+	rd := bufio.NewReader(os.Stdin)
+	line, err := rd.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	pw := strings.TrimRight(line, "\r\n")
+	if pw == "" {
+		return "", fmt.Errorf("stdin 没有内容")
+	}
+	return pw, nil
 }

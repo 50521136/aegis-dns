@@ -241,6 +241,35 @@ func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool,
 	return nil
 }
 
+// ResetAdminPassword 按用户名重置管理员密码。
+//
+// 存在的意义是「找回」：管理员密码一旦忘记，面板进不去、也没有任何接口
+// 能改回来，整套系统就锁死了。这是自建服务必须留的逃生门。
+//
+// 只允许 role = admin 的行被改：否则拿到这台机器 shell 的人可以顺手
+// 把任意普通用户的密码也换掉，而普通用户本该只能由管理员改。
+func (s *Store) ResetAdminPassword(ctx context.Context, username, hash string) (string, error) {
+	var uid string
+	err := s.read.QueryRowContext(ctx,
+		`SELECT id FROM users WHERE username = ? AND role = ?`, username, model.RoleAdmin).Scan(&uid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", fmt.Errorf("查询管理员失败: %w", err)
+	}
+	if _, err := s.write.ExecContext(ctx,
+		`UPDATE users SET password_hash = ? WHERE id = ?`, hash, uid); err != nil {
+		return "", fmt.Errorf("重置管理员密码失败: %w", err)
+	}
+	// 密码换了，旧的刷新令牌必须全部失效，否则已经拿到令牌的人还能继续用。
+	if _, err := s.write.ExecContext(ctx,
+		`DELETE FROM refresh_tokens WHERE user_id = ?`, uid); err != nil {
+		return "", fmt.Errorf("吊销旧令牌失败: %w", err)
+	}
+	return uid, nil
+}
+
 // UpdateUserPassword 更新密码哈希。
 func (s *Store) UpdateUserPassword(ctx context.Context, uid, hash string) error {
 	res, err := s.write.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, hash, uid)
