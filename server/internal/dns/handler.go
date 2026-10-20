@@ -34,6 +34,8 @@ type IdentifyHint struct {
 	// 用来判断「这次请求打的是裸域名还是子域名」—— 裸域名能否使用由
 	// 全局设置 AllowRootDomain 决定。
 	Host string
+	// Proto 是接入协议：udp | tcp | dot | doh。为空时按 RemoteAddr 的网络类型推断。
+	Proto string
 	// AltClientID 是次级线索，目前只有 DoH 会填：Host 首段不是合法 client_id
 	// 时（例如客户端只能访问 https://<域名>/dns-query/<client_id> 这种路径式
 	// 地址，此时 Host 是裸域名），用路径段兜底。
@@ -138,6 +140,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 // Handle 执行完整查询管线。
 func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint) {
 	start := time.Now()
+	// det 承载日志详情，贯穿整条管线逐步填充。
+	det := qdetail{Proto: protoOf(hint, w), ECS: ecsFrom(req)}
 
 	// Panic 保护：任何一个查询 panic 都不能让 dnsd 进程退出。
 	// 这是「DNS 可用性优先」的兜底（文档 4.2）。
@@ -250,7 +254,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 
 	// 特殊域名：本地回环、DoH 探针。
 	if resp, handled := h.specialDomain(req); handled {
-		h.record(user.UserID, q, "allowed", dns.RcodeToString[resp.Rcode], time.Since(start), w)
+		det.Answer = answerFrom(resp)
+		h.record(user.UserID, q, "allowed", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 		_ = w.WriteMsg(resp)
 		return
 	}
@@ -266,7 +271,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			// 表现就是查询超时（dig 会明确提示 "ID mismatch"）。
 			// 这个 bug 只在第二次查同一域名时才出现，所以极易漏测。
 			msg.Id = req.Id
-			h.record(user.UserID, q, "cached", dns.RcodeToString[msg.Rcode], time.Since(start), w)
+			det.Answer = answerFrom(msg)
+			h.record(user.UserID, q, "cached", dns.RcodeToString[msg.Rcode], time.Since(start), w, det)
 			_ = w.WriteMsg(msg)
 			return
 		}
@@ -281,12 +287,14 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			// 白名单：放行到上游，跳过后续拦截判断。
 		case rules.ActionBlock:
 			resp := buildBlockResponse(req, d.BlockingMode, d.CustomIP)
-			h.record(user.UserID, q, "blocked", dns.RcodeToString[resp.Rcode], time.Since(start), w)
+			det.Answer = answerFrom(resp)
+			h.record(user.UserID, q, "blocked", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 			_ = w.WriteMsg(resp)
 			return
 		case rules.ActionRewrite:
 			resp := rewriteResponse(req, decision.Rewrite)
-			h.record(user.UserID, q, "rewritten", dns.RcodeToString[resp.Rcode], time.Since(start), w)
+			det.Answer = answerFrom(resp)
+			h.record(user.UserID, q, "rewritten", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 			_ = w.WriteMsg(resp)
 			return
 		}
@@ -307,11 +315,12 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	resp, err := pool.Exchange(ctx, req)
+	resp, upSrc, err := pool.ExchangeWithSource(ctx, req)
+	det.Upstream = upSrc
 	if err != nil {
 		h.upstreamErrs.Add(1)
 		h.log.Warn("上游解析失败", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype], "err", err)
-		h.record(user.UserID, q, "upstream", "SERVFAIL", time.Since(start), w)
+		h.record(user.UserID, q, "upstream", "SERVFAIL", time.Since(start), w, det)
 		_ = w.WriteMsg(servfailResponse(req))
 		return
 	}
@@ -324,7 +333,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
 		cache.Put(key, resp, req)
 	}
-	h.record(user.UserID, q, "allowed", dns.RcodeToString[resp.Rcode], time.Since(start), w)
+	det.Answer = answerFrom(resp)
+	h.record(user.UserID, q, "allowed", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 	_ = w.WriteMsg(resp)
 }
 
@@ -417,7 +427,25 @@ func (h *Handler) allow(userID string, qps int) bool {
 }
 
 // record 记录一次统计。
-func (h *Handler) record(userID string, q dns.Question, action, rcode string, dur time.Duration, w dns.ResponseWriter) {
+// qdetail 是一条查询日志的补充信息。
+//
+// 列表页只显示 domain/action，这些字段只在「点开单条」时才看得到 ——
+// 但它们必须在解析时采集，事后没有任何地方能补回来。
+type qdetail struct {
+	Proto      string // udp|tcp|dot|doh
+	ECS        string // EDNS Client Subnet
+	Upstream   string // 实际应答的上游
+	Answer     string // 应答内容（截断）
+	ClientName string // 客户端备注名
+}
+
+// maxAnswerLen 是应答内容落库前的截断长度。
+//
+// 一条 A 记录几十字节，但 ANY 或大 TXT 能到几 KB；日志表按天增长，
+// 不截断会让库体积失控。详情面板也不需要完整应答。
+const maxAnswerLen = 512
+
+func (h *Handler) record(userID string, q dns.Question, action, rcode string, dur time.Duration, w dns.ResponseWriter, extra ...qdetail) {
 	if h.collector == nil {
 		return
 	}
@@ -425,15 +453,83 @@ func (h *Handler) record(userID string, q dns.Question, action, rcode string, du
 	if w != nil {
 		client = maskIP(remoteIP(w.RemoteAddr()))
 	}
+	domain := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+
+	var det qdetail
+	if len(extra) > 0 {
+		det = extra[0]
+	}
+	// 协议没显式给就按网络类型推断；DoT/DoH 都跑在 TCP 上，
+	// 只能由调用方（SNI/Host 那一层）标出来。
+	if det.Proto == "" && w != nil {
+		det.Proto = w.RemoteAddr().Network()
+	}
+	if len(det.Answer) > maxAnswerLen {
+		det.Answer = det.Answer[:maxAnswerLen] + "…"
+	}
+
 	h.collector.Record(stats.Event{
-		UserID:    userID,
-		Domain:    strings.ToLower(strings.TrimSuffix(q.Name, ".")),
-		QType:     dns.TypeToString[q.Qtype],
-		RCode:     rcode,
-		Action:    action,
-		Client:    client,
-		LatencyMS: dur.Milliseconds(),
+		UserID:     userID,
+		Domain:     domain,
+		QType:      dns.TypeToString[q.Qtype],
+		RCode:      rcode,
+		Action:     action,
+		Client:     client,
+		LatencyMS:  dur.Milliseconds(),
+		Proto:      det.Proto,
+		ECS:        det.ECS,
+		Upstream:   det.Upstream,
+		Answer:     det.Answer,
+		Tracker:    matchTracker(domain),
+		ClientName: det.ClientName,
 	})
+}
+
+// ecsFrom 提取 EDNS Client Subnet 选项，形如 "1.2.3.0/24"。
+func ecsFrom(req *dns.Msg) string {
+	if req == nil {
+		return ""
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return ""
+	}
+	for _, o := range opt.Option {
+		if sub, ok := o.(*dns.EDNS0_SUBNET); ok {
+			return sub.Address.String() + "/" + itoa(int(sub.SourceNetmask))
+		}
+	}
+	return ""
+}
+
+// answerFrom 把应答记录压成一行，供详情面板显示。
+func answerFrom(resp *dns.Msg) string {
+	if resp == nil || len(resp.Answer) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(resp.Answer))
+	for i, rr := range resp.Answer {
+		if i >= 8 {
+			parts = append(parts, "…")
+			break
+		}
+		parts = append(parts, rr.String())
+	}
+	return strings.Join(parts, "\n")
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [8]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
 }
 
 // Metrics 返回 dnsd 的运行指标。
@@ -509,6 +605,29 @@ func ednsClientID(req *dns.Msg) string {
 		if v != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+// protoOf 判断接入协议。
+//
+// DoT 与 DoH 都跑在 TCP 上，光看 RemoteAddr 只能得到 tcp ——
+// 必须靠 identify 阶段标出来的线索来源区分：SNI 是 DoT，
+// Host/路径是 DoH（面板、移动端配置都走 DoH）。
+func protoOf(hint *IdentifyHint, w dns.ResponseWriter) string {
+	if hint != nil {
+		if hint.Proto != "" {
+			return hint.Proto
+		}
+		switch hint.Source {
+		case "sni":
+			return "dot"
+		case "host", "path":
+			return "doh"
+		}
+	}
+	if w != nil {
+		return w.RemoteAddr().Network()
 	}
 	return ""
 }

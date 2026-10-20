@@ -6,6 +6,8 @@ import {
   Search,
 } from 'lucide-react'
 import { getQueryLog } from '@/api/stats'
+import type { QueryLogItem } from '@/api/types'
+import { QueryLogDetail } from '@/components/QueryLogDetail'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -41,6 +43,8 @@ const toneClass = {
 
 export default function QueryLog() {
   const [page, setPage] = useState(1)
+  // 点开的那一条；null 表示弹窗关闭
+  const [selected, setSelected] = useState<QueryLogItem | null>(null)
   const [domainInput, setDomainInput] = useState('')
   const [domain, setDomain] = useState('')
   const [action, setAction] = useState('all')
@@ -150,7 +154,11 @@ export default function QueryLog() {
                 {items.map((row) => {
                   const meta = ACTION_META[row.action] ?? { label: row.action, variant: 'default' as const }
                   return (
-                    <TableRow key={row.id}>
+                    <TableRow
+                      key={row.id}
+                      className="cursor-pointer hover:bg-muted/40"
+                      onClick={() => setSelected(row)}
+                    >
                       <TableCell className="text-xs text-muted-foreground tabular-nums">
                         {formatDateTime(row.ts)}
                       </TableCell>
@@ -209,6 +217,9 @@ export default function QueryLog() {
           />
         </>
       )}
+
+      {/* 单条详情：请求 / 响应 / 客户端 / 操作 */}
+      <QueryLogDetail row={selected} onClose={() => setSelected(null)} />
     </div>
   )
 }

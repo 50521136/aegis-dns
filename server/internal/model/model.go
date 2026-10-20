@@ -349,4 +349,12 @@ type QueryLogRow struct {
 	Action    string `json:"action"`
 	Client    string `json:"client"`
 	LatencyMS int64  `json:"latency_ms"`
+	// 详情字段：列表页用不到，点开单条时才需要。
+	// 老记录这些列是空的，前端按空处理即可。
+	Proto      string `json:"proto,omitempty"`       // udp|tcp|dot|doh
+	ECS        string `json:"ecs,omitempty"`         // EDNS Client Subnet
+	Upstream   string `json:"upstream,omitempty"`    // 实际应答的上游
+	Answer     string `json:"answer,omitempty"`      // 应答内容（截断）
+	Tracker    string `json:"tracker,omitempty"`     // 命中的已知追踪器
+	ClientName string `json:"client_name,omitempty"` // 客户端备注名
 }

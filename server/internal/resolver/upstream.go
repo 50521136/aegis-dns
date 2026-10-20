@@ -125,24 +125,35 @@ const HedgeDelay = 700 * time.Millisecond
 // 不用「主上游等满 3s 超时再切」的原因：那会让每一次查询在主上游故障时
 // 都白等 3 秒，客户端侧表现为整体解析变慢甚至超时。
 func (p *Pool) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	resp, _, err := p.ExchangeWithSource(ctx, req)
+	return resp, err
+}
+
+// ExchangeWithSource 与 Exchange 相同，额外返回实际应答的上游地址。
+//
+// 多上游竞速时「到底是谁答的」只能在这里拿到 —— 出问题要判断是主上游
+// 挂了还是 fallback 在顶，日志里没有这个信息就只能靠猜。
+func (p *Pool) ExchangeWithSource(ctx context.Context, req *dns.Msg) (*dns.Msg, string, error) {
 	if p == nil || len(p.ups) == 0 {
-		return nil, errors.New("上游池为空")
+		return nil, "", errors.New("上游池为空")
 	}
 	p.mu.RLock()
 	closed := p.closed
 	ups := p.ups
 	p.mu.RUnlock()
 	if closed {
-		return nil, errors.New("上游池已关闭")
+		return nil, "", errors.New("上游池已关闭")
 	}
 
 	// 单个上游：直接查，没有可竞速的对象。
 	if len(ups) == 1 {
-		return p.exchangeOne(ctx, ups[0], req)
+		resp, err := p.exchangeOne(ctx, ups[0], req)
+		return resp, ups[0].Address(), err
 	}
 
 	type result struct {
 		resp *dns.Msg
+		src  string
 		err  error
 	}
 	raceCtx, cancel := context.WithCancel(ctx)
@@ -155,10 +166,10 @@ func (p *Pool) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	launch := func(u upstream.Upstream) {
 		launched++
 		pending++
-		go func() {
+		go func(u upstream.Upstream) {
 			r, e := p.exchangeOne(raceCtx, u, req)
-			ch <- result{r, e}
-		}()
+			ch <- result{r, u.Address(), e}
+		}(u)
 	}
 	launchRemaining := func() {
 		for launched < len(ups) {
@@ -176,7 +187,7 @@ func (p *Pool) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 
 		case <-hedge.C:
 			if !hedged {
@@ -188,7 +199,7 @@ func (p *Pool) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 			pending--
 			if r.err == nil && r.resp != nil {
 				cancel() // 拿到结果立刻取消其余在途请求
-				return r.resp, nil
+				return r.resp, r.src, nil
 			}
 			if r.err != nil {
 				lastErr = r.err
@@ -202,7 +213,7 @@ func (p *Pool) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 				if lastErr == nil {
 					lastErr = errors.New("所有上游均失败")
 				}
-				return nil, lastErr
+				return nil, "", lastErr
 			}
 		}
 	}

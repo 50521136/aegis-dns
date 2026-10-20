@@ -203,6 +203,18 @@ export interface QueryLogItem {
   action: QueryAction | string
   client: string
   latency_ms: number
+  /** 接入协议：udp|tcp|dot|doh（老记录为空） */
+  proto?: string
+  /** EDNS Client Subnet */
+  ecs?: string
+  /** 实际应答的上游 */
+  upstream?: string
+  /** 应答内容（已截断） */
+  answer?: string
+  /** 命中的已知追踪器 */
+  tracker?: string
+  /** 客户端备注名 */
+  client_name?: string
 }
 
 export interface QueryLogResponse {

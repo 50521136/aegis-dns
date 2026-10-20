@@ -623,6 +623,53 @@ echo "$SET2" | grep -q '"proxy_enabled":false' && ok "开关能关" || bad "开�
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"proxy_url":"","proxy_enabled":false}' >/dev/null
 
+hdr "查询日志详情字段"
+# 详情弹窗要展示协议/ECS/上游/应答/追踪器 —— 这些只在解析时能采集，
+# 事后补不回来。老记录允许为空，但新记录必须有。
+# 重新取一次 ID：前面的「自定义接入 ID」用例又换过一次，
+# 用旧值会命中「未知 client_id 直接拒绝」，日志记在空用户下，
+# 自然查不到 —— 测出来的不是详情字段有没有落库。
+DET_CID=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+echo "  当前接入 ID: $DET_CID"
+echo "  探测 doubleclick.net: $($PROBE dot 127.0.0.1:18853 doubleclick.net A --sni "$DET_CID.dns.e2e.local" --insecure 2>&1 | tail -1)"
+echo "  探测 detail-probe:    $($PROBE dot 127.0.0.1:18853 detail-probe.example.com A --sni "$DET_CID.dns.e2e.local" --insecure 2>&1 | tail -1)"
+sleep 16   # 等统计落库（间隔 10s，留一点余量）
+QL=$(curl -fsS "$API/stats/querylog?page=1&page_size=20" -H "Authorization: Bearer $TOKEN")
+# 用 python 解析而不是 grep：JSON 里 "proto": "dot" 带空格，
+# 写死 '"proto":"dot"' 会永远匹配不上，测出来的失败是假的。
+python3 - "$QL" <<'PYEOF'
+import json, sys
+d = json.loads(sys.argv[1])
+rows = {it.get("domain"): it for it in d.get("items", [])}
+
+def check(cond, okmsg, badmsg):
+    # 返回失败计数：成功返回 0，失败返回 1。
+    # 之前这里 return cond，于是「全过」也会把 fails 累加成正数，退出码反了。
+    print(("  \u2705 " if cond else "  \u274c ") + (okmsg if cond else badmsg))
+    return 0 if cond else 1
+
+fails = 0
+probe = rows.get("detail-probe.example.com")
+if probe is None:
+    fails += check(False, "", "查不到刚解析的日志（统计可能没落库）")
+else:
+    print("  \u2705 新日志可查到")
+    fails += check(probe.get("proto") == "dot", "记录了接入协议（dot）", "proto 不对: %r" % probe.get("proto"))
+    fails += check(bool(probe.get("upstream")), "记录了应答上游", "upstream 缺失")
+
+# answer 要用一个真有应答记录的域名验：detail-probe 本身无应答，
+# 拿它断言 answer 非空是测错了对象。
+trk = rows.get("doubleclick.net")
+if trk is None:
+    fails += check(False, "", "查不到 doubleclick.net 的日志")
+else:
+    fails += check(bool(trk.get("answer")), "记录了应答内容", "answer 缺失")
+    fails += check(trk.get("tracker") == "doubleclick.net", "识别出已知追踪器", "追踪器未识别: %r" % trk.get("tracker"))
+
+sys.exit(1 if fails else 0)
+PYEOF
+if [[ $? -eq 0 ]]; then ok "日志详情字段齐全"; else bad "日志详情字段有缺失"; fi
+
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——
 # 真实 index.html 开头是一段内联主题脚本，assets/ 引用在后面，

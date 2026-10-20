@@ -141,6 +141,24 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	sort.Strings(names)
 
+	// 迁移编号必须唯一。
+	//
+	// 版本号是单个整数且按 `ver <= currentVer` 跳过，所以两个同号文件里
+	// 只有排在前面的会执行，后一个被**静默跳过** —— 直到某处用到它新增的
+	// 列才报「table xxx has no column named yyy」，而那时已经上线了。
+	// 这里直接拒绝启动，把问题留在开发阶段。
+	seen := make(map[int]string, len(names))
+	for _, name := range names {
+		ver, err := migrationVersion(name)
+		if err != nil {
+			return err
+		}
+		if prev, dup := seen[ver]; dup {
+			return fmt.Errorf("迁移编号重复：%s 与 %s 都是 %d，后一个会被静默跳过", prev, name, ver)
+		}
+		seen[ver] = name
+	}
+
 	current, _ := s.GetMeta(ctx, "schema_version")
 	currentVer, _ := strconv.Atoi(current)
 

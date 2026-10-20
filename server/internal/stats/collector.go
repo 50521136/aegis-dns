@@ -74,6 +74,13 @@ type Event struct {
 	Action    string // allowed | blocked | cached | rewritten | upstream
 	Client    string // 已脱敏的客户端标识
 	LatencyMS int64
+	// 以下为日志详情，列表页不展示
+	Proto      string
+	ECS        string
+	Upstream   string
+	Answer     string
+	Tracker    string
+	ClientName string
 }
 
 // New 创建一个收集器。
@@ -154,14 +161,20 @@ func (c *Collector) Record(ev Event) {
 	// 查询日志走独立的环形缓冲，且受开关控制。
 	if c.enabled.Load() && ev.Domain != "" {
 		c.ring.push(model.QueryLogRow{
-			UserID:    ev.UserID,
-			TS:        time.Now().Unix(),
-			Domain:    ev.Domain,
-			QType:     ev.QType,
-			RCode:     ev.RCode,
-			Action:    ev.Action,
-			Client:    ev.Client,
-			LatencyMS: ev.LatencyMS,
+			UserID:     ev.UserID,
+			TS:         time.Now().Unix(),
+			Domain:     ev.Domain,
+			QType:      ev.QType,
+			RCode:      ev.RCode,
+			Action:     ev.Action,
+			Client:     ev.Client,
+			LatencyMS:  ev.LatencyMS,
+			Proto:      ev.Proto,
+			ECS:        ev.ECS,
+			Upstream:   ev.Upstream,
+			Answer:     ev.Answer,
+			Tracker:    ev.Tracker,
+			ClientName: ev.ClientName,
 		})
 	}
 }

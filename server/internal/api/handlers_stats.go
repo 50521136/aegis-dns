@@ -173,6 +173,14 @@ func (s *Server) handleQueryLog(w http.ResponseWriter, r *http.Request) {
 			"action":     l.Action,
 			"client":     l.Client,
 			"latency_ms": l.LatencyMS,
+			// 详情字段：列表页不显示，点开单条时才用到。
+			// 老记录这些列是空串，前端按空处理。
+			"proto":       l.Proto,
+			"ecs":         l.ECS,
+			"upstream":    l.Upstream,
+			"answer":      l.Answer,
+			"tracker":     l.Tracker,
+			"client_name": l.ClientName,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -267,6 +275,14 @@ func (s *Server) handleAdminQueryLog(w http.ResponseWriter, r *http.Request) {
 			"action":     l.Action,
 			"client":     l.Client,
 			"latency_ms": l.LatencyMS,
+			// 详情字段：列表页不显示，点开单条时才用到。
+			// 老记录这些列是空串，前端按空处理。
+			"proto":       l.Proto,
+			"ecs":         l.ECS,
+			"upstream":    l.Upstream,
+			"answer":      l.Answer,
+			"tracker":     l.Tracker,
+			"client_name": l.ClientName,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
