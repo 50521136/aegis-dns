@@ -512,7 +512,7 @@ func (s *Server) handleTestUpstream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	pool, err := resolver.NewPool([]string{up}, bootstrap)
+	pool, err := resolver.NewPoolForTest([]string{up}, bootstrap)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": false, "upstream": up, "error": "上游不可用: " + err.Error(),

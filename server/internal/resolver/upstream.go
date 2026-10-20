@@ -27,7 +27,10 @@ const PerUpstreamTimeout = 3 * time.Second
 type Pool struct {
 	addrs []string
 	ups   []upstream.Upstream
-	mu    sync.RWMutex
+	// timeout 是单次上游交换的超时。查询路径用 PerUpstreamTimeout；
+	// 诊断（管理后台的上游自测）要更长，见 NewPoolForTest。
+	timeout time.Duration
+	mu      sync.RWMutex
 	// closed 标记池是否已关闭（Registry 热更新时会替换掉旧池）。
 	closed bool
 }
@@ -37,8 +40,22 @@ type Pool struct {
 // 地址支持 "1.1.1.1"、"udp://1.1.1.1:53"、"tcp://..."、"tls://dns.google:853"、
 // "https://dns.google/dns-query" —— 由 dnsproxy 的 upstream 包统一解析。
 func NewPool(addrs []string, bootstrap []string) (*Pool, error) {
+	return newPool(addrs, bootstrap, PerUpstreamTimeout)
+}
+
+// NewPoolForTest 创建一个用于连通性诊断的池，单上游超时放宽到 10 秒。
+//
+// 为什么不能沿用 3 秒：DoH/DoT 的首次交换包含 TLS 握手 + 证书校验，
+// 跨境链路上经常超过 3 秒。查询路径上 3 秒是对的（有缓存、有并发竞速、
+// 超时要尽快回退），但诊断场景用它会把「慢但能用」误报成「不可用」——
+// 实测 AliDNS 的 DoH 在 3 秒超时下报失败，而线上查询一直是通的。
+func NewPoolForTest(addrs []string, bootstrap []string) (*Pool, error) {
+	return newPool(addrs, bootstrap, 10*time.Second)
+}
+
+func newPool(addrs []string, bootstrap []string, timeout time.Duration) (*Pool, error) {
 	opts := &upstream.Options{
-		Timeout: PerUpstreamTimeout,
+		Timeout: timeout,
 	}
 	// 引导解析器：DoH/DoT 上游要先解析主机名才能连。
 	// 不给的话 dnsproxy 会走系统解析器，容器/最小化系统里常常没有可用解析器，
@@ -46,7 +63,7 @@ func NewPool(addrs []string, bootstrap []string) (*Pool, error) {
 	if br := staticBootstrap(bootstrap); br != nil {
 		opts.Bootstrap = br
 	}
-	p := &Pool{addrs: normalizeAddrs(addrs)}
+	p := &Pool{addrs: normalizeAddrs(addrs), timeout: timeout}
 	for _, a := range p.addrs {
 		u, err := upstream.AddressToUpstream(a, opts)
 		if err != nil {
@@ -196,7 +213,11 @@ func (p *Pool) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 // dnsproxy v0.86 的 Upstream.Exchange 接受 context，因此超时直接交给它处理，
 // 不需要再套一层 goroutine + select（那会留下无法回收的 goroutine）。
 func (p *Pool) exchangeOne(ctx context.Context, u upstream.Upstream, req *dns.Msg) (*dns.Msg, error) {
-	ctx, cancel := context.WithTimeout(ctx, PerUpstreamTimeout)
+	tmo := p.timeout
+	if tmo <= 0 {
+		tmo = PerUpstreamTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, tmo)
 	defer cancel()
 
 	// 复制一份请求：并发竞速时多个 goroutine 共用同一个 *dns.Msg
