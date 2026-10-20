@@ -90,13 +90,7 @@ func (m *Manager) loadLocked() error {
 	cert.Leaf = leaf
 
 	fp := sha256.Sum256(cert.Certificate[0])
-	hexFP := strings.ToUpper(hex.EncodeToString(fp[:]))
-	// 转成 AA:BB:CC... 便于人眼比对与客户端粘贴。
-	var parts []string
-	for i := 0; i < len(hexFP); i += 2 {
-		parts = append(parts, hexFP[i:i+2])
-	}
-	formatted := strings.Join(parts, ":")
+	formatted := formatFingerprint(fp)
 
 	m.cert.Store(&cert)
 	m.fingerprint.Store(&formatted)
@@ -158,7 +152,8 @@ func (m *Manager) generateSelfSigned() error {
 
 	fp := sha256.Sum256(cert.Certificate[0])
 	m.cert.Store(&cert)
-	s := strings.ToUpper(hex.EncodeToString(fp[:]))
+	// 与正式证书路径保持同一格式，否则同一个页面的指纹形态会随部署方式变化。
+	s := formatFingerprint(fp)
 	m.fingerprint.Store(&s)
 	if leaf != nil {
 		m.notAfter.Store(leaf.NotAfter.Unix())
@@ -170,6 +165,20 @@ func (m *Manager) generateSelfSigned() error {
 func (m *Manager) Available() bool { return m.cert.Load() != nil }
 
 // Fingerprint 返回叶子证书的 SHA-256 指纹（AA:BB:... 格式）。
+// formatFingerprint 把 SHA-256 摘要格式化成 AA:BB:CC:… 便于人眼比对与客户端粘贴。
+//
+// 正式证书和 dev_tls 自签两条加载路径必须共用它。之前自签路径直接存了
+// 无分隔的十六进制串，导致控制台显示的指纹形态取决于部署方式 ——
+// 用户拿着两种形态去跟客户端 pinning 值比对会以为对不上。
+func formatFingerprint(sum [sha256.Size]byte) string {
+	hexFP := strings.ToUpper(hex.EncodeToString(sum[:]))
+	parts := make([]string, 0, len(hexFP)/2)
+	for i := 0; i < len(hexFP); i += 2 {
+		parts = append(parts, hexFP[i:i+2])
+	}
+	return strings.Join(parts, ":")
+}
+
 func (m *Manager) Fingerprint() string {
 	if p := m.fingerprint.Load(); p != nil {
 		return *p

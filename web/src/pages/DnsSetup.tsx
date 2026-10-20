@@ -119,7 +119,7 @@ export default function DnsSetup() {
               </CardHeader>
               <CardContent>
                 <Tabs defaultValue={data.platform_guides[0].platform}>
-                  <TabsList className="flex-wrap">
+                  <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:w-auto sm:flex-wrap">
                     {data.platform_guides.map((g) => {
                       const meta = platformMeta[g.platform.toLowerCase()]
                       return (
