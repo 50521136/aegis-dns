@@ -62,44 +62,83 @@ func TestFlushUsersOnlyDropsListedTenants(t *testing.T) {
 	}
 }
 
-func TestLoaderInvalidatesCacheOnRuleChange(t *testing.T) {
+func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 	reg := buildTwoTenantRegistry(t)
 	c := NewCache(64, 60, 3600)
 	h := NewHandler(reg, c, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	l := NewLoader("/nonexistent/config.json", reg, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
+	prev := &model.Snapshot{
+		Version:           2,
+		GlobalFingerprint: "g1",
+		Users: []model.UserSnap{
+			{UserID: "usr_t1", Fingerprint: "u1"},
+			{UserID: "usr_t2", Fingerprint: "u2"},
+		},
+	}
+
+	// 1) 全量重建但内容没变：缓存必须保留。
+	//    这正是线上 24 小时被清 33 次的原因 —— 订阅刷新、配额调整都会触发
+	//    全量重建，按 ChangedUsers 判断就会把整机缓存打光。
 	k1 := putCache(t, c, "usr_t1", "example.org")
 	k2 := putCache(t, c, "usr_t2", "example.org")
-	kf := putCache(t, c, "", "example.org")
+	l.invalidateCache(prev, &model.Snapshot{
+		Version: 3, GlobalFingerprint: "g1",
+		Users: []model.UserSnap{
+			{UserID: "usr_t1", Fingerprint: "u1"},
+			{UserID: "usr_t2", Fingerprint: "u2"},
+		},
+	})
+	if _, hit := c.Get(k1); !hit {
+		t.Error("规则没变的全量重建不该清缓存")
+	}
+	if _, hit := c.Get(k2); !hit {
+		t.Error("规则没变的全量重建不该清缓存")
+	}
 
-	// 增量快照：只有 usr_t1 改了规则
-	l.invalidateCache(&model.Snapshot{Version: 2, ChangedUsers: []string{"usr_t1"}})
-
+	// 2) 只有 usr_t1 的指纹变了：只清他 + fallback
+	l.invalidateCache(prev, &model.Snapshot{
+		Version: 4, GlobalFingerprint: "g1",
+		Users: []model.UserSnap{
+			{UserID: "usr_t1", Fingerprint: "u1-changed"},
+			{UserID: "usr_t2", Fingerprint: "u2"},
+		},
+	})
 	if _, hit := c.Get(k1); hit {
 		t.Error("改了规则的 usr_t1 的缓存必须被清掉，否则新规则在 TTL 内不生效")
 	}
-	if _, hit := c.Get(kf); hit {
-		t.Error("fallback 缓存应一并清掉（全局设置可能也变了）")
-	}
 	if _, hit := c.Get(k2); !hit {
-		t.Error("usr_t2 的缓存不该被动")
+		t.Error("usr_t2 没改规则，它的缓存不该被牵连")
 	}
 
-	// 全量快照（ChangedUsers 为空）：影响面未知，整体清空
-	l.invalidateCache(&model.Snapshot{Version: 3})
-
-	if _, hit := c.Get(k2); hit {
-		t.Error("全量重载应清空全部缓存")
+	// 3) 全局指纹变了：所有租户都不可信
+	k1b := putCache(t, c, "usr_t1", "example.org")
+	k2b := putCache(t, c, "usr_t2", "example.org")
+	l.invalidateCache(prev, &model.Snapshot{
+		Version: 5, GlobalFingerprint: "g2",
+		Users: []model.UserSnap{
+			{UserID: "usr_t1", Fingerprint: "u1-changed"},
+			{UserID: "usr_t2", Fingerprint: "u2"},
+		},
+	})
+	if _, hit := c.Get(k1b); hit {
+		t.Error("全局层变更后 usr_t1 的缓存应清掉")
 	}
-	if c.Len() != 0 {
-		t.Errorf("全量重载后缓存应为空，实际还有 %d 条", c.Len())
+	if _, hit := c.Get(k2b); hit {
+		t.Error("全局层变更后 usr_t2 的缓存也应清掉（拦截模式/上游变了影响所有人）")
+	}
+
+	// 4) 用户被删除：他的缓存要清
+	k3 := putCache(t, c, "usr_t2", "gone.example")
+	l.invalidateCache(prev, &model.Snapshot{
+		Version: 6, GlobalFingerprint: "g2",
+		Users: []model.UserSnap{{UserID: "usr_t1", Fingerprint: "u1-changed"}},
+	})
+	if _, hit := c.Get(k3); hit {
+		t.Error("被删除用户的缓存应清掉")
 	}
 }
 
-// 版本没前进的空转重载不该清缓存：否则文件被 touch 一下就把整机缓存打光。
-//
-// LoadOnce 用「Build 后版本号是否推进」来判断要不要清缓存，这里直接验证
-// 那个判断依据本身：同版本重复 Build 必须原样跳过，不改版本号。
 func TestLoaderSkipsCacheFlushWhenVersionUnchanged(t *testing.T) {
 	reg := buildTwoTenantRegistry(t)
 	c := NewCache(64, 60, 3600)

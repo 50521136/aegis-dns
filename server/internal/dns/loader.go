@@ -39,6 +39,9 @@ type Loader struct {
 	lastMTime time.Time
 	lastSize  int64
 	lastVer   int64
+	// prevSnap 是上一次成功应用的快照，用于按指纹判断哪些用户的缓存该失效。
+	// 只由 LoadOnce 单 goroutine 写，不需要额外加锁。
+	prevSnap *model.Snapshot
 	// onReload 在每次成功重载后回调（用于刷新 handler 的运行时参数）。
 	onReload func(*model.Snapshot)
 }
@@ -73,7 +76,7 @@ func (l *Loader) OnReload(fn func(*model.Snapshot)) { l.onReload = fn }
 // 无论哪种情况都要顺带清掉 fallback（UserID 为空）的条目：全局设置
 // （上游、拦截模式、缓存 TTL）变了会影响未识别请求的应答，而那些条目
 // 的键里没有租户 id，只清 ChangedUsers 是覆盖不到的。
-func (l *Loader) invalidateCache(snap *model.Snapshot) {
+func (l *Loader) invalidateCache(prev, snap *model.Snapshot) {
 	if l.handler == nil {
 		return
 	}
@@ -81,16 +84,51 @@ func (l *Loader) invalidateCache(snap *model.Snapshot) {
 	if c == nil {
 		return
 	}
-	if len(snap.ChangedUsers) == 0 {
+
+	// 第一次加载：没有旧快照可比，直接清空（此时缓存本来就是空的）。
+	if prev == nil {
 		c.Flush()
-		l.log.Info("配置全量重载，缓存已整体清空")
 		return
 	}
-	ids := make([]string, 0, len(snap.ChangedUsers)+1)
-	ids = append(ids, snap.ChangedUsers...)
-	ids = append(ids, "") // fallback
-	c.FlushUsers(ids)
-	l.log.Info("配置增量重载，已定向失效缓存", "users", len(snap.ChangedUsers))
+
+	// 全局层或影响应答的默认值变了：所有租户的缓存都不可信。
+	//
+	// 注意这里**不看** ChangedUsers：全量重建不等于规则变了。
+	// 一次订阅刷新、一次配额调整都会触发全量重建，而绝大多数用户的规则
+	// 一个字节都没动。按 ChangedUsers 判断的结果是缓存被反复整体清空
+	// （线上实测 24 小时 33 次），命中率从理论 86% 掉到 12%。
+	if prev.GlobalFingerprint != snap.GlobalFingerprint {
+		c.Flush()
+		l.log.Info("全局层或默认值变更，缓存已整体清空")
+		return
+	}
+
+	// 逐用户比对指纹，只清真的变了的那些。
+	prevFP := make(map[string]string, len(prev.Users))
+	for _, u := range prev.Users {
+		prevFP[u.UserID] = u.Fingerprint
+	}
+	changed := make([]string, 0, 8)
+	for _, u := range snap.Users {
+		if prevFP[u.UserID] != u.Fingerprint {
+			changed = append(changed, u.UserID)
+			continue
+		}
+		delete(prevFP, u.UserID)
+	}
+	// 删掉的用户也要清（他们的缓存条目不该继续占着）
+	for id := range prevFP {
+		changed = append(changed, id)
+	}
+
+	if len(changed) == 0 {
+		// 什么都没变：不清缓存。这是绝大多数重建的真实情况。
+		l.log.Debug("配置重建但规则无变化，保留缓存")
+		return
+	}
+	changed = append(changed, "") // fallback 的条目也要一起清
+	c.FlushUsers(changed)
+	l.log.Info("规则变更，已定向失效缓存", "users", len(changed)-1)
 }
 
 // LoadOnce 读取并应用一次快照。
@@ -117,8 +155,9 @@ func (l *Loader) LoadOnce() error {
 	// 这种情况下什么都没变，不该清缓存 —— 否则空转重载会把缓存打光。
 	// 用版本号是否推进来判断「这次真的应用了新配置」。
 	if l.registry.Version() != verBefore {
-		l.invalidateCache(snap)
+		l.invalidateCache(l.prevSnap, snap)
 	}
+	l.prevSnap = snap
 
 	if l.onReload != nil {
 		l.onReload(snap)

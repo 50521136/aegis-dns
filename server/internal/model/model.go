@@ -193,9 +193,21 @@ type UserSnap struct {
 	// MemberUntil 带进快照只用于展示与排障（例如自检横幅），
 	// 档位判定已经在 DailyQueries 里体现。
 	MemberUntil int64 `json:"member_until,omitempty"`
+
+	// Fingerprint 是该用户「影响解析结果」的内容指纹（规则 + 订阅条目 + 开关）。
+	//
+	// 用途：dnsd 判断这次重建到底有没有改到这个用户，没改就不必清他的缓存。
+	// 不带配额字段 —— 会员到期只影响每日上限，不影响任何已缓存的应答。
+	Fingerprint string `json:"fp,omitempty"`
 }
 
 // Snapshot 是 apid 写给 dnsd 的完整配置快照（data/runtime/config.json）。
+// Snapshot 是 apid 写给 dnsd 的完整配置快照。
+//
+// GlobalFingerprint 与 UserSnap.Fingerprint 一起用于缓存失效判定：
+// 「全量重建」不等于「规则变了」—— 一次订阅刷新、一次配额调整都会触发全量重建，
+// 但绝大多数用户的规则一个字节都没动。按 ChangedUsers 决定清不清缓存，
+// 结果就是缓存被反复整体清空（线上实测 24 小时 33 次），命中率从理论 86% 掉到 12%。
 type Snapshot struct {
 	Version     int64     `json:"version"`
 	Schema      int       `json:"schema"`
@@ -203,6 +215,9 @@ type Snapshot struct {
 	Defaults    Defaults  `json:"defaults"`
 	// Global 是全局规则层，由管理员的 is_global 条目压平而成。
 	Global GlobalSnap `json:"global"`
+	// GlobalFingerprint 是全局层（全局规则/订阅 + 影响应答的默认值）的指纹。
+	// 它变了才需要整体清缓存。
+	GlobalFingerprint string `json:"global_fp,omitempty"`
 	// ChangedUsers 非空时表示增量快照：dnsd 只重建这些用户的 RuleSet，
 	// 其余复用旧对象。为空表示全量。
 	ChangedUsers []string   `json:"changed_users,omitempty"`

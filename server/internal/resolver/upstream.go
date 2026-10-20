@@ -21,7 +21,14 @@ import (
 )
 
 // PerUpstreamTimeout 是单个上游的超时（文档 4.2）。
-const PerUpstreamTimeout = 3 * time.Second
+//
+// 3s → 1.5s：国内公共 DNS 的正常 RTT 在 5–60ms，1.5s 已经宽出两个数量级。
+// 原来的 3s 只在一种情况下有意义 —— 上游真的挂了，而此时用户已经等了 3 秒，
+// 再多给 1.5 秒也救不回来，只是把「慢」拖成「更慢」。
+//
+// 实测依据：华为云上 24 小时有 365 次查询各耗时 3701ms，
+// 正好等于 HedgeDelay(700) + 本值(3000) —— 就是两个上游双双超时的尾巴。
+const PerUpstreamTimeout = 1500 * time.Millisecond
 
 // Pool 是一组上游服务器。
 type Pool struct {
@@ -110,10 +117,13 @@ func (p *Pool) Addrs() []string { return p.addrs }
 
 // HedgeDelay 是「主上游多久没答就把其余上游并发拉起来」的阈值。
 //
-// 取 700ms 的理由：国内到公共 DNS 的正常 RTT 在 10–100ms，
-// 700ms 已经远超正常范围，说明主上游有问题；同时又远小于单上游超时（3s），
-// 所以故障切换的额外延迟几乎不可感知。
-const HedgeDelay = 700 * time.Millisecond
+// 取 300ms 的理由：国内到公共 DNS 的正常 RTT 在 5–60ms，
+// 300ms 已经是正常值的 5 倍以上，足以说明主上游有问题；
+// 同时又足够大，不会因为一次抖动就把备用上游白白拉起来。
+//
+// 原来是 700ms：故障时「主上游慢 + 对冲晚」叠加，最坏路径变成
+// 700 + 3000 = 3.7s。两个值一起收紧后最坏路径降到 300 + 1500 = 1.8s。
+const HedgeDelay = 300 * time.Millisecond
 
 // Exchange 向池内上游发起查询。
 //

@@ -10,9 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
@@ -126,6 +128,7 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 		},
 		Users: make([]model.UserSnap, 0, len(users)),
 	}
+	// 全局指纹在填充完全局层之后计算（见函数末尾）
 
 	for _, u := range users {
 		us := model.UserSnap{
@@ -146,9 +149,68 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 			us.SubBlock = subs[0]
 			us.SubAllow = subs[1]
 		}
+		// 指纹必须在规则与订阅填好之后算：只覆盖影响解析结果的内容，
+		// 不含配额与会员期 —— 那些不影响任何已缓存的应答，
+		// 算进来会让「加个会员天数」白白清掉这个用户的缓存。
+		us.Fingerprint = userFingerprint(u, us)
 		snap.Users = append(snap.Users, us)
 	}
+	snap.GlobalFingerprint = globalFingerprint(settings, snap)
 	return snap, nil
+}
+
+// userFingerprint 计算单个用户「影响解析结果」的指纹。
+//
+// 覆盖：规则集、订阅压平后的域名列表、启用状态、是否挂全局层。
+// 不覆盖：配额、会员期、上游自定义（上游改了会体现在 defaults/global 里，
+// 或者由快照版本推进触发重建，不需要在这里重复表达）。
+func userFingerprint(u *model.User, us model.UserSnap) string {
+	h := fnv.New64a()
+	fmt.Fprintf(h, "e=%t|g=%t|", us.Enabled, us.UseGlobalRules)
+	for _, r := range us.Rules {
+		fmt.Fprintf(h, "%s,%s,%s,%s,%t;", r.Kind, r.Pattern, r.Value, strings.Join(r.QTypes, "+"), r.Enabled)
+	}
+	// 订阅条目数量级是几十万，逐条格式化太慢；直接喂字节更快。
+	// 用长度分隔避免 ["ab","c"] 与 ["a","bc"] 撞成同一个哈希。
+	h.Write([]byte("|B|"))
+	for _, d := range us.SubBlock {
+		h.Write([]byte(d))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte("|A|"))
+	for _, d := range us.SubAllow {
+		h.Write([]byte(d))
+		h.Write([]byte{0})
+	}
+	_ = u
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+// globalFingerprint 计算全局层与「影响应答的默认值」的指纹。
+//
+// 这些内容一变，所有租户的缓存都得清：拦截模式决定拦截时返回什么 IP，
+// 上游决定应答内容，主域名开关决定裸域名能不能用。
+func globalFingerprint(settings *model.GlobalSettings, snap *model.Snapshot) string {
+	h := fnv.New64a()
+	d := snap.Defaults
+	fmt.Fprintf(h, "bm=%s|ip=%s|fp=%s|root=%t|qto=%d|cmin=%d|cmax=%d|up=%s|bs=%s|",
+		d.BlockingMode, d.CustomIP, d.FallbackPolicy, settings.AllowRootDomain,
+		d.QueryTimeout, d.CacheMinTTL, d.CacheMaxTTL,
+		strings.Join(d.Upstreams, ","), strings.Join(d.BootstrapDNS, ","))
+	for _, r := range snap.Global.Rules {
+		fmt.Fprintf(h, "%s,%s,%s,%s,%t;", r.Kind, r.Pattern, r.Value, strings.Join(r.QTypes, "+"), r.Enabled)
+	}
+	h.Write([]byte("|GB|"))
+	for _, x := range snap.Global.SubBlock {
+		h.Write([]byte(x))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte("|GA|"))
+	for _, x := range snap.Global.SubAllow {
+		h.Write([]byte(x))
+		h.Write([]byte{0})
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // Marshal 把快照序列化为 JSON。
