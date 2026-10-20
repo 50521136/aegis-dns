@@ -23,12 +23,15 @@ import {
   rebuildSnapshot,
   updateSettings,
   updateUser,
+  runCleanup,
+  type CleanupResult,
 } from '@/api/admin'
 import { errorMessage } from '@/api/client'
 import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
+import { UsersPanel } from './AdminUsersPanel'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -55,189 +58,6 @@ import { formatDateTime, formatNumber, formatUptime } from '@/lib/format'
 
 /* ---------- 用户管理 ---------- */
 
-function UsersPanel() {
-  const qc = useQueryClient()
-  const toast = useToast()
-  const [page, setPage] = useState(1)
-  const [searchInput, setSearchInput] = useState('')
-  const [q, setQ] = useState('')
-  const [pendingDelete, setPendingDelete] = useState<User | null>(null)
-  const [pageSize, setPageSize] = useState(20)
-
-  const usersQuery = useQuery({
-    queryKey: ['admin', 'users', page, pageSize, q],
-    queryFn: () => listUsers({ page, page_size: pageSize, q: q || undefined }),
-  })
-
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['admin', 'users'] })
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { enabled?: boolean; role?: 'admin' | 'user' } }) =>
-      updateUser(id, patch),
-    onSuccess: () => {
-      toast.success('用户已更新')
-      invalidate()
-    },
-    onError: (err) => toast.error('更新失败', errorMessage(err)),
-  })
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteUser(id),
-    onSuccess: () => {
-      toast.success('用户已删除')
-      setPendingDelete(null)
-      invalidate()
-    },
-    onError: (err) => toast.error('删除失败', errorMessage(err)),
-  })
-
-  const items = usersQuery.data?.items ?? []
-  const total = usersQuery.data?.total ?? 0
-
-  return (
-    <Card>
-      <CardHeader className="flex-row items-center justify-between">
-        <div className="space-y-1.5">
-          <CardTitle className="flex items-center gap-2">
-            <Users className="size-5 text-primary" />
-            用户管理
-          </CardTitle>
-          <CardDescription>启用 / 禁用账号、调整角色或删除用户。</CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  setQ(searchInput.trim())
-                  setPage(1)
-                }
-              }}
-              placeholder="搜索用户名或邮箱…"
-              className="pl-9"
-            />
-          </div>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setQ(searchInput.trim())
-              setPage(1)
-            }}
-          >
-            搜索
-          </Button>
-        </div>
-
-        {usersQuery.isError ? (
-          <ErrorState message={errorMessage(usersQuery.error)} onRetry={() => usersQuery.refetch()} />
-        ) : usersQuery.isLoading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 rounded-xl" />
-            ))}
-          </div>
-        ) : items.length === 0 ? (
-          <EmptyState icon={<Users className="size-6" />} title="没有找到用户" />
-        ) : (
-          <>
-            <div className="rounded-2xl border border-border/60">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>用户名</TableHead>
-                    <TableHead className="hidden md:table-cell">邮箱</TableHead>
-                    <TableHead className="hidden lg:table-cell">客户端 ID</TableHead>
-                    <TableHead className="w-28">角色</TableHead>
-                    <TableHead className="w-20">启用</TableHead>
-                    <TableHead className="hidden md:table-cell w-32">注册时间</TableHead>
-                    <TableHead className="w-16 text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((u) => (
-                    <TableRow key={u.id}>
-                      <TableCell className="font-medium">{u.username}</TableCell>
-                      <TableCell className="hidden md:table-cell text-sm text-muted-foreground">
-                        {u.email || '—'}
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        <code className="font-mono text-xs">{u.client_id}</code>
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={u.role}
-                          onValueChange={(v) => updateMutation.mutate({ id: u.id, patch: { role: v as 'admin' | 'user' } })}
-                        >
-                          <SelectTrigger className="h-8 w-24 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="user">用户</SelectItem>
-                            <SelectItem value="admin">管理员</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <Switch
-                          checked={u.enabled}
-                          onCheckedChange={(v) => updateMutation.mutate({ id: u.id, patch: { enabled: v } })}
-                          aria-label="启用"
-                        />
-                      </TableCell>
-                      <TableCell className="hidden md:table-cell text-xs text-muted-foreground">
-                        {formatDateTime(u.created_at)}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex justify-end">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            className="text-danger hover:bg-danger/10"
-                            onClick={() => setPendingDelete(u)}
-                            aria-label="删除"
-                          >
-                            <Trash2 />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              total={total}
-              onPageChange={setPage}
-              onPageSizeChange={setPageSize}
-            />
-          </>
-        )}
-      </CardContent>
-
-      <ConfirmDialog
-        open={Boolean(pendingDelete)}
-        onOpenChange={(o) => !o && setPendingDelete(null)}
-        title="删除用户"
-        description={
-          pendingDelete
-            ? `确定要删除用户「${pendingDelete.username}」吗？其规则、订阅与统计数据都会被清除。`
-            : ''
-        }
-        destructive
-        confirmText="删除"
-        loading={deleteMutation.isPending}
-        onConfirm={() => pendingDelete && deleteMutation.mutate(pendingDelete.id)}
-      />
-    </Card>
-  )
-}
 
 /* ---------- 全局设置 ---------- */
 
@@ -261,6 +81,17 @@ const settingsSchema = z.object({
   invite_code: z.string(),
   update_repo: z.string(),
   update_channel: z.enum(['stable', 'beta']),
+
+  allow_root_domain: z.boolean(),
+  stats_retention_days: z.coerce.number().int().min(0),
+  max_id_resets: z.coerce.number().int().min(0),
+  allow_user_rules: z.boolean(),
+  allow_user_subs: z.boolean(),
+  max_rules_per_user: z.coerce.number().int().min(0),
+  max_subs_per_user: z.coerce.number().int().min(0),
+  max_sub_entries: z.coerce.number().int().min(0),
+  max_rules_global: z.coerce.number().int().min(0),
+  max_subs_global: z.coerce.number().int().min(0),
 })
 
 type SettingsForm = z.infer<typeof settingsSchema>
@@ -408,6 +239,7 @@ function SettingsPanel() {
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <NumberField form={form} name="query_log_size" label="查询日志缓冲（条）" />
           <NumberField form={form} name="query_log_retention_days" label="日志保留（天）" />
+          <NumberField form={form} name="stats_retention_days" label="统计保留（天，0=不清理）" />
           <NumberField form={form} name="sub_interval_hours" label="订阅刷新间隔（小时）" />
           <div className="flex items-center justify-between rounded-xl border border-border bg-background px-4 py-3 sm:col-span-2 lg:col-span-3">
             <div>
@@ -419,6 +251,66 @@ function SettingsPanel() {
               onCheckedChange={(v) => form.setValue('enable_query_log', v)}
             />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>域名与接入</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">允许使用主域名</p>
+              <p className="text-xs text-muted-foreground">
+                开启后主域名本身也能解析（只套全局规则）；关闭则只认
+                &lt;用户ID&gt;.主域名 这种子域名
+              </p>
+            </div>
+            <Switch
+              checked={form.watch('allow_root_domain')}
+              onCheckedChange={(v) => form.setValue('allow_root_domain', v)}
+            />
+          </div>
+          <NumberField form={form} name="max_id_resets" label="用户自助重置 ID 次数（0=禁止）" />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>配额与租户开关</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <NumberField form={form} name="max_rules_per_user" label="每用户规则上限（0=不限）" />
+            <NumberField form={form} name="max_subs_per_user" label="每用户订阅上限（0=不限）" />
+            <NumberField form={form} name="max_sub_entries" label="单订阅条目上限" />
+            <NumberField form={form} name="max_rules_global" label="全局规则上限" />
+            <NumberField form={form} name="max_subs_global" label="全局订阅上限" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">允许用户加规则</p>
+                <p className="text-xs text-muted-foreground">关闭后普通用户不能新建个人规则</p>
+              </div>
+              <Switch
+                checked={form.watch('allow_user_rules')}
+                onCheckedChange={(v) => form.setValue('allow_user_rules', v)}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">允许用户加订阅</p>
+                <p className="text-xs text-muted-foreground">关闭后普通用户不能新建个人订阅</p>
+              </div>
+              <Switch
+                checked={form.watch('allow_user_subs')}
+                onCheckedChange={(v) => form.setValue('allow_user_subs', v)}
+              />
+            </div>
+          </div>
+          <CleanupButton />
         </CardContent>
       </Card>
 
@@ -739,5 +631,49 @@ function TrafficPanel() {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+/* ---------- 手动清理 ---------- */
+
+/**
+ * CleanupButton 立即执行一次日志与统计清理。
+ *
+ * 定时任务每天跑一次，这个按钮给「现在就想腾空间」用。
+ * 清理天数取上面保存的配置，所以改完保留天数要先保存再点。
+ */
+function CleanupButton() {
+  const toast = useToast()
+  const [result, setResult] = useState<CleanupResult | null>(null)
+
+  const m = useMutation({
+    mutationFn: runCleanup,
+    onSuccess: (r) => {
+      setResult(r)
+      toast.success(
+        '清理完成',
+        r.total > 0
+          ? `共删除 ${formatNumber(r.total)} 行，耗时 ${r.duration_ms}ms`
+          : '没有需要清理的数据',
+      )
+    },
+    onError: (err) => toast.error('清理失败', errorMessage(err)),
+  })
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium">立即清理过期数据</p>
+        <p className="text-xs text-muted-foreground">
+          {result
+            ? `上次删除 ${formatNumber(result.total)} 行（统计保留 ${result.stats_retention_days} 天 / 日志保留 ${result.log_retention_days} 天）`
+            : '按上面保存的保留天数清理统计与查询日志；定时任务每天自动跑一次'}
+        </p>
+      </div>
+      <Button variant="outline" size="sm" loading={m.isPending} onClick={() => m.mutate()}>
+        <Trash2 />
+        立即清理
+      </Button>
+    </div>
   )
 }

@@ -169,6 +169,12 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request, global bool)
 		writeError(w, http.StatusBadRequest, CodeInvalidRule, err.Error(), map[string]any{"input": req.Pattern})
 		return
 	}
+	if !global {
+		if err := s.checkUserFeature(r.Context(), u, "rules"); err != nil {
+			writeFeatureError(w, err)
+			return
+		}
+	}
 	if err := s.checkRuleQuota(r.Context(), u.ID, global, 1); err != nil {
 		writeQuotaError(w, err)
 		return
@@ -420,6 +426,12 @@ func (s *Server) importRulesScoped(w http.ResponseWriter, r *http.Request, globa
 	}
 	// 配额按本批实际要新增的条数检查，导入路径同样受限 ——
 	// 否则「逐条新建有配额、批量导入没有」就是一个明显的绕过口子。
+	if !global {
+		if err := s.checkUserFeature(r.Context(), u, "rules"); err != nil {
+			writeFeatureError(w, err)
+			return
+		}
+	}
 	if err := s.checkRuleQuota(r.Context(), u.ID, global, len(parsed)); err != nil {
 		writeQuotaError(w, err)
 		return

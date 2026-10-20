@@ -191,7 +191,7 @@ func (s *Server) handleUpdatePreferences(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	u := currentUser(r)
-	if err := s.store.UpdateUserFields(r.Context(), u.ID, nil, nil, nil, req.UseGlobalRules); err != nil {
+	if err := s.store.UpdateUserFields(r.Context(), u.ID, nil, nil, nil, req.UseGlobalRules, nil, nil); err != nil {
 		writeStoreError(w, err, "")
 		return
 	}

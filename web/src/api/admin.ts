@@ -21,7 +21,12 @@ export async function listUsers(params: AdminUserQuery = {}): Promise<AdminUserL
 
 export async function updateUser(
   id: string,
-  patch: { enabled?: boolean; role?: 'admin' | 'user' },
+  patch: {
+    enabled?: boolean
+    role?: 'admin' | 'user'
+    rules_enabled?: boolean
+    subs_enabled?: boolean
+  },
 ): Promise<User> {
   const { data } = await api.put<User>(`/admin/users/${id}`, patch)
   return data
@@ -60,5 +65,57 @@ export async function applyUpdate(
   component: 'apid' | 'dnsd' | 'all',
 ): Promise<UpdateApplyResult> {
   const { data } = await api.post<UpdateApplyResult>('/admin/update/apply', { component })
+  return data
+}
+
+/* ---------------- 用户批量与运维 ---------------- */
+
+export interface BulkDeleteResult {
+  deleted: number
+  skipped: number
+}
+
+export async function bulkDeleteUsers(ids: string[]): Promise<BulkDeleteResult> {
+  const { data } = await api.post<BulkDeleteResult>('/admin/users/bulk-delete', { ids })
+  return data
+}
+
+export async function resetUserClientID(
+  id: string,
+): Promise<{ id: string; username: string; client_id: string; old_client_id: string }> {
+  const { data } = await api.post(`/admin/users/${id}/reset-client-id`)
+  return data
+}
+
+export async function setUserPassword(id: string, password: string): Promise<void> {
+  await api.post(`/admin/users/${id}/password`, { password })
+}
+
+export interface UserUsage {
+  user_id: string
+  rules: number
+  subs: number
+}
+
+export interface UsersUsageResponse {
+  items: UserUsage[]
+  limits: { max_rules_per_user: number; max_subs_per_user: number }
+}
+
+export async function getUsersUsage(): Promise<UsersUsageResponse> {
+  const { data } = await api.get<UsersUsageResponse>('/admin/users/usage')
+  return data
+}
+
+export interface CleanupResult {
+  deleted: Record<string, number>
+  total: number
+  stats_retention_days: number
+  log_retention_days: number
+  duration_ms: number
+}
+
+export async function runCleanup(): Promise<CleanupResult> {
+  const { data } = await api.post<CleanupResult>('/admin/maintenance/cleanup', {})
   return data
 }

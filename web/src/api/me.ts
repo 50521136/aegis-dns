@@ -21,6 +21,26 @@ export async function getDnsConfig(): Promise<DnsConfig> {
  * 不能直接用 <a href> 指向接口：该路由要 Bearer 鉴权，浏览器直接跳转会拿到 401。
  * 所以走 axios 取 blob，再用临时 object URL 触发下载。
  */
+/** 自助重置 client_id 的结果：新地址 + 剩余次数 */
+export interface ResetClientIDResult {
+  client_id: string
+  old_client_id: string
+  used: number
+  limit: number
+  remaining: number
+  dns_config: DnsConfig
+}
+
+/**
+ * 重置自己的 client_id（接入地址）。
+ *
+ * 旧子域会立刻失效，所以这个操作是有次数上限的，用完只能找管理员。
+ */
+export async function resetMyClientID(): Promise<ResetClientIDResult> {
+  const { data } = await api.post<ResetClientIDResult>('/me/reset-client-id')
+  return data
+}
+
 export async function downloadMobileConfig(clientID: string): Promise<void> {
   const { data } = await api.get('/me/mobileconfig', { responseType: 'blob' })
   const url = URL.createObjectURL(data as Blob)

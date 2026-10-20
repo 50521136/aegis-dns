@@ -13,7 +13,7 @@ export function Sidebar() {
   const adminItems = items.filter((i) => i.group === 'admin')
 
   return (
-    <aside className="m-rail hairline-r hidden md:flex md:w-64 md:flex-col lg:w-64">
+    <aside className="m-rail hairline-r hidden md:sticky md:top-0 md:flex md:h-[100dvh] md:w-64 md:flex-col md:overflow-y-auto lg:w-64">
       <div className="flex h-16 items-center gap-2.5 px-6">
         <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-accent">
           <ShieldCheck className="size-5" />

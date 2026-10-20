@@ -225,7 +225,12 @@ func maintenanceLoop(ctx context.Context, st *store.Store, settings *modelSettin
 			}
 			// query_log 总量上限按「每条日志约 200 字节」估算，
 			// 默认 100 万条 ≈ 200MB，对小型部署足够。
-			rows, err := st.Cleanup(ctx, 90, s.LogRetentionD, 1000000)
+			// 统计保留天数取后台配置（0 = 不按时间清理，只受条数上限约束）。
+			statsRet := s.StatsRetentionD
+			if statsRet <= 0 {
+				statsRet = 0
+			}
+			rows, err := st.Cleanup(ctx, statsRet, s.LogRetentionD, 1000000)
 			if err != nil {
 				log.Warn("清理过期数据失败", "err", err)
 			} else {

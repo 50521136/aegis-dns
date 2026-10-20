@@ -13,18 +13,20 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, created_at`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, created_at`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
-	var enabled, useGlobal int
+	var enabled, useGlobal, rulesOn, subsOn int
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
-		&enabled, &useGlobal, &u.CreatedAt)
+		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	u.Enabled = enabled != 0
 	u.UseGlobalRules = useGlobal != 0
+	u.RulesEnabled = rulesOn != 0
+	u.SubsEnabled = subsOn != 0
 	return &u, nil
 }
 
@@ -50,12 +52,16 @@ func (s *Store) CreateUser(ctx context.Context, username, email, passwordHash, r
 			Enabled:      true,
 			// 默认叠加全局规则层，用户可在设置里自行关闭。
 			UseGlobalRules: true,
-			CreatedAt:      now,
+			// 新用户默认允许建规则与订阅；管理员可以单独关掉。
+			RulesEnabled: true,
+			SubsEnabled:  true,
+			CreatedAt:    now,
 		}
 		_, err := s.write.ExecContext(ctx,
-			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?)`,
+			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 			u.ID, u.Username, u.Email, u.PasswordHash, u.Role, u.ClientID,
-			boolInt(u.Enabled), boolInt(u.UseGlobalRules), u.CreatedAt)
+			boolInt(u.Enabled), boolInt(u.UseGlobalRules), u.IDResetCount,
+			boolInt(u.RulesEnabled), boolInt(u.SubsEnabled), u.CreatedAt)
 		if err == nil {
 			return u, nil
 		}
@@ -193,7 +199,7 @@ func (s *Store) ListUsersAll(ctx context.Context) ([]*model.User, error) {
 }
 
 // UpdateUserFields 更新用户的可变字段。传 nil 表示不改该字段。
-func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool, role *string, email *string, useGlobalRules *bool) error {
+func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool, role *string, email *string, useGlobalRules, rulesEnabled, subsEnabled *bool) error {
 	sets := []string{}
 	args := []any{}
 	if enabled != nil {
@@ -211,6 +217,14 @@ func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool,
 	if useGlobalRules != nil {
 		sets = append(sets, "use_global_rules = ?")
 		args = append(args, boolInt(*useGlobalRules))
+	}
+	if rulesEnabled != nil {
+		sets = append(sets, "rules_enabled = ?")
+		args = append(args, boolInt(*rulesEnabled))
+	}
+	if subsEnabled != nil {
+		sets = append(sets, "subs_enabled = ?")
+		args = append(args, boolInt(*subsEnabled))
 	}
 	if len(sets) == 0 {
 		return nil
@@ -320,4 +334,122 @@ func (s *Store) AllUserIPs(ctx context.Context) (map[string][]string, error) {
 		out[uid] = append(out[uid], cidr)
 	}
 	return out, rows.Err()
+}
+
+// ResetClientID 给用户换一个新的 client_id，并把重置次数 +1。
+//
+// 换 id 等于换掉接入地址：旧子域立刻失效，客户端需要重新配置。
+// 次数上限由全局设置控制，这里只负责执行和计数。
+func (s *Store) ResetClientID(ctx context.Context, uid string) (string, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		cid := id.NewClientID()
+		res, err := s.write.ExecContext(ctx,
+			`UPDATE users SET client_id = ?, id_reset_count = id_reset_count + 1 WHERE id = ?`,
+			cid, uid)
+		if err == nil {
+			if n, _ := res.RowsAffected(); n == 0 {
+				return "", ErrNotFound
+			}
+			return cid, nil
+		}
+		// client_id 撞车就换一个重试；其余错误直接返回
+		if isUniqueViolation(err, "users.client_id") {
+			continue
+		}
+		return "", fmt.Errorf("重置 client_id 失败: %w", err)
+	}
+	return "", fmt.Errorf("重置 client_id 失败: 多次冲突")
+}
+
+// BulkDeleteUsers 批量删除用户，返回实际删除数量。
+//
+// 放在一个事务里：删到一半失败会把已删的也回滚，避免管理员看到「删了 3 个报了错」
+// 却不知道到底删掉了几个。skipID 用于把操作者自己排除掉（不能把自己删了）。
+func (s *Store) BulkDeleteUsers(ctx context.Context, ids []string, skipID string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	deleted := 0
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		for _, uid := range ids {
+			if uid == "" || uid == skipID {
+				continue
+			}
+			res, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, uid)
+			if err != nil {
+				return fmt.Errorf("删除用户 %s 失败: %w", uid, err)
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				deleted++
+			}
+		}
+		return nil
+	})
+	return deleted, err
+}
+
+// UserUsage 是单个用户的规则/订阅占用。
+type UserUsage struct {
+	UserID string `json:"user_id"`
+	Rules  int    `json:"rules"`
+	Subs   int    `json:"subs"`
+}
+
+// RuleSubUsage 一次性统计所有用户的规则与订阅数量。
+//
+// 后台用户列表要显示「3/50 条规则」，逐个用户查会是 N+1；
+// 这里用两条 GROUP BY 拿到全量再拼，用户数上千也不会有压力。
+func (s *Store) RuleSubUsage(ctx context.Context) ([]UserUsage, error) {
+	usage := map[string]*UserUsage{}
+	get := func(uid string) *UserUsage {
+		if u, ok := usage[uid]; ok {
+			return u
+		}
+		u := &UserUsage{UserID: uid}
+		usage[uid] = u
+		return u
+	}
+
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT user_id, COUNT(*) FROM rules WHERE is_global = 0 GROUP BY user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("统计规则占用失败: %w", err)
+	}
+	for rows.Next() {
+		var uid string
+		var n int
+		if err := rows.Scan(&uid, &n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		get(uid).Rules = n
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err = s.read.QueryContext(ctx,
+		`SELECT user_id, COUNT(*) FROM subscriptions WHERE is_global = 0 GROUP BY user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("统计订阅占用失败: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid string
+		var n int
+		if err := rows.Scan(&uid, &n); err != nil {
+			return nil, err
+		}
+		get(uid).Subs = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]UserUsage, 0, len(usage))
+	for _, u := range usage {
+		out = append(out, *u)
+	}
+	return out, nil
 }

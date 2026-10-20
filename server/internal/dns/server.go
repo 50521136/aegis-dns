@@ -244,7 +244,7 @@ func (s *Server) handleDOTConn(ctx context.Context, raw net.Conn) {
 			return
 		}
 		w := &streamResponseWriter{conn: dnsConn, remote: raw.RemoteAddr(), local: raw.LocalAddr()}
-		s.handler.Handle(w, msg, &IdentifyHint{ClientID: clientID, Source: "sni"})
+		s.handler.Handle(w, msg, &IdentifyHint{ClientID: clientID, Source: "sni", Host: normalizeHost(sni)})
 	}
 }
 
@@ -414,6 +414,7 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 	s.handler.Handle(cap, msg, &IdentifyHint{
 		ClientID:    clientID,
 		Source:      source,
+		Host:        normalizeHost(host),
 		AltClientID: altID,
 		AltSource:   altSource,
 	})
@@ -474,4 +475,20 @@ func clientAddr(r *http.Request) net.Addr {
 	}
 	port, _ := strconv.Atoi(portStr)
 	return &net.TCPAddr{IP: ip, Port: port}
+}
+
+// normalizeHost 把主机名规整成小写、无端口、无尾点的形式。
+//
+// 裸域名判断要跟配置里的 Domain 直接比字符串，任何形态差异（大写、
+// 带端口、结尾的点）都会让比对失败，从而把裸域名误判成子域名放行。
+func normalizeHost(h string) string {
+	h = strings.ToLower(strings.TrimSpace(h))
+	h = strings.TrimSuffix(h, ".")
+	if i := strings.LastIndexByte(h, ':'); i > 0 && !strings.Contains(h, "]") {
+		// 去掉 :port；IPv6 字面量带方括号，不按冒号切
+		if _, err := strconv.Atoi(h[i+1:]); err == nil {
+			h = h[:i]
+		}
+	}
+	return h
 }

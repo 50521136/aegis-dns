@@ -302,20 +302,30 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionDays, maxLogRows int) (map[string]int64, error) {
 	out := map[string]int64{}
 	now := time.Now().Unix()
-	statCutoff := now - int64(retentionDays)*86400
-	logCutoff := now - int64(logRetentionDays)*86400
+
+	// retentionDays <= 0 表示「不按时间清理」。必须显式判断：
+	// 直接算 now - 0 得到的就是 now，会把全部历史数据删光。
+	type del struct {
+		name string
+		sql  string
+		args []any
+	}
+	var jobs []del
+	if retentionDays > 0 {
+		statCutoff := now - int64(retentionDays)*86400
+		jobs = append(jobs,
+			del{"query_rollup", `DELETE FROM query_rollup WHERE ts < ?`, []any{statCutoff}},
+			del{"top_domains", `DELETE FROM top_domains WHERE ts < ?`, []any{statCutoff}},
+		)
+	}
+	if logRetentionDays > 0 {
+		logCutoff := now - int64(logRetentionDays)*86400
+		jobs = append(jobs, del{"query_log", `DELETE FROM query_log WHERE ts < ?`, []any{logCutoff}})
+	}
+	jobs = append(jobs, del{"refresh_tokens", `DELETE FROM refresh_tokens WHERE expires_at < ?`, []any{now}})
 
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		for _, q := range []struct {
-			name string
-			sql  string
-			args []any
-		}{
-			{"query_rollup", `DELETE FROM query_rollup WHERE ts < ?`, []any{statCutoff}},
-			{"top_domains", `DELETE FROM top_domains WHERE ts < ?`, []any{statCutoff}},
-			{"query_log", `DELETE FROM query_log WHERE ts < ?`, []any{logCutoff}},
-			{"refresh_tokens", `DELETE FROM refresh_tokens WHERE expires_at < ?`, []any{now}},
-		} {
+		for _, q := range jobs {
 			res, err := tx.ExecContext(ctx, q.sql, q.args...)
 			if err != nil {
 				return err

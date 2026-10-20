@@ -11,6 +11,12 @@ export interface User {
   client_id: string
   enabled: boolean
   created_at: string
+  use_global_rules?: boolean
+  /** 已重置过几次 client_id */
+  id_reset_count?: number
+  /** 管理员对该用户的规则/订阅开关 */
+  rules_enabled?: boolean
+  subs_enabled?: boolean
 }
 
 export interface Tokens {
@@ -250,6 +256,23 @@ export interface AdminSettings {
   invite_code: string
   update_repo: string
   update_channel: 'stable' | 'beta'
+
+  /** 裸域名（主域名本身）是否可用；关掉后只认 <client_id>.域名 */
+  allow_root_domain: boolean
+  /** 统计汇总保留天数，0 = 不按时间清理 */
+  stats_retention_days: number
+  /** 每个用户可自助重置 client_id 的次数，0 = 禁止 */
+  max_id_resets: number
+  /** 租户侧总开关 */
+  allow_user_rules: boolean
+  allow_user_subs: boolean
+
+  /** 配额，0 表示不限制 */
+  max_rules_per_user: number
+  max_subs_per_user: number
+  max_sub_entries: number
+  max_rules_global: number
+  max_subs_global: number
 }
 
 export interface SystemInfo {

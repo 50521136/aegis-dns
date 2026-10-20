@@ -338,6 +338,100 @@ for p in /admin/stats/users /admin/stats/querylog; do
   [[ "$c" == "403" ]] && ok "普通用户访问 $p → 403" || bad "越权 $p：$c"
 done
 
+hdr "设置持久化与租户开关"
+# 之前配额五项只写不读，后台改了不生效。这里验证一轮往返。
+SET_BEFORE=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"domain":"dns.e2e.local","allow_register":true,"enable_query_log":true,
+       "allow_root_domain":false,"allow_user_rules":false,"allow_user_subs":true,
+       "max_id_resets":2,"stats_retention_days":0,"max_rules_per_user":7,
+       "max_subs_per_user":2,"max_sub_entries":1000,"max_rules_global":100,"max_subs_global":5}' >/dev/null
+SET_AFTER=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SET_AFTER" | grep -q '"max_rules_per_user":7' && ok "配额 max_rules_per_user 已持久化" || bad "配额未持久化"
+echo "$SET_AFTER" | grep -q '"max_sub_entries":1000' && ok "配额 max_sub_entries 已持久化" || bad "配额未持久化"
+echo "$SET_AFTER" | grep -q '"allow_root_domain":false' && ok "主域名开关已持久化（能存 false）" || bad "主域名开关未持久化"
+echo "$SET_AFTER" | grep -q '"max_id_resets":2' && ok "重置次数上限已持久化" || bad "重置次数未持久化"
+
+# 全局关掉用户加规则后，普通用户必须被拒
+code=$(curl -s -o /tmp/e2e_feat.json -w '%{http_code}' -X POST "$API/rules" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"kind":"block","pattern":"||feat.test^","value":"","qtypes":[],"enabled":false}')
+[[ "$code" == "403" ]] && ok "关闭后普通用户建规则 → 403" || bad "关闭后仍可建规则：$code"
+grep -q 'FEATURE_DISABLED' /tmp/e2e_feat.json && ok "错误码是 FEATURE_DISABLED" || bad "错误码不对"
+# 订阅总开关还是开的，应该能建
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/subscriptions" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"t","url":"https://example.com/x.txt","list_type":"blocklist","format":"auto","enabled":false}')
+[[ "$code" == "201" ]] && ok "订阅开关独立生效（仍可建）" || bad "订阅被误伤：$code"
+
+hdr "重置接入 ID"
+R1=$(curl -s -X POST "$API/me/reset-client-id" -H "Authorization: Bearer $TOKEN")
+NEWCID=$(echo "$R1" | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+[[ -n "$NEWCID" && "$NEWCID" != "$CID" ]] && ok "自助重置成功，新 ID=$NEWCID" || bad "重置失败: $R1"
+echo "$R1" | grep -q '"remaining":1' && ok "剩余次数 1（上限 2）" || bad "剩余次数不对: $R1"
+R2=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/reset-client-id" -H "Authorization: Bearer $TOKEN")
+[[ "$R2" == "200" ]] && ok "第 2 次重置成功" || bad "第 2 次重置失败：$R2"
+R3=$(curl -s -o /tmp/e2e_r3.json -w '%{http_code}' -X POST "$API/me/reset-client-id" -H "Authorization: Bearer $TOKEN")
+[[ "$R3" == "403" ]] && ok "超限后第 3 次被拒（403）" || bad "超限未拦住：$R3"
+grep -q '重置次数已用完' /tmp/e2e_r3.json && ok "超限提示明确" || bad "超限提示不对"
+
+hdr "管理员改密码与批量删除"
+UTOK=$(curl -fsS -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"e2etest","password":"Str0ngPass123"}' | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)
+TID=$(curl -fsS "$API/me" -H "Authorization: Bearer $UTOK" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/users/$TID/password" \
+  -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' -d '{"password":"NewStr0ngPass1"}')
+[[ "$code" == "200" ]] && ok "管理员改密码成功" || bad "管理员改密码失败：$code"
+curl -fsS -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"e2etest","password":"NewStr0ngPass1"}' | grep -q access_token \
+  && ok "新密码可登录" || bad "新密码登录失败"
+# 改密后旧 refresh token 必须失效
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/refresh" -H 'Content-Type: application/json' \
+  -d "{\"refresh_token\":\"$REFRESH\"}")
+[[ "$code" == "401" ]] && ok "改密后旧 refresh token 已失效" || bad "旧令牌仍可用：$code"
+
+# 批量删除：造两个临时用户再一起删
+B1=$(curl -fsS -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"bulk1","email":"b1@t.local","password":"Str0ngPass123"}' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+B2=$(curl -fsS -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"bulk2","email":"b2@t.local","password":"Str0ngPass123"}' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+BD=$(curl -fsS -X POST "$API/admin/users/bulk-delete" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d "{\"ids\":[\"$B1\",\"$B2\"]}")
+echo "$BD" | grep -q '"deleted":2' && ok "批量删除 2 个用户" || bad "批量删除异常: $BD"
+
+hdr "主域名开关（DNS 解析层）"
+# 先把开关关掉：裸域名 SNI 必须被 REFUSED
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"domain":"dns.e2e.local","allow_register":true,"enable_query_log":true,
+       "allow_root_domain":false,"allow_user_rules":true,"allow_user_subs":true,
+       "max_id_resets":2,"stats_retention_days":0,"max_rules_per_user":50,
+       "max_subs_per_user":3,"max_sub_entries":50000,"max_rules_global":500,"max_subs_global":20}' >/dev/null
+sleep 4
+OUT=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "  关: $OUT"
+echo "$OUT" | grep -qiE 'REFUSED|拒绝' && ok "关闭时裸域名 → REFUSED" || bad "关闭时裸域名未被拒: $OUT"
+
+# 打开后再查一次：应当正常解析（走全局层 / 上游）
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"domain":"dns.e2e.local","allow_register":true,"enable_query_log":true,
+       "allow_root_domain":true,"allow_user_rules":true,"allow_user_subs":true,
+       "max_id_resets":2,"stats_retention_days":0,"max_rules_per_user":50,
+       "max_subs_per_user":3,"max_sub_entries":50000,"max_rules_global":500,"max_subs_global":20}' >/dev/null
+sleep 4
+OUT2=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "  开: $OUT2"
+echo "$OUT2" | grep -qiE 'REFUSED|拒绝' && bad "开启后裸域名仍被拒: $OUT2" || ok "开启后裸域名可解析"
+
+# 子域名不受开关影响
+OUT3=$($PROBE dot 127.0.0.1:18853 rootcheck.example.com A --sni "$CID.dns.e2e.local" --insecure 2>&1 | tail -1)
+echo "$OUT3" | grep -qiE 'REFUSED|拒绝' && bad "子域名被误伤: $OUT3" || ok "子域名不受主域名开关影响"
+
+hdr "日志与统计清理"
+CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{}')
+echo "$CL" | grep -q '"total"' && ok "手动清理接口可用" || bad "清理接口异常: $CL"
+# stats_retention_days=0 时绝不能把统计删光（now-0 会把历史全干掉）
+# retention=0 时统计清理任务根本不会加入，key 直接不出现（而不是删了 0 行）
+echo "$CL" | grep -q '"query_rollup"' && bad "统计被误删: $CL" || ok "统计保留 0 天时不按时间删（保护生效）"
+
 hdr "内嵌前端"
 # 用 /version 的 frontend 字段判断，而不是抓 HTML 前几百字节 ——
 # 真实 index.html 开头是一段内联主题脚本，assets/ 引用在后面，

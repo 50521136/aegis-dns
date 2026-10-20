@@ -56,6 +56,10 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		// UseGlobalRules 允许管理员为某个用户关闭全局规则层
 		// （典型场景：全局规则误伤了某个用户，先给他摘掉应急）。
 		UseGlobalRules *bool `json:"use_global_rules"`
+		// RulesEnabled / SubsEnabled 是管理员对单个用户的开关：
+		// 关掉后该用户不能再新建个人规则 / 订阅（已有的照常生效）。
+		RulesEnabled *bool `json:"rules_enabled"`
+		SubsEnabled  *bool `json:"subs_enabled"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -93,7 +97,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Email != "" {
 		emailPtr = &req.Email
 	}
-	if err := s.store.UpdateUserFields(r.Context(), uid, req.Enabled, rolePtr, emailPtr, req.UseGlobalRules); err != nil {
+	if err := s.store.UpdateUserFields(r.Context(), uid, req.Enabled, rolePtr, emailPtr, req.UseGlobalRules, req.RulesEnabled, req.SubsEnabled); err != nil {
 		writeStoreError(w, err, "用户不存在")
 		return
 	}
@@ -201,6 +205,15 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"max_sub_entries":    set.MaxSubEntries,
 		"max_rules_global":   set.MaxRulesGlobal,
 		"max_subs_global":    set.MaxSubsGlobal,
+
+		// 主域名开关、清理周期、自助重置上限、租户侧总开关。
+		// 这个 map 是手写的，加字段时这里必须同步 —— 漏了的话设置存进去了
+		// 但前端读不到，表现为「改了没生效」。
+		"allow_root_domain":    set.AllowRootDomain,
+		"stats_retention_days": set.StatsRetentionD,
+		"max_id_resets":        set.MaxIDResets,
+		"allow_user_rules":     set.AllowUserRules,
+		"allow_user_subs":      set.AllowUserSubs,
 	}
 	// 配置文件的 domain 作为兜底提示：管理员可能改了设置却忘了改配置，
 	// 或反之。两个值不一致时前端要能看出来。
@@ -320,9 +333,20 @@ func mergeSettings(dst *model.GlobalSettings, src *model.GlobalSettings) {
 	if src.MaxSubsGlobal >= 0 {
 		dst.MaxSubsGlobal = src.MaxSubsGlobal
 	}
+	// 统计保留天数允许设成 0（不自动清理），所以用 >= 0。
+	if src.StatsRetentionD >= 0 {
+		dst.StatsRetentionD = src.StatsRetentionD
+	}
+	if src.MaxIDResets >= 0 {
+		dst.MaxIDResets = src.MaxIDResets
+	}
 	// 布尔与字符串可能被显式设成零值，这里直接采用请求值。
+	// 注意：前端必须每次都把这些字段传全，漏传等于把它们关掉。
 	dst.EnableQueryLog = src.EnableQueryLog
 	dst.AllowRegister = src.AllowRegister
+	dst.AllowRootDomain = src.AllowRootDomain
+	dst.AllowUserRules = src.AllowUserRules
+	dst.AllowUserSubs = src.AllowUserSubs
 	dst.InviteCode = strings.TrimSpace(src.InviteCode)
 }
 

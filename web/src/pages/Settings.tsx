@@ -24,6 +24,7 @@ import {
   getMe,
   importConfig,
   listTokens,
+  resetMyClientID,
 } from '@/api/me'
 import { checkUpdate, applyUpdate } from '@/api/admin'
 import { errorMessage } from '@/api/client'
@@ -541,6 +542,18 @@ export default function Settings() {
 
           <Card>
             <CardHeader>
+              <CardTitle>接入 ID</CardTitle>
+              <CardDescription>
+                你的专属子域名前缀。重置会立刻换掉接入地址，所有设备都要重新配置。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResetIDRow />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>外观</CardTitle>
               <CardDescription>选择界面主题</CardDescription>
             </CardHeader>
@@ -671,5 +684,63 @@ function GlobalRulesCard() {
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+/* ---------- 重置接入 ID ---------- */
+
+/**
+ * ResetIDRow 让用户自助重置 client_id。
+ *
+ * 换 id 等于换掉整个接入地址，所以是有次数上限的（管理员在后台设置）。
+ * 用完只能找管理员 —— 这里直接把剩余次数显示出来，而不是等点了才报错。
+ */
+function ResetIDRow() {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const meQuery = useQuery({ queryKey: ['me'], queryFn: getMe })
+
+  const m = useMutation({
+    mutationFn: resetMyClientID,
+    onSuccess: (r) => {
+      toast.success(
+        '接入 ID 已重置',
+        `新 ID：${r.client_id}，还剩 ${r.remaining} 次。请到「我的 DNS」重新获取地址。`,
+      )
+      setConfirmOpen(false)
+      qc.invalidateQueries({ queryKey: ['me'] })
+      qc.invalidateQueries({ queryKey: ['dns-config'] })
+    },
+    onError: (err) => toast.error('重置失败', errorMessage(err)),
+  })
+
+  const used = meQuery.data?.id_reset_count ?? 0
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3">
+        <div className="min-w-0">
+          <p className="font-mono text-sm">{meQuery.data?.client_id ?? '—'}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            已重置 {used} 次{used > 0 ? '，重置次数由管理员限制' : ''}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setConfirmOpen(true)}>
+          <RefreshCw />
+          重置接入 ID
+        </Button>
+      </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="重置接入 ID"
+        description="重置后旧的子域名会立刻失效，你所有设备的 DNS 配置都要重新设置。确定继续吗？"
+        confirmText="重置"
+        loading={m.isPending}
+        onConfirm={() => m.mutate()}
+      />
+    </>
   )
 }

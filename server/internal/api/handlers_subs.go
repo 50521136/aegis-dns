@@ -182,6 +182,12 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
 		return
 	}
+	if !global {
+		if err := s.checkUserFeature(r.Context(), u, "subs"); err != nil {
+			writeFeatureError(w, err)
+			return
+		}
+	}
 	if err := s.checkSubQuota(r.Context(), u.ID, global); err != nil {
 		writeQuotaError(w, err)
 		return

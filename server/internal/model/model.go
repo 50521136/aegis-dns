@@ -52,8 +52,15 @@ type User struct {
 	ClientID     string `json:"client_id"`
 	Enabled      bool   `json:"enabled"`
 	// UseGlobalRules 决定该用户的规则集是否叠加全局层。默认 true。
-	UseGlobalRules bool  `json:"use_global_rules"`
-	CreatedAt      int64 `json:"-"` // 对外由 handler 转成 RFC3339
+	UseGlobalRules bool `json:"use_global_rules"`
+	// IDResetCount 是该用户已经重置过几次 client_id。
+	// 上限由全局设置 MaxIDResets 控制，0 表示禁止自助重置。
+	IDResetCount int `json:"id_reset_count"`
+	// RulesEnabled / SubsEnabled 是管理员对该用户的单独开关。
+	// 与全局设置里的总开关取「与」：任一为关，该用户就建不了对应的东西。
+	RulesEnabled bool  `json:"rules_enabled"`
+	SubsEnabled  bool  `json:"subs_enabled"`
+	CreatedAt    int64 `json:"-"` // 对外由 handler 转成 RFC3339
 }
 
 // Rule 是一条自定义规则。
@@ -139,6 +146,9 @@ type Defaults struct {
 	QueryTimeout   int  `json:"query_timeout_ms"`
 	QueryLogSize   int  `json:"query_log_size"`
 	EnableQueryLog bool `json:"enable_query_log"`
+	// AllowRootDomain 决定裸域名（如 adguard.com）能否被当作合法入口。
+	// 为真时它按「无租户」处理、只套全局规则；为假时直接 REFUSED。
+	AllowRootDomain bool `json:"allow_root_domain"`
 }
 
 // GlobalSnap 是快照里的全局层：管理员的规则与订阅条目，对所有
@@ -224,6 +234,21 @@ type GlobalSettings struct {
 	MaxSubEntries   int `json:"max_sub_entries"`    // 单个订阅解析后的条目上限（超出截断）
 	MaxRulesGlobal  int `json:"max_rules_global"`   // 全局规则上限
 	MaxSubsGlobal   int `json:"max_subs_global"`    // 全局订阅上限
+
+	// AllowRootDomain 为真时，主域名本身（如 example.com）也能解析，
+	// 而不只是 <client_id>.example.com。方便用户在没法填子域名的客户端里直接用主域名。
+	AllowRootDomain bool `json:"allow_root_domain"`
+
+	// StatsRetentionD 是统计汇总（query_rollup / top_domains）的保留天数。
+	StatsRetentionD int `json:"stats_retention_days"`
+
+	// MaxIDResets 是每个用户可自助重置 client_id 的次数上限，0 = 禁止。
+	MaxIDResets int `json:"max_id_resets"`
+
+	// AllowUserRules / AllowUserSubs 是租户侧的总开关。
+	// 关掉后所有普通用户都不能新建个人规则 / 订阅（已有的照常生效）。
+	AllowUserRules bool `json:"allow_user_rules"`
+	AllowUserSubs  bool `json:"allow_user_subs"`
 }
 
 // DefaultSettings 返回一套合理的出厂设置。
@@ -249,6 +274,12 @@ func DefaultSettings() GlobalSettings {
 		AllowRegister:  true,
 		InviteCode:     "",
 		UpdateChannel:  "stable",
+
+		AllowRootDomain: true,
+		StatsRetentionD: 30,
+		MaxIDResets:     3,
+		AllowUserRules:  true,
+		AllowUserSubs:   true,
 
 		MaxRulesPerUser: 50,
 		MaxSubsPerUser:  3,

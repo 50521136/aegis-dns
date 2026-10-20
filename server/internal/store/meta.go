@@ -143,6 +143,25 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["update_channel"]; ok && v != "" {
 		set.UpdateChannel = v
 	}
+
+	// 配额五项之前只写不读 —— 后台改了也不生效，一直用的是 DefaultSettings 的值。
+	set.MaxRulesPerUser = intOr(kv["max_rules_per_user"], set.MaxRulesPerUser)
+	set.MaxSubsPerUser = intOr(kv["max_subs_per_user"], set.MaxSubsPerUser)
+	set.MaxSubEntries = intOr(kv["max_sub_entries"], set.MaxSubEntries)
+	set.MaxRulesGlobal = intOr(kv["max_rules_global"], set.MaxRulesGlobal)
+	set.MaxSubsGlobal = intOr(kv["max_subs_global"], set.MaxSubsGlobal)
+
+	set.StatsRetentionD = intOr(kv["stats_retention_days"], set.StatsRetentionD)
+	set.MaxIDResets = intOr(kv["max_id_resets"], set.MaxIDResets)
+	if v, ok := kv["allow_root_domain"]; ok {
+		set.AllowRootDomain = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["allow_user_rules"]; ok {
+		set.AllowUserRules = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["allow_user_subs"]; ok {
+		set.AllowUserSubs = v == "1" || strings.EqualFold(v, "true")
+	}
 	return &set, nil
 }
 
@@ -179,6 +198,19 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"update_repo":              set.UpdateRepo,
 		"update_channel":           set.UpdateChannel,
 		"sub_interval_hours":       strconv.Itoa(set.SubIntervalH),
+
+		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
+		"max_rules_per_user": strconv.Itoa(set.MaxRulesPerUser),
+		"max_subs_per_user":  strconv.Itoa(set.MaxSubsPerUser),
+		"max_sub_entries":    strconv.Itoa(set.MaxSubEntries),
+		"max_rules_global":   strconv.Itoa(set.MaxRulesGlobal),
+		"max_subs_global":    strconv.Itoa(set.MaxSubsGlobal),
+
+		"stats_retention_days": strconv.Itoa(set.StatsRetentionD),
+		"max_id_resets":        strconv.Itoa(set.MaxIDResets),
+		"allow_root_domain":    boolStr(set.AllowRootDomain),
+		"allow_user_rules":     boolStr(set.AllowUserRules),
+		"allow_user_subs":      boolStr(set.AllowUserSubs),
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		for k, v := range pairs {

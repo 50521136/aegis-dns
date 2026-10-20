@@ -30,6 +30,10 @@ type IdentifyHint struct {
 	ClientID string
 	// Source 标识线索来源，仅用于日志与调试：sni | host | path | edns。
 	Source string
+	// Host 是请求实际带的完整主机名（DoT 的 SNI / DoH 的 Host，已去掉端口）。
+	// 用来判断「这次请求打的是裸域名还是子域名」—— 裸域名能否使用由
+	// 全局设置 AllowRootDomain 决定。
+	Host string
 	// AltClientID 是次级线索，目前只有 DoH 会填：Host 首段不是合法 client_id
 	// 时（例如客户端只能访问 https://<域名>/dns-query/<client_id> 这种路径式
 	// 地址，此时 Host 是裸域名），用路径段兜底。
@@ -184,6 +188,23 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// Stage 2 前置校验：租户是否启用。
 	if !isFallback && !user.Enabled {
 		h.record(user.UserID, q, "blocked", "REFUSED", time.Since(start), w)
+		_ = w.WriteMsg(refusedResponse(req))
+		return
+	}
+
+	// 裸域名开关。
+	//
+	// 判断依据必须是「主机名是不是裸域名」，不能挂在 isFallback 上：
+	// 客户端 IP 登记过的话，裸域名请求会被来源 IP 认成租户，isFallback 为假，
+	// 开关就等于失效了。
+	//
+	// 但 DoH 路径式（https://<域名>/dns-query/<client_id>）的 Host 天生就是裸域名，
+	// 那种请求带了路径段线索，属于合法用法，不能拦 —— 所以要求 ClientID 与
+	// AltClientID 都为空才算「真的没带身份」。
+	if hint != nil && hint.Host != "" && d.Domain != "" &&
+		strings.EqualFold(hint.Host, d.Domain) &&
+		hint.ClientID == "" && hint.AltClientID == "" && !d.AllowRootDomain {
+		h.record("", q, "blocked", "REFUSED", time.Since(start), w)
 		_ = w.WriteMsg(refusedResponse(req))
 		return
 	}
