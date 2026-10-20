@@ -62,7 +62,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDNSConfig(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	writeJSON(w, http.StatusOK, buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dotPort()))
+	writeJSON(w, http.StatusOK, buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)))
 }
 
 // exportPayload 是配置导出的结构（文档 9.3 /me/export）。

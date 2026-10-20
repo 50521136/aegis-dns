@@ -73,7 +73,11 @@ export default function DnsSetup() {
                 </div>
 
                 <CopyField label="DoH（DNS over HTTPS）" value={data.doh_url} />
-                <CopyField label="DoH（路径式，兼容不能改 Host 的客户端）" value={data.doh_url_path} />
+                {/* 证书没有通配符时主推地址本身就是路径式，两个值一样，
+                    再列一遍只会让人以为哪里配错了 */}
+                {data.doh_url_path !== data.doh_url && (
+                  <CopyField label="DoH（路径式，兼容不能改 Host 的客户端）" value={data.doh_url_path} />
+                )}
                 <CopyField label="DoT（DNS over TLS）" value={`${data.dot_host}:${data.dot_port}`} />
                 {data.plain_dns && <CopyField label="普通 DNS（UDP/TCP）" value={data.plain_dns} />}
               </CardContent>

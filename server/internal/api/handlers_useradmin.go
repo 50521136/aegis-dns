@@ -52,7 +52,7 @@ func (s *Server) handleResetMyClientID(w http.ResponseWriter, r *http.Request) {
 		"used":           u.IDResetCount + 1,
 		"limit":          set.MaxIDResets,
 		"remaining":      set.MaxIDResets - u.IDResetCount - 1,
-		"dns_config":     buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort()),
+		"dns_config":     buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
 	})
 }
 

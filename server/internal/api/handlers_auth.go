@@ -93,7 +93,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, authResponse{
 		User:      toUserJSON(user),
-		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort()),
+		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
 		Tokens:    pair,
 	})
 }
@@ -140,7 +140,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, authResponse{
 		User:      toUserJSON(user),
-		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort()),
+		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
 		Tokens:    pair,
 	})
 }
@@ -249,6 +249,17 @@ func (s *Server) fingerprint() string {
 		return ""
 	}
 	return s.certs.Fingerprint()
+}
+
+// coversSubdomains 判断当前证书是否覆盖 <任意>.<主域名>。
+//
+// 没有证书管理器（比如自签降级还没就绪）时保守返回 false，
+// 宁可给路径式地址也不要给一个握手就会被拒的子域名地址。
+func (s *Server) coversSubdomains(r *http.Request) bool {
+	if s.certs == nil {
+		return false
+	}
+	return s.certs.CoversSubdomains(s.domain(r))
 }
 
 // dotPort 返回 DoT 端口号。

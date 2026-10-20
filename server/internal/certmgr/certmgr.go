@@ -212,6 +212,42 @@ func (m *Manager) TLSConfig() *tls.Config {
 	}
 }
 
+// CoversSubdomains 判断当前证书是否覆盖 <任意>.domain（即 SAN 里有 *.domain）。
+//
+// 这个判断决定面板给用户下发哪种 DoH 地址：
+//   - 有通配符：可以用 <client_id>.domain 子域名形态
+//   - 没有通配符：只能用 domain/dns-query/<client_id> 路径形态，
+//     否则客户端做主机名校验时会 Hostname mismatch 直接拒绝握手。
+//
+// 单域名证书配子域名地址是「服务端一切正常、用户却连不上」的典型成因，
+// 而且从服务端日志里几乎看不出来 —— 握手在客户端就被毙了。
+func (m *Manager) CoversSubdomains(domain string) bool {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return false
+	}
+	cur := m.cert.Load()
+	if cur == nil || len(cur.Certificate) == 0 {
+		return false
+	}
+	leaf, err := x509.ParseCertificate(cur.Certificate[0])
+	if err != nil {
+		return false
+	}
+	want := "*." + domain
+	for _, n := range leaf.DNSNames {
+		// 只认严格等于 *.domain 的 SAN。
+		//
+		// dev_tls 自签证书里那个裸 "*" 故意不算数：它本来就不是合法通配符，
+		// 客户端也不会认；让它算「覆盖子域名」只会把开发环境和生产环境的行为
+		// 拉开差距，测出来的东西到线上不成立。
+		if strings.EqualFold(n, want) {
+			return true
+		}
+	}
+	return false
+}
+
 // Watch 监听证书文件变化并自动重载。
 //
 // 监听父目录而不是文件本身：很多证书工具（certbot、acme.sh）是用

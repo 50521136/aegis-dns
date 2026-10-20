@@ -240,22 +240,37 @@ type platformGuide struct {
 }
 
 // buildDNSConfig 构造某个 client_id 的接入配置。
-func buildDNSConfig(domain, clientID, fingerprint string, dotPort int) dnsConfigJSON {
-	host := clientID + "." + domain
+func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard bool) dnsConfigJSON {
+	subHost := clientID + "." + domain
 	if clientID == "" {
-		host = domain
+		subHost = domain
 	}
+
+	// 证书没有通配符时，<client_id>.domain 这种形态一律不可用：客户端做主机名
+	// 校验会直接拒绝握手，而服务端只会看到「握手超时/EOF」，看不出是证书问题。
+	// 所以这时主推裸域名 + 路径段带 client_id 的形态 —— 它只依赖单域名证书，
+	// 身份照样能从路径里拿到，规则不受影响。
+	dohURL := "https://" + subHost + "/dns-query"
+	dohURLPath := "https://" + domain + "/dns-query/" + clientID
+	dothost := subHost
+	if !wildcard && clientID != "" {
+		dohURL = dohURLPath
+		// DoT 没有路径段可放 client_id，只能用裸域名；
+		// 此时租户靠来源 IP 识别，未登记 IP 的客户端会走兜底策略。
+		dothost = domain
+	}
+
 	return dnsConfigJSON{
 		ClientID:              clientID,
 		Domain:                domain,
-		DoHURL:                "https://" + host + "/dns-query",
-		DoHURLPath:            "https://" + domain + "/dns-query/" + clientID,
-		DoTHost:               host,
+		DoHURL:                dohURL,
+		DoHURLPath:            dohURLPath,
+		DoTHost:               dothost,
 		DoTPort:               dotPort,
-		DoTAddr:               fmt.Sprintf("%s:%d", host, dotPort),
+		DoTAddr:               fmt.Sprintf("%s:%d", dothost, dotPort),
 		PlainDNS:              nil,
 		CertFingerprintSHA256: fingerprint,
-		PlatformGuides:        platformGuides(clientID, domain),
+		PlatformGuides:        platformGuides(clientID, domain, dohURL, dothost, wildcard),
 	}
 }
 
@@ -263,14 +278,22 @@ func buildDNSConfig(domain, clientID, fingerprint string, dotPort int) dnsConfig
 //
 // 文案跟随真实系统菜单路径：这几段文字是用户唯一会照着做的地方，
 // 写得含糊等于没写。
-func platformGuides(clientID, domain string) []platformGuide {
-	host := clientID + "." + domain
+// platformGuides 返回各平台的配置步骤。
+//
+// dohURL / dothost 由 buildDNSConfig 按证书能力算好后传进来 —— 文案是用户唯一
+// 会照着做的地方，写一个连不上的地址等于没写。
+func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool) []platformGuide {
+	host := dothost
+	dotNote := ""
+	if !wildcard && clientID != "" {
+		dotNote = "（当前证书不含通配符，DoT 只能用主域名；如需按用户区分请改用 DoH）"
+	}
 	return []platformGuide{
 		{
 			Platform: "ios",
 			Steps: []string{
 				"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
-				"选择「加密 DNS」，填入 DoH 地址：" + "https://" + host + "/dns-query",
+				"选择「加密 DNS」，填入 DoH 地址：" + dohURL,
 				"或安装描述文件（.mobileconfig）批量下发，适合多设备",
 			},
 		},
@@ -279,7 +302,7 @@ func platformGuides(clientID, domain string) []platformGuide {
 			Steps: []string{
 				"打开「设置」→「网络和互联网」→「私人 DNS」",
 				"选择「私人 DNS 提供商主机名」",
-				"填入：" + host + "（Android 使用 DoT，端口固定 853）",
+				"填入：" + host + "（Android 使用 DoT，端口固定 853）" + dotNote,
 			},
 		},
 		{
@@ -296,14 +319,14 @@ func platformGuides(clientID, domain string) []platformGuide {
 			Steps: []string{
 				"打开「系统设置」→「网络」→ 选中当前连接 →「详细信息」",
 				"切到「DNS」标签页，添加 DNS 服务器",
-				"如需加密 DNS，安装描述文件并填入：" + "https://" + host + "/dns-query",
+				"如需加密 DNS，安装描述文件并填入：" + dohURL,
 			},
 		},
 		{
 			Platform: "router",
 			Steps: []string{
 				"在路由器 DHCP 设置里把 DNS 指向本服务",
-				"若路由器支持 DoT/DoH，直接填入：" + host,
+				"若路由器支持 DoT/DoH，直接填入：" + host + dotNote,
 				"若只支持明文 DNS，请先把本机 IP 加入「来源 IP 归属」，再填本服务的公网 IP",
 			},
 		},
