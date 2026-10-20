@@ -16,7 +16,7 @@ import (
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	writeJSON(w, http.StatusOK, toUserJSON(u.ID, u.Username, u.Email, u.Role, u.ClientID, u.Enabled, u.CreatedAt))
+	writeJSON(w, http.StatusOK, toUserJSON(u))
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/50521136/aegis-dns/server/internal/model"
+
 	"github.com/50521136/aegis-dns/server/internal/store"
 )
 
@@ -185,20 +187,32 @@ func intervalSeconds(s string, fallback int64) int64 {
 // 前者只暴露 API 契约里承诺的字段。用显式结构体而不是给 model 加 json tag
 // 能保证「新增内部字段」永远不会意外泄漏到响应里。
 type userJSON struct {
-	ID        string `json:"id"`
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	Role      string `json:"role"`
-	ClientID  string `json:"client_id"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"created_at"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
+	ClientID string `json:"client_id"`
+	Enabled  bool   `json:"enabled"`
+	// UseGlobalRules / IDResetCount / RulesEnabled / SubsEnabled 前端要用：
+	// 前者控制设置页的全局层开关，后三者控制后台用户列表里的显示与开关状态。
+	UseGlobalRules bool   `json:"use_global_rules"`
+	IDResetCount   int    `json:"id_reset_count"`
+	RulesEnabled   bool   `json:"rules_enabled"`
+	SubsEnabled    bool   `json:"subs_enabled"`
+	CreatedAt      string `json:"created_at"`
 }
 
-func toUserJSON(id, username, email, role, clientID string, enabled bool, createdAt int64) userJSON {
+// toUserJSON 直接吃 *model.User。
+//
+// 之前是七个人参的位置参数，加字段就得改所有调用点，而且漏改一个就会出现
+// 「某个接口返回的用户少了字段」这种只在特定页面暴露的问题。
+func toUserJSON(u *model.User) userJSON {
 	return userJSON{
-		ID: id, Username: username, Email: email, Role: role,
-		ClientID: clientID, Enabled: enabled,
-		CreatedAt: time.Unix(createdAt, 0).UTC().Format(time.RFC3339),
+		ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
+		ClientID: u.ClientID, Enabled: u.Enabled,
+		UseGlobalRules: u.UseGlobalRules, IDResetCount: u.IDResetCount,
+		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
+		CreatedAt: time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
 	}
 }
 

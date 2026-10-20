@@ -338,6 +338,15 @@ for p in /admin/stats/users /admin/stats/querylog; do
   [[ "$c" == "403" ]] && ok "普通用户访问 $p → 403" || bad "越权 $p：$c"
 done
 
+hdr "用户对象暴露新字段"
+ME=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN")
+for f in id_reset_count rules_enabled subs_enabled use_global_rules; do
+  echo "$ME" | grep -q "\"$f\"" && ok "/me 含 $f" || bad "/me 缺 $f: $(echo "$ME" | head -c 200)"
+done
+UL=$(curl -fsS "$API/admin/users" -H "Authorization: Bearer $ADMTOK")
+echo "$UL" | grep -q '"rules_enabled"' && ok "用户列表含 rules_enabled" || bad "用户列表缺 rules_enabled"
+echo "$UL" | grep -q '"id_reset_count"' && ok "用户列表含 id_reset_count" || bad "用户列表缺 id_reset_count"
+
 hdr "设置持久化与租户开关"
 # 之前配额五项只写不读，后台改了不生效。这里验证一轮往返。
 SET_BEFORE=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")

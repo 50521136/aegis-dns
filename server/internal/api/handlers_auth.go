@@ -92,7 +92,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, authResponse{
-		User:      toUserJSON(user.ID, user.Username, user.Email, user.Role, user.ClientID, user.Enabled, user.CreatedAt),
+		User:      toUserJSON(user),
 		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort()),
 		Tokens:    pair,
 	})
@@ -139,7 +139,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, authResponse{
-		User:      toUserJSON(user.ID, user.Username, user.Email, user.Role, user.ClientID, user.Enabled, user.CreatedAt),
+		User:      toUserJSON(user),
 		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort()),
 		Tokens:    pair,
 	})

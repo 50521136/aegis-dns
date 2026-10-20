@@ -41,6 +41,11 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 			"created_at": rfc3339OrEmpty(u.CreatedAt),
 			"rule_count": ruleCount,
 			"ip_count":   len(ips),
+			// 后台用户列表要显示并控制这几个
+			"use_global_rules": u.UseGlobalRules,
+			"id_reset_count":   u.IDResetCount,
+			"rules_enabled":    u.RulesEnabled,
+			"subs_enabled":     u.SubsEnabled,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -114,7 +119,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "用户不存在")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserJSON(u.ID, u.Username, u.Email, u.Role, u.ClientID, u.Enabled, u.CreatedAt))
+	writeJSON(w, http.StatusOK, toUserJSON(u))
 }
 
 // ensureAnotherAdmin 确认除了 uid 之外还有别的启用管理员。
