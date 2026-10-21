@@ -124,19 +124,12 @@ func Build(l Layers) (*RuleSet, error) {
 	rs.subAllow.finish()
 	rs.subBlock.finish()
 
-	gs := rs.globalStats()
 	rs.Stats = Stats{
 		UserAllow:   rs.userAllow.size,
 		UserBlock:   rs.userBlock.size,
 		UserRewrite: rs.userRewrite.size,
 		SubAllow:    rs.subAllow.size,
 		SubBlock:    rs.subBlock.size,
-
-		GlobalAllow:   gs.globalAllowSize,
-		GlobalBlock:   gs.globalBlockSize,
-		GlobalRewrite: gs.globalRewriteSize,
-		GSubAllow:     gs.gsubAllowSize,
-		GSubBlock:     gs.gsubBlockSize,
 	}
 	return rs, nil
 }
@@ -401,14 +394,6 @@ func BuildGlobal(g *model.GlobalSnap) *GlobalLayer {
 	return gl
 }
 
-// globalStats 返回共享全局层的规模统计（不共享时全 0）。
-func (rs *RuleSet) globalStats() GlobalLayer {
-	if rs.global == nil {
-		return GlobalLayer{}
-	}
-	return *rs.global
-}
-
 // BuildWithGlobal 用一份共享的全局层构建某个用户的规则集。
 //
 // registry 在每次快照重建时先 BuildGlobal 一次，然后对每个用户调用本函数。
@@ -421,5 +406,30 @@ func BuildWithGlobal(shared *GlobalLayer, l Layers) (*RuleSet, error) {
 		return rs, err
 	}
 	rs.global = shared
+	// 必须在这里补算全局层计数。
+	//
+	// Build 内部算 Stats 时 rs.global 还是 nil，全局层计数一律是 0。
+	// 而 handler 用 rs.Empty()（即 Stats.Total()==0）决定「要不要跑规则匹配」，
+	// 于是「自己没有任何规则、全靠全局层」的用户会被判成空规则集，
+	// 整个 Stage 4 被跳过 —— 表现就是该用户永远 0 拦截。
+	// 线上 lz0423 就是这样：全局层 62 万条对他完全没生效。
+	rs.refreshGlobalStats()
 	return rs, nil
+}
+
+// refreshGlobalStats 把共享全局层的规模写进 Stats。
+//
+// Empty() 依赖 Stats.Total()，所以只要规则集挂了全局层，
+// 这里就必须把 Global*/GSub* 填上，否则「只有全局规则」的租户会被误判为空。
+func (rs *RuleSet) refreshGlobalStats() {
+	if rs.global == nil {
+		rs.Stats.GlobalAllow, rs.Stats.GlobalBlock, rs.Stats.GlobalRewrite = 0, 0, 0
+		rs.Stats.GSubAllow, rs.Stats.GSubBlock = 0, 0
+		return
+	}
+	rs.Stats.GlobalAllow = rs.global.globalAllowSize
+	rs.Stats.GlobalBlock = rs.global.globalBlockSize
+	rs.Stats.GlobalRewrite = rs.global.globalRewriteSize
+	rs.Stats.GSubAllow = rs.global.gsubAllowSize
+	rs.Stats.GSubBlock = rs.global.gsubBlockSize
 }

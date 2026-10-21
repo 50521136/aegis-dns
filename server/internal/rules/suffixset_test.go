@@ -212,3 +212,42 @@ func TestGlobalLayerIsSharedByPointer(t *testing.T) {
 		t.Error("没有共享层时不该命中全局规则")
 	}
 }
+
+// 只有全局层、自己没有任何规则的租户，规则集绝不能判成「空」。
+//
+// 线上事故：GlobalLayer 抽出共享后，BuildWithGlobal 在 Build 之后才挂上
+// 共享层，而 Stats 在 Build 里就算完了 —— 全局层计数恒为 0。
+// handler 用 rs.Empty() 决定要不要跑规则匹配，于是「全靠全局层」的租户
+// 整个 Stage 4 被跳过，62 万条订阅对他们完全不生效，拦截率恒为 0。
+// 而另一个自带 17 万条订阅的租户一切正常，问题极难发现。
+func TestRuleSetNotEmptyWhenOnlyGlobalLayer(t *testing.T) {
+	g := &model.GlobalSnap{
+		Rules:    []model.Rule{{Kind: model.KindAllow, Pattern: "||ok.example^", Enabled: true}},
+		SubBlock: []string{"ads.example", "tracker.example"},
+	}
+	shared := BuildGlobal(g)
+
+	// 模拟 lz0423：没有任何自有规则与订阅
+	rs, err := BuildWithGlobal(shared, Layers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs.Empty() {
+		t.Fatalf("挂了全局层的规则集不该是空的，Stats=%+v", rs.Stats)
+	}
+	if rs.Stats.GSubBlock == 0 {
+		t.Errorf("全局订阅计数没写进 Stats: %+v", rs.Stats)
+	}
+	if dec := rs.Match("x.ads.example", 1); dec.Action != ActionBlock {
+		t.Errorf("应命中全局订阅拦截，得到 %q", dec.Action)
+	}
+
+	// 真的什么都没有时仍然是空（避免每次都白跑匹配）
+	empty, err := BuildWithGlobal(nil, Layers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty.Empty() {
+		t.Error("既无自有规则也无全局层时应判为空")
+	}
+}

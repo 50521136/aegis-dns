@@ -235,6 +235,20 @@ done
 [[ $cacheok -eq 1 ]] && ok "连续 5 次查询（含缓存命中）全部成功"
 
 hdr "UDP 解析"
+# tblocked 断言「被拦截」，不限定拦截形态。
+# null_ip 返回 0.0.0.0、nxdomain 返回 NXDOMAIN、refused 返回 REFUSED，
+# 三种都是拦截生效；写死 0.0.0.0 会在别的用例改过 blocking_mode 后误报。
+tblocked() {
+  local desc="$1"; shift 1
+  local out
+  out=$($PROBE "$@" 2>&1 | tail -1)
+  if [[ "$out" == *"0.0.0.0"* || "$out" == *"NXDOMAIN"* || "$out" == *"REFUSED"* ]]; then
+    ok "$desc → $out"
+  else
+    bad "$desc → $out（期望被拦截：0.0.0.0 / NXDOMAIN / REFUSED）"
+  fi
+}
+
 t() {
   local desc="$1" want="$2"; shift 2
   local out
@@ -320,11 +334,33 @@ if [[ -n "$SUBID" ]]; then
   # 通配条目 *.accounts.doubleclick.net 来验证：
   #   查询 accounts.doubleclick.net  —— 验证「*.domain 也匹配根域自身」
   #   查询 x.accounts.doubleclick.net —— 验证子域继承
-  for i in $(seq 1 60); do
-    if $PROBE udp 127.0.0.1:15353 accounts.doubleclick.net 2>/dev/null | grep -c '0.0.0.0' >/dev/null 2>&1; then break; fi
-    sleep 1
-  done
-  t "订阅拦截通配根域（accounts.doubleclick.net）" "0.0.0.0" udp 127.0.0.1:15353 accounts.doubleclick.net
+  # 从实际落库的条目里挑一条来验证，而不是写死某个上游域名。
+  # 写死的问题：订阅按 max_sub_entries 截断（50000），上游列表顺序一变，
+  # 那条域名就可能被截掉，测试随机失败，看起来像拦截坏了。
+  PICK=$(python3 - "$RUN/data/aegis.db" "$SUBID" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+sub = sys.argv[2]
+for (d,) in db.execute("select domain from sub_entries where sub_id=? order by domain limit 400", (sub,)):
+    d = d.strip().lower().lstrip("*.").lstrip(".")
+    if "." in d and not d.startswith("-") and "_" not in d:
+        print(d)
+        break
+PYEOF
+)
+  if [ -z "$PICK" ]; then
+    bad "订阅条目为空，无法验证拦截"
+  else
+    ok "从订阅里取样域名：$PICK"
+    for _ in $(seq 1 60); do
+      R=$($PROBE udp 127.0.0.1:15353 "$PICK" 2>/dev/null)
+      [[ "$R" == *"0.0.0.0"* ]] && break
+      sleep 1
+    done
+    tblocked "订阅拦截生效（$PICK）" udp 127.0.0.1:15353 "$PICK"
+    # 子域继承：给取样域名加一层前缀
+    tblocked "订阅拦截子域继承（x.$PICK）" udp 127.0.0.1:15353 "x.$PICK"
+  fi
   t "订阅拦截子域（x.accounts.doubleclick.net）"   "0.0.0.0" udp 127.0.0.1:15353 x.accounts.doubleclick.net
 fi
 
@@ -1003,6 +1039,38 @@ grep -qi '至少要保留一个' /tmp/e2e_proto.json && ok "全关提示明确" 
 # 恢复
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"enable_doh":true,"enable_dot":true,"enable_plain_dns":true}' >/dev/null
+
+hdr "无自有规则的用户也必须受全局层拦截"
+# 回归：GlobalLayer 抽成共享后，BuildWithGlobal 在 Build 之后才挂上共享层，
+# Stats 里的全局计数恒为 0 → rs.Empty() 为真 → handler 跳过整个规则匹配。
+# 表现是「只有全局层」的租户拦截率恒为 0，而自带订阅的租户一切正常。
+GLOBAL_ONLY_USER="gonly$$"
+curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$GLOBAL_ONLY_USER\",\"email\":\"gonly@qq.com\",\"password\":\"Str0ngPass123\"}" -o /tmp/e2e_gonly.json >/dev/null
+GOTOK=$(grep -o '"access_token":"[^"]*"' /tmp/e2e_gonly.json | cut -d'"' -f4)
+GOCID=$(grep -o '"client_id":"[^"]*"' /tmp/e2e_gonly.json | head -1 | cut -d'"' -f4)
+if [ -n "$GOTOK" ]; then
+  ok "新建无规则用户（client_id=$GOCID）"
+  GRESP=$(curl -s -X POST "$API/rules" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+    -d '{"pattern":"||global-only-probe.test^","kind":"block","is_global":true,"enabled":true}')
+  GRID=$(echo "$GRESP" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # 拦截应答可能是 0.0.0.0（null_ip）也可能是 NXDOMAIN，
+  # 两种都算生效 —— 只认 0.0.0.0 会在 blocking_mode 被前面的用例改掉时误报。
+  R=""
+  for _ in $(seq 1 40); do
+    RAW=$(timeout 4 dig @127.0.0.1 -p 15353 "x.global-only-probe.test" A 2>/dev/null)
+    if echo "$RAW" | grep -q 'status: NXDOMAIN' || echo "$RAW" | grep -q '0\.0\.0\.0'; then
+      R=$(echo "$RAW" | grep -q 'status: NXDOMAIN' && echo NXDOMAIN || echo 0.0.0.0)
+      break
+    fi
+    sleep 1
+  done
+  [ -n "$R" ] && ok "无自有规则的用户被全局层拦截（$R）" || bad "全局层对该用户没生效（既非 NXDOMAIN 也非 0.0.0.0）"
+  [ -n "$GRID" ] && curl -s -X DELETE "$API/rules/$GRID" -H "Authorization: Bearer $ADMTOK" >/dev/null 2>&1
+else
+  bad "无规则用户注册失败"
+fi
+rm -f /tmp/e2e_gonly.json
 
 hdr "清除缓存"
 FLUSH=$(curl -s -X POST "$API/admin/cache/flush" -H "Authorization: Bearer $ADMTOK")
