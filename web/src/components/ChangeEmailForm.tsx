@@ -31,6 +31,12 @@ export function ChangeEmailForm({
   const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
   const cfg = cfgQuery.data
   const allowedDomains = cfg?.email_domains ?? []
+  // 配了白名单时把输入拆成「本地部分 + 固定后缀」，避免用户手打后缀打错
+  const [localPart, setLocalPart] = useState('')
+  const [emailDomain, setEmailDomain] = useState('')
+  useEffect(() => {
+    if (allowedDomains.length > 0 && !emailDomain) setEmailDomain(allowedDomains[0])
+  }, [allowedDomains, emailDomain])
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -90,21 +96,57 @@ export function ChangeEmailForm({
           </p>
         )}
         <div className="flex gap-2">
-          <Input
-            id="new-email"
-            type={allowedDomains.length > 0 ? 'text' : 'email'}
-            className="min-w-0 flex-1"
-            placeholder={allowedDomains.length > 0 ? `用户名@${allowedDomains[0]}` : 'new@example.com'}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            list={allowedDomains.length > 0 ? 'change-email-domains' : undefined}
-          />
-          {allowedDomains.length > 0 && (
-            <datalist id="change-email-domains">
-              {allowedDomains.map((d) => (
-                <option key={d} value={`@${d}`} />
-              ))}
-            </datalist>
+          {/* 后缀内嵌在输入框右侧，和注册页一致。
+              之前用的是 datalist：选一个后缀会把整个输入值替换成 "@qq.com"，
+              前面填的用户名直接被吃掉 —— 这才是「选后缀把输入框填掉」的原因。 */}
+          {allowedDomains.length > 0 ? (
+            <div className="relative min-w-0 flex-1">
+              <Input
+                id="new-email"
+                type="text"
+                className="pr-[calc(0.75rem+var(--suffix-w,7rem))]"
+                style={{
+                  ['--suffix-w' as string]: `${Math.max(6, Math.max(...allowedDomains.map((d) => d.length)) + 2)}ch`,
+                }}
+                placeholder="用户名"
+                value={localPart}
+                onChange={(e) => {
+                  const v = e.target.value.replace(/@.*$/, '')
+                  setLocalPart(v)
+                  setEmail(v ? `${v}@${emailDomain}` : '')
+                }}
+              />
+              <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                <span>@</span>
+                {allowedDomains.length === 1 ? (
+                  <span className="max-w-[9rem] truncate">{allowedDomains[0]}</span>
+                ) : (
+                  <select
+                    className="pointer-events-auto max-w-[9rem] cursor-pointer appearance-none bg-transparent text-sm text-foreground outline-none"
+                    value={emailDomain}
+                    onChange={(e) => {
+                      setEmailDomain(e.target.value)
+                      setEmail(localPart ? `${localPart}@${e.target.value}` : '')
+                    }}
+                  >
+                    {allowedDomains.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+          ) : (
+            <Input
+              id="new-email"
+              type="email"
+              className="min-w-0 flex-1"
+              placeholder="new@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
           )}
           <Button
             variant="secondary"

@@ -1,8 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useQuery } from '@tanstack/react-query'
 import { QRCodeSVG } from 'qrcode.react'
 import {
+  Check,
+  Copy,
   Apple,
   BookOpen,
   Fingerprint,
@@ -44,6 +46,20 @@ export default function DnsSetup() {
   // 重置次数与自定义 ID 是否用过都要展示，用户才知道还剩几次机会
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe })
   const { data: membership } = useQuery({ queryKey: ['membership'], queryFn: getMyMembership })
+
+  // 指引文案里出现的地址都做成可点复制的芯片 ——
+  // 用户照着步骤走的时候，最烦的就是回头去别处找那一串地址再手抄。
+  const copyTokens = useMemo(() => {
+    if (!data) return []
+    return [
+      data.doh_url,
+      data.doh_url_path,
+      data.dot_host && data.dot_port ? `${data.dot_host}:${data.dot_port}` : '',
+      data.dot_host,
+      data.plain_dns ?? '',
+      data.domain,
+    ].filter(Boolean) as string[]
+  }, [data])
 
   // 安卓排第一：手机用户占绝大多数，进来先看到自己平台的步骤。
   // 只把 android 提前，其余保持后端给的顺序（iOS / Windows / macOS）。
@@ -110,7 +126,9 @@ export default function DnsSetup() {
                             <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary tabular-nums">
                               {i + 1}
                             </span>
-                            <span className="pt-0.5 text-sm">{step}</span>
+                            <span className="min-w-0 pt-0.5 text-sm">
+                              <HighlightStep text={step} tokens={copyTokens} />
+                            </span>
                           </li>
                         ))}
                       </ol>
@@ -242,5 +260,78 @@ export default function DnsSetup() {
         </>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * HighlightStep 把指引文案里的地址高亮成可点击复制的芯片。
+ *
+ * 为什么要在文本里做匹配而不是让后端返回结构化步骤：
+ * 步骤本身是给人读的一句话（「填入：xxx（Android 使用 DoT）」），
+ * 拆成「文字 + 地址 + 文字」三段既啰嗦又容易在改文案时漏掉一段。
+ * 这里按已知地址做最长匹配，匹配到就渲染成按钮，其余原样输出。
+ */
+function HighlightStep({ text, tokens }: { text: string; tokens: string[] }) {
+  const toast = useToast()
+  const [copied, setCopied] = useState<string | null>(null)
+
+  const parts = useMemo(() => {
+    // 长 token 优先，避免主域名把子域名地址截断
+    const list = [...new Set(tokens.filter(Boolean))].sort((a, b) => b.length - a.length)
+    const out: { text: string; token?: string }[] = []
+    let buf = ''
+    let i = 0
+    while (i < text.length) {
+      const hit = list.find((t) => text.startsWith(t, i))
+      if (hit) {
+        if (buf) {
+          out.push({ text: buf })
+          buf = ''
+        }
+        out.push({ text: hit, token: hit })
+        i += hit.length
+        continue
+      }
+      buf += text[i]
+      i++
+    }
+    if (buf) out.push({ text: buf })
+    return out
+  }, [text, tokens])
+
+  const copyOne = async (v: string) => {
+    try {
+      await navigator.clipboard.writeText(v)
+      setCopied(v)
+      setTimeout(() => setCopied((c) => (c === v ? null : c)), 1600)
+      toast.success('已复制', v)
+    } catch {
+      toast.error('复制失败', '请手动选中复制')
+    }
+  }
+
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.token ? (
+          <button
+            key={i}
+            type="button"
+            onClick={() => copyOne(p.token!)}
+            className="mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[12px] font-medium text-primary align-baseline transition-colors hover:bg-primary/20"
+            title="点击复制"
+          >
+            <span className="break-all">{p.text}</span>
+            {copied === p.token ? (
+              <Check className="size-3 shrink-0" />
+            ) : (
+              <Copy className="size-3 shrink-0 opacity-60" />
+            )}
+          </button>
+        ) : (
+          <span key={i}>{p.text}</span>
+        ),
+      )}
+    </>
   )
 }

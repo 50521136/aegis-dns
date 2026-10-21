@@ -16,6 +16,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
@@ -61,6 +62,9 @@ export function AnnouncementBell() {
   const [open, setOpen] = useState(false)
   const [sessionDismissed, setSessionDismissed] = useState<Set<number>>(() => loadSessionDismissed())
   const [popup, setPopup] = useState<Announcement | null>(null)
+  // viewing 是「从列表点开的那一条」，和自动弹出的 popup 分开：
+  // 自动弹窗关掉后不该影响用户主动查看的内容
+  const [viewing, setViewing] = useState<Announcement | null>(null)
 
   const query = useQuery({
     queryKey: ['announcements', 'mine'],
@@ -112,8 +116,16 @@ export function AnnouncementBell() {
 
   const dismissForever = () => {
     if (!popup) return
-    dismiss.mutate(popup.id)
+    const id = popup.id
+    // 先记进本会话的静音集合再发请求：
+    // 只靠 mutation 的 onSuccess 刷新列表的话，刷新回来之前
+    // useEffect 会按旧的 dismissed_at=0 把同一条又弹出来 —— 表现就是「点了没反应」。
+    const next = new Set(sessionDismissed)
+    next.add(id)
+    setSessionDismissed(next)
+    saveSessionDismissed(next)
     setPopup(null)
+    dismiss.mutate(id)
   }
 
   return (
@@ -145,13 +157,16 @@ export function AnnouncementBell() {
               <p className="px-3 py-8 text-center text-sm text-muted-foreground">暂无公告</p>
             ) : (
               items.map((a) => (
-                <button
+                <DropdownMenuItem
                   key={a.id}
-                  onClick={() => {
+                  // 点开就标已读，并打开详情 —— 之前只标已读不开详情，
+                  // 列表里又看不到正文，等于点了什么都没有。
+                  onSelect={() => {
                     if ((a.read_at ?? 0) === 0) markRead.mutate(a.id)
+                    setViewing(a)
                   }}
                   className={cn(
-                    'flex w-full gap-2 border-b border-border/40 px-3 py-2.5 text-left last:border-0 hover:bg-muted/40',
+                    'flex w-full cursor-pointer gap-2 rounded-none border-b border-border/40 px-3 py-2.5 text-left last:border-0',
                     (a.read_at ?? 0) === 0 && 'bg-primary/5',
                   )}
                 >
@@ -180,12 +195,60 @@ export function AnnouncementBell() {
                       )}
                     </span>
                   </span>
-                </button>
+                </DropdownMenuItem>
               ))
             )}
           </div>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* 详情弹窗：列表里点某一条时打开 */}
+      <Dialog open={viewing !== null} onOpenChange={(v) => !v && setViewing(null)}>
+        <DialogContent className="max-w-lg">
+          {viewing && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <span className={cn('flex size-7 items-center justify-center rounded-lg', LEVEL_META[viewing.level]?.bg)}>
+                    {(() => {
+                      const Icon = LEVEL_META[viewing.level]?.icon ?? Info
+                      return <Icon className={cn('size-4', LEVEL_META[viewing.level]?.cls)} />
+                    })()}
+                  </span>
+                  {viewing.title}
+                </DialogTitle>
+                <DialogDescription>{formatDateTime(viewing.created_at)}</DialogDescription>
+              </DialogHeader>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed">{viewing.body}</p>
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                {viewing.mode === 'popup' && viewing.dismissible && (viewing.dismissed_at ?? 0) === 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    loading={dismiss.isPending}
+                    onClick={() => {
+                      const id = viewing.id
+                      const next = new Set(sessionDismissed)
+                      next.add(id)
+                      setSessionDismissed(next)
+                      saveSessionDismissed(next)
+                      dismiss.mutate(id)
+                      setViewing(null)
+                    }}
+                  >
+                    <X />
+                    不再弹出
+                  </Button>
+                )}
+                <Button size="sm" onClick={() => setViewing(null)}>
+                  <Check />
+                  关闭
+                </Button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* 弹窗类公告 */}
       <Dialog open={popup !== null} onOpenChange={(v) => !v && closePopup()}>
