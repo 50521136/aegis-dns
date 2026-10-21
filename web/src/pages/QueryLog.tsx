@@ -198,8 +198,22 @@ export default function QueryLog() {
             {items.map((row) => {
               const meta = ACTION_META[row.action] ?? { label: row.action, variant: 'default' as const }
               const label = statusLabel(row.action, row.cache_hit)
+              // 手机端卡片必须能点开详情：之前只有桌面表格行绑了 onClick，
+              // 手机上整页点不动，日志只能看不能查。
               return (
-                <div key={row.id} className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm">
+                <div
+                  key={row.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelected(row)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelected(row)
+                    }
+                  }}
+                  className="cursor-pointer rounded-2xl border border-border/50 bg-card p-4 shadow-sm transition-colors active:bg-muted/40"
+                >
                   <div className="flex items-center justify-between gap-2">
                     <span className="break-all font-mono text-[13px]">{row.domain}</span>
                     <Badge variant={meta.variant}>{label}</Badge>

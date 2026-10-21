@@ -96,6 +96,7 @@ export function QueryLogDetail({
     const base = blocked ? '已拦截' : allowed ? '允许项' : '已处理'
     return {
       blocked,
+      allowed,
       actionLabel: row.cache_hit ? `${base}（缓存）` : base,
       actionVariant: blocked ? ('danger' as const) : allowed ? ('success' as const) : ('default' as const),
     }
@@ -105,7 +106,10 @@ export function QueryLogDetail({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && reset()}>
-      <DialogContent className="max-w-2xl">
+      {/* 手机上是底部抽屉：内容多时自己滚，别把整屏撑满；
+          桌面居中，宽度用 md:max-w-2xl 显式覆盖基类的 md:max-w-lg
+          （只写 max-w-2xl 在 md 断点会被基类盖掉，看起来像「弹窗大小不对」）。 */}
+      <DialogContent className="max-h-[85dvh] gap-3 p-4 md:max-w-2xl md:gap-4 md:p-6">
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2">
             <span className="break-all font-mono text-base">{row.domain}</span>
@@ -138,7 +142,7 @@ export function QueryLogDetail({
             <Field label="响应代码" value={row.rcode || '—'} mono />
             <Field label="DNS 服务器" value={row.upstream || '—'} mono />
             <Field label="耗时" value={`${row.latency_ms} ms`} mono />
-            <div className="col-span-2">
+            <div className="sm:col-span-2">
               <p className="eyebrow mb-1">响应</p>
               <pre className="max-h-40 overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
                 {row.answer || '（无应答记录）'}
@@ -152,7 +156,7 @@ export function QueryLogDetail({
           </Section>
 
           <Section title="操作">
-            <div className="col-span-2 space-y-2">
+            <div className="space-y-2 sm:col-span-2">
               {added ? (
                 <p className="flex items-center gap-2 text-sm text-success">
                   <CheckCircle2 className="size-4" />
@@ -160,24 +164,37 @@ export function QueryLogDetail({
                 </p>
               ) : hasRoom ? (
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="danger"
-                    loading={addRule.isPending && addRule.variables === 'block'}
-                    onClick={() => addRule.mutate('block')}
-                  >
-                    <Ban />
-                    加入拦截
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="success"
-                    loading={addRule.isPending && addRule.variables === 'allow'}
-                    onClick={() => addRule.mutate('allow')}
-                  >
-                    <CheckCircle2 />
-                    加入放行
-                  </Button>
+                  {/* 已经是这个状态就不再给同一个按钮：
+                      一条已经被拦截的记录旁边摆着「加入拦截」，
+                      只会让人以为没生效、手贱再点一次。 */}
+                  {!meta.blocked && (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      loading={addRule.isPending && addRule.variables === 'block'}
+                      onClick={() => addRule.mutate('block')}
+                    >
+                      <Ban />
+                      加入拦截
+                    </Button>
+                  )}
+                  {!meta.allowed && (
+                    <Button
+                      size="sm"
+                      variant="success"
+                      loading={addRule.isPending && addRule.variables === 'allow'}
+                      onClick={() => addRule.mutate('allow')}
+                    >
+                      <CheckCircle2 />
+                      加入放行
+                    </Button>
+                  )}
+                  {meta.blocked && (
+                    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Ban className="size-4" />
+                      这条已被拦截，如需放行请点右侧「加入放行」。
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="flex items-start gap-2 text-sm text-muted-foreground">
@@ -206,7 +223,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <section className="rounded-xl border border-border/60 p-3">
       <p className="eyebrow mb-2">{title}</p>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2">{children}</div>
+      <div className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">{children}</div>
     </section>
   )
 }

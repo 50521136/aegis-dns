@@ -31,11 +31,18 @@ import { cn } from '@/lib/utils'
 import type { QueryLogItem } from '@/api/types'
 import { QueryLogDetail } from '@/components/QueryLogDetail'
 
+// 状态只有三种：已拦截 / 允许项 / 已处理。「缓存」是修饰不是状态。
+// 这里漏了 handled 会导致管理员全局日志直接显示英文原值（线上就出现过）。
+function statusLabel(action: string, cacheHit?: boolean) {
+  const meta = ACTION_META[action]
+  const base = meta?.label ?? action
+  return cacheHit ? `${base}（缓存）` : base
+}
+
 const ACTION_META: Record<string, { label: string; variant: 'success' | 'danger' | 'default' | 'warning' }> = {
-  allowed: { label: '放行', variant: 'success' },
-  blocked: { label: '拦截', variant: 'danger' },
-  cached: { label: '缓存', variant: 'default' },
-  rewritten: { label: '改写', variant: 'warning' },
+  allowed: { label: '允许项', variant: 'success' },
+  blocked: { label: '已拦截', variant: 'danger' },
+  handled: { label: '已处理', variant: 'default' },
 }
 
 const toneClass = {
@@ -155,8 +162,7 @@ export default function AdminLogs() {
                 <SelectItem value="all">全部动作</SelectItem>
                 <SelectItem value="allowed">放行</SelectItem>
                 <SelectItem value="blocked">拦截</SelectItem>
-                <SelectItem value="cached">缓存</SelectItem>
-                <SelectItem value="rewritten">改写</SelectItem>
+                <SelectItem value="handled">已处理</SelectItem>
               </SelectContent>
             </Select>
 
@@ -199,6 +205,7 @@ export default function AdminLogs() {
               </TableHeader>
               <TableBody>
                 {items.map((row) => {
+                  const label = statusLabel(row.action, row.cache_hit)
                   const meta = ACTION_META[row.action] ?? {
                     label: row.action,
                     variant: 'default' as const,
@@ -222,7 +229,7 @@ export default function AdminLogs() {
                         <Badge variant="secondary">{row.qtype || '—'}</Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={meta.variant}>{meta.label}</Badge>
+                        <Badge variant={meta.variant}>{label}</Badge>
                       </TableCell>
                       <TableCell className="font-mono text-xs">{row.rcode || '—'}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
@@ -246,6 +253,7 @@ export default function AdminLogs() {
           {/* 移动端卡片 */}
           <div className="space-y-3 md:hidden">
             {items.map((row) => {
+              const label = statusLabel(row.action, row.cache_hit)
               const meta = ACTION_META[row.action] ?? {
                 label: row.action,
                 variant: 'default' as const,
@@ -254,7 +262,7 @@ export default function AdminLogs() {
                 <div key={row.id} className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm">
                   <div className="flex items-center justify-between gap-2">
                     <span className="break-all font-mono text-[13px]">{row.domain}</span>
-                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                    <Badge variant={meta.variant}>{label}</Badge>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1">
