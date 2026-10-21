@@ -52,12 +52,17 @@ export async function setMyClientID(clientID: string): Promise<ResetClientIDResu
   return data
 }
 
-export async function downloadMobileConfig(clientID: string): Promise<void> {
-  const { data } = await api.get('/me/mobileconfig', { responseType: 'blob' })
+export async function downloadMobileConfig(
+  clientID: string,
+  proto: 'doh' | 'dot' = 'doh',
+): Promise<void> {
+  // proto 决定描述文件里写 DNSProtocol=HTTPS 还是 TLS。
+  // 后端会校验该协议是否开启，关着就返回 409。
+  const { data } = await api.get('/me/mobileconfig', { responseType: 'blob', params: { proto } })
   const url = URL.createObjectURL(data as Blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `dnsforge-${clientID}.mobileconfig`
+  a.download = `dnsforge-${clientID}-${proto}.mobileconfig`
   document.body.appendChild(a)
   a.click()
   a.remove()

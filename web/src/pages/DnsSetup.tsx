@@ -137,25 +137,54 @@ export default function DnsSetup() {
                           装了描述文件就系统级生效，不用逐台手填地址。
                           Windows / Android 没有等价机制，不给这个按钮。 */}
                       {(g.platform === 'ios' || g.platform === 'macos') && data.client_id && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={async () => {
-                              try {
-                                await downloadMobileConfig(data.client_id)
-                                toast.success('描述文件已下载', '打开后到「设置」里安装即可')
-                              } catch (err) {
-                                toast.error('下载失败', errorMessage(err))
-                              }
-                            }}
-                          >
-                            <Download />
-                            下载 .mobileconfig 描述文件
-                          </Button>
-                          <span className="text-xs text-muted-foreground">
-                            装上后系统级生效，适合多设备
-                          </span>
+                        <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                          <p className="text-xs text-muted-foreground">
+                            描述文件装好后系统级生效，适合多设备。选一个协议下载：
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {/* 两个协议各给一个按钮：DoH 走 443、兼容性最好；
+                                DoT 走 853，在只放行 DoT 的网络里能用。
+                                没开启的协议不出现，避免下到一个用不了的文件。 */}
+                            {data.enable_doh && data.doh_url && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    await downloadMobileConfig(data.client_id, 'doh')
+                                    toast.success('已下载 DoH 描述文件', '打开后到「设置」里安装即可')
+                                  } catch (err) {
+                                    toast.error('下载失败', errorMessage(err))
+                                  }
+                                }}
+                              >
+                                <Download />
+                                DoH 描述文件（HTTPS）
+                              </Button>
+                            )}
+                            {data.enable_dot && data.dot_host && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    await downloadMobileConfig(data.client_id, 'dot')
+                                    toast.success('已下载 DoT 描述文件', '打开后到「设置」里安装即可')
+                                  } catch (err) {
+                                    toast.error('下载失败', errorMessage(err))
+                                  }
+                                }}
+                              >
+                                <Download />
+                                DoT 描述文件（TLS）
+                              </Button>
+                            )}
+                            {!data.enable_doh && !data.enable_dot && (
+                              <span className="text-xs text-danger">
+                                DoH 与 DoT 均未开启，暂不能生成描述文件
+                              </span>
+                            )}
+                          </div>
                         </div>
                       )}
                     </TabsContent>

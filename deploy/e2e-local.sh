@@ -152,6 +152,39 @@ MC_URL=$(grep -o '<string>https://[^<]*' "$RUN/e2e.mobileconfig" | head -1 | sed
 # plist 必须是合法 XML，否则 iOS 会直接拒绝安装
 python3 -c "import plistlib,sys; plistlib.load(open('$RUN/e2e.mobileconfig','rb'))" 2>/dev/null \
   && ok "plist 可被解析（结构合法）" || bad "plist 解析失败"
+
+# 协议可选：?proto=dot 要生成 TLS 形态（ServerName），不能是 HTTPS
+curl -s "$API/me/mobileconfig?proto=dot" -H "Authorization: Bearer $TOKEN" -o "$RUN/e2e-dot.mobileconfig"
+grep -q '<string>TLS</string>' "$RUN/e2e-dot.mobileconfig" \
+  && ok "proto=dot 生成 TLS 形态" || bad "DoT 描述文件协议不对"
+grep -q '<key>ServerName</key>' "$RUN/e2e-dot.mobileconfig" \
+  && ok "DoT 描述文件带 ServerName" || bad "缺 ServerName"
+grep -q '<key>ServerURL</key>' "$RUN/e2e-dot.mobileconfig" \
+  && bad "TLS 形态不该有 ServerURL" || ok "TLS 形态不含 ServerURL"
+python3 -c "import plistlib; plistlib.load(open('$RUN/e2e-dot.mobileconfig','rb'))" 2>/dev/null \
+  && ok "DoT plist 结构合法" || bad "DoT plist 解析失败"
+# 地址绝不能为空：空地址的描述文件装上后系统显示已安装但解析全挂
+grep -qE '<key>(ServerURL|ServerName)</key>[[:space:]]*<string></string>' "$RUN/e2e.mobileconfig" "$RUN/e2e-dot.mobileconfig" \
+  && bad "描述文件里出现了空地址" || ok "描述文件地址均非空"
+# 关掉 DoT 后请求 DoT 必须被拒（409），而不是给一份用不了的文件
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_dot":false}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig?proto=dot" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "409" ]] && ok "DoT 关闭时拒绝生成 DoT 描述文件（409）" || bad "DoT 关闭仍生成: $code"
+# DoH 关闭、不指定 proto 时应回退到 DoT
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":false,"enable_dot":true}' >/dev/null
+curl -s "$API/me/mobileconfig" -H "Authorization: Bearer $TOKEN" -o "$RUN/e2e-fallback.mobileconfig"
+grep -q '<string>TLS</string>' "$RUN/e2e-fallback.mobileconfig" \
+  && ok "DoH 关闭时自动回退 DoT" || bad "没回退到 DoT"
+# 两个都关：必须拒绝，不能给空地址文件
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":false,"enable_dot":false,"enable_plain_dns":true}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "409" ]] && ok "DoH/DoT 全关时拒绝生成（409）" || bad "全关仍生成: $code"
+# 恢复
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":true,"enable_dot":true,"enable_plain_dns":true}' >/dev/null
 code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig")
 [[ "$code" == "401" ]] && ok "未认证下载 → 401" || bad "未认证下载返回 $code"
 
