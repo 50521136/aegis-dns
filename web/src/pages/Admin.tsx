@@ -111,12 +111,10 @@ const settingsSchema = z.object({
   allow_user_rules: z.boolean(),
   allow_user_subs: z.boolean(),
   max_sub_entries: z.coerce.number().int().min(0),
-  free_max_rules: z.coerce.number().int().min(0),
-  free_max_subs: z.coerce.number().int().min(0),
-  free_daily_queries: z.coerce.number().int().min(0),
-  vip_max_rules: z.coerce.number().int().min(0),
-  vip_max_subs: z.coerce.number().int().min(0),
-  vip_daily_queries: z.coerce.number().int().min(0),
+  // 两档配额（free_max_rules / vip_* 等）不在这里：
+  // 配额的唯一编辑入口是「会员种类」面板。
+  // 两边都放输入框的话，管理员在一个页面改了、另一个页面还显示旧数字，
+  // 保存时又会把旧值写回去，等于互相覆盖。
   member_reward_days: z.coerce.number().int().min(1),
   allow_user_invite: z.boolean(),
   user_invite_max_codes: z.coerce.number().int().min(0),
@@ -513,25 +511,15 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
         <>
           <Card>
             <CardHeader>
-              <CardTitle>两档配额</CardTitle>
+              <CardTitle>订阅条目上限</CardTitle>
               <CardDescription>
-                档位不落库，按用户的会员到期时间实时判定；到期即自动降级。
+                各档位的配额在下面的「会员种类」里改 —— 配额只留一个编辑入口，避免两处数字打架。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="overflow-hidden rounded-xl border border-border">
-                <div className="grid grid-cols-3 gap-px bg-border text-xs font-medium">
-                  <div className="bg-muted/40 px-3 py-2">配额项</div>
-                  <div className="bg-muted/40 px-3 py-2">普通用户</div>
-                  <div className="bg-primary/10 px-3 py-2 text-primary">会员</div>
-                </div>
-                <QuotaRow form={form} label="自定义规则上限" free="free_max_rules" vip="vip_max_rules" />
-                <QuotaRow form={form} label="自定义订阅上限" free="free_max_subs" vip="vip_max_subs" />
-                <QuotaRow form={form} label="每日请求量上限" free="free_daily_queries" vip="vip_daily_queries" />
-              </div>
               <NumberField form={form} name="max_sub_entries" label="单订阅条目上限" />
               <p className="text-xs text-muted-foreground">
-                0 表示不限制。每日请求量按 UTC 自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。
+                0 表示不限制。每日请求量按北京时间自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。
               </p>
             </CardContent>
           </Card>
@@ -869,7 +857,7 @@ export function AdminMemberPage() {
   return (
     <AdminPage
       title="会员与邀请"
-      description="两档配额、注册赠送、每日签到、邀请码与拉新奖励"
+      description="会员种类（档位）与配额、注册赠送、每日签到、邀请码与拉新奖励"
       icon={<Gift className="size-5" />}
     >
       <SettingsPanel section="member" />
@@ -1170,40 +1158,6 @@ function BackupCard() {
         </p>
       </CardContent>
     </Card>
-  )
-}
-
-/**
- * QuotaRow 是两档配额表的一行。
- *
- * 用表格而不是两个并排的输入框：配额的意义在「两档差多少」，
- * 上下对照才能一眼看出来，分开摆会让人来回扫。
- */
-function QuotaRow<T extends SettingsForm>({
-  form,
-  label,
-  free,
-  vip,
-}: {
-  form: UseFormReturn<T>
-  label: string
-  free: keyof T & string
-  vip: keyof T & string
-}) {
-  return (
-    <div className="grid grid-cols-3 gap-px border-t border-border bg-border">
-      <div className="flex items-center bg-background px-3 py-2 text-sm">{label}</div>
-      {[free, vip].map((name) => (
-        <div key={name} className="bg-background px-2 py-1.5">
-          <Input
-            type="number"
-            min={0}
-            className="h-8 font-mono text-sm"
-            {...form.register(name as never)}
-          />
-        </div>
-      ))}
-    </div>
   )
 }
 
