@@ -141,6 +141,16 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["enable_query_log"]; ok {
 		set.EnableQueryLog = v == "1" || strings.EqualFold(v, "true")
 	}
+	// 协议开关：没存过就沿用默认（全开），不能让老库升级后协议全关
+	if v, ok := kv["enable_doh"]; ok {
+		set.EnableDoH = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["enable_dot"]; ok {
+		set.EnableDoT = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["enable_plain_dns"]; ok {
+		set.EnablePlainDNS = v == "1" || strings.EqualFold(v, "true")
+	}
 	if v, ok := kv["allow_register"]; ok {
 		set.AllowRegister = v == "1" || strings.EqualFold(v, "true")
 	}
@@ -244,6 +254,9 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"query_log_size":           strconv.Itoa(set.QueryLogSize),
 		"query_log_retention_days": strconv.Itoa(set.LogRetentionD),
 		"enable_query_log":         boolStr(set.EnableQueryLog),
+		"enable_doh":               boolStr(set.EnableDoH),
+		"enable_dot":               boolStr(set.EnableDoT),
+		"enable_plain_dns":         boolStr(set.EnablePlainDNS),
 		"allow_register":           boolStr(set.AllowRegister),
 		"invite_code":              set.InviteCode,
 		"update_repo":              set.UpdateRepo,

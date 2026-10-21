@@ -159,6 +159,11 @@ type Defaults struct {
 	QueryTimeout   int  `json:"query_timeout_ms"`
 	QueryLogSize   int  `json:"query_log_size"`
 	EnableQueryLog bool `json:"enable_query_log"`
+	// 协议开关：关掉的协议既不对外展示，也在解析入口直接拒绝。
+	// 由 apid 从全局设置写进快照，dnsd 无需读库即可执行。
+	EnableDoH      bool `json:"enable_doh"`
+	EnableDoT      bool `json:"enable_dot"`
+	EnablePlainDNS bool `json:"enable_plain_dns"`
 	// AllowRootDomain 决定裸域名（如 adguard.com）能否被当作合法入口。
 	// 为真时它按「无租户」处理、只套全局规则；为假时直接 REFUSED。
 	AllowRootDomain bool `json:"allow_root_domain"`
@@ -221,6 +226,10 @@ type Snapshot struct {
 	// GlobalFingerprint 是全局层（全局规则/订阅 + 影响应答的默认值）的指纹。
 	// 它变了才需要整体清缓存。
 	GlobalFingerprint string `json:"global_fp,omitempty"`
+	// CacheFlushSeq 是「清除缓存」的请求序号。
+	// 管理员点一次清除，apid 就把它 +1 并重建快照；dnsd 发现序号变了就整体清空缓存。
+	// 用序号而不是布尔：布尔清一次之后还得有人负责改回去，序号天然是边沿触发的。
+	CacheFlushSeq int64 `json:"cache_flush_seq,omitempty"`
 	// ChangedUsers 非空时表示增量快照：dnsd 只重建这些用户的 RuleSet，
 	// 其余复用旧对象。为空表示全量。
 	ChangedUsers []string   `json:"changed_users,omitempty"`
@@ -304,6 +313,11 @@ type GlobalSettings struct {
 
 	// --- 每日签到 ---
 	CheckinEnabled bool `json:"checkin_enabled"`
+	// EnableDoH / EnableDoT / EnablePlainDNS 是接入协议开关。
+	// 至少要留一个开着，否则用户拿不到任何可用地址。
+	EnableDoH      bool `json:"enable_doh"`
+	EnableDoT      bool `json:"enable_dot"`
+	EnablePlainDNS bool `json:"enable_plain_dns"`
 	// CheckinDays 是单次签到赠送的天数。
 	CheckinDays int `json:"checkin_days"`
 	// CheckinBonusEvery 是「累计签到满多少天」触发额外奖励的门槛，0 表示不设累计奖励。
@@ -389,6 +403,10 @@ func DefaultSettings() GlobalSettings {
 		QueryTimeoutMS: 10000,
 		QueryLogSize:   10000,
 		EnableQueryLog: true,
+		// 三个协议默认全开，升级后行为不变
+		EnableDoH:      true,
+		EnableDoT:      true,
+		EnablePlainDNS: true,
 		// 国内可达的两个公共解析器，用于解析 DoH/DoT 上游的主机名。
 		BootstrapDNS:  []string{"223.5.5.5", "119.29.29.29"},
 		SubIntervalH:  24,

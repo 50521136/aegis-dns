@@ -67,7 +67,7 @@ dns:
   listen_doh_plain: ""
 upstreams: ["223.5.5.5"]
 log:
-  level: "warn"
+  level: "info"
 EOF
 
 # 前端产物要先进 embed 目录，否则 apid 端的是仓库里的占位 index.html

@@ -17,6 +17,8 @@ interface StatCardProps {
   className?: string
   /** 是否启用数字滚动动画 */
   animate?: boolean
+  /** 卡片右上角的操作按钮（如「清除缓存」） */
+  action?: React.ReactNode
 }
 
 const toneMap: Record<NonNullable<StatCardProps['tone']>, string> = {
@@ -79,6 +81,7 @@ export function StatCard({
   suffix,
   className,
   animate = true,
+  action,
 }: StatCardProps) {
   const isNumber = typeof value === 'number'
   const animated = useCountUp(isNumber ? value : 0, isNumber && animate)
@@ -94,16 +97,19 @@ export function StatCard({
       {/* 眉标：等宽 + 宽字距的小节标题 */}
       <div className="flex items-start justify-between gap-3">
         <span className="eyebrow">{label}</span>
-        {icon && (
-          <div className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg', iconToneMap[tone])}>
-            {icon}
-          </div>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {action}
+          {icon && (
+            <div className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg', iconToneMap[tone])}>
+              {icon}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 读数：显示级等宽数字，单位小一号弱一档 */}
       <div className={cn('mt-3 flex items-baseline', toneMap[tone])}>
-        <span className="readout readout-l">{display}</span>
+        <span className="readout readout-stat">{display}</span>
         {suffix && <span className="readout-unit">{suffix}</span>}
       </div>
 

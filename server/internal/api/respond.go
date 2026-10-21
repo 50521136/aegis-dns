@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -249,17 +250,31 @@ type dnsConfigJSON struct {
 	// PlainDNS 为 null：本系统不对外提供明文 DNS（避免被当作开放解析器滥用）。
 	PlainDNS *string `json:"plain_dns"`
 	// CertFingerprintSHA256 供客户端固定证书用（自签场景尤其重要）。
-	CertFingerprintSHA256 string          `json:"cert_fingerprint_sha256"`
-	PlatformGuides        []platformGuide `json:"platform_guides"`
+	CertFingerprintSHA256 string `json:"cert_fingerprint_sha256"`
+	// 协议开关状态：前端据此决定显示哪些地址、哪些平台标「暂不支持」
+	EnableDoH      bool            `json:"enable_doh"`
+	EnableDoT      bool            `json:"enable_dot"`
+	EnablePlainDNS bool            `json:"enable_plain_dns"`
+	PlatformGuides []platformGuide `json:"platform_guides"`
 }
 
 type platformGuide struct {
-	Platform string   `json:"platform"`
-	Steps    []string `json:"steps"`
+	Platform string `json:"platform"`
+	// Supported=false 表示该平台需要的协议都被关掉了，
+	// 前端显示「暂不支持」而不是给一段照做也用不了的步骤。
+	Supported bool     `json:"supported"`
+	Steps     []string `json:"steps"`
 }
 
 // buildDNSConfig 构造某个 client_id 的接入配置。
-func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard bool) dnsConfigJSON {
+// protoSet 是当前开启的接入协议集合。
+type protoSet struct {
+	DoH   bool
+	DoT   bool
+	Plain bool
+}
+
+func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard bool, protos protoSet) dnsConfigJSON {
 	subHost := clientID + "." + domain
 	if clientID == "" {
 		subHost = domain
@@ -279,18 +294,26 @@ func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard 
 		dothost = domain
 	}
 
-	return dnsConfigJSON{
+	cfg := dnsConfigJSON{
 		ClientID:              clientID,
 		Domain:                domain,
-		DoHURL:                dohURL,
-		DoHURLPath:            dohURLPath,
-		DoTHost:               dothost,
-		DoTPort:               dotPort,
-		DoTAddr:               fmt.Sprintf("%s:%d", dothost, dotPort),
-		PlainDNS:              nil,
 		CertFingerprintSHA256: fingerprint,
-		PlatformGuides:        platformGuides(clientID, domain, dohURL, dothost, wildcard),
+		EnableDoH:             protos.DoH,
+		EnableDoT:             protos.DoT,
+		EnablePlainDNS:        protos.Plain,
 	}
+	// 关掉的协议一律不下发地址：页面上没地址，用户就没法照着填一个连不上的东西
+	if protos.DoH {
+		cfg.DoHURL = dohURL
+		cfg.DoHURLPath = dohURLPath
+	}
+	if protos.DoT {
+		cfg.DoTHost = dothost
+		cfg.DoTPort = dotPort
+		cfg.DoTAddr = fmt.Sprintf("%s:%d", dothost, dotPort)
+	}
+	cfg.PlatformGuides = platformGuides(clientID, domain, dohURL, dothost, wildcard, protos)
+	return cfg
 }
 
 // platformGuides 返回各平台的配置步骤。
@@ -301,53 +324,164 @@ func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard 
 //
 // dohURL / dothost 由 buildDNSConfig 按证书能力算好后传进来 —— 文案是用户唯一
 // 会照着做的地方，写一个连不上的地址等于没写。
-func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool) []platformGuide {
+func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, protos protoSet) []platformGuide {
 	host := dothost
 	dotNote := ""
 	if !wildcard && clientID != "" {
 		dotNote = "（当前证书不含通配符，DoT 只能用主域名；如需按用户区分请改用 DoH）"
 	}
-	return []platformGuide{
-		{
-			Platform: "ios",
-			Steps: []string{
-				"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
-				"选择「加密 DNS」，填入 DoH 地址：" + dohURL,
-				"或安装描述文件（.mobileconfig）批量下发，适合多设备",
+
+	// unsupported 是「这个平台需要的协议都没开」时的统一文案。
+	// 不给步骤：给了也照做不成，只会让用户以为是自己配错了。
+	unsupported := func(platform, need string) platformGuide {
+		return platformGuide{
+			Platform:  platform,
+			Supported: false,
+			Steps:     []string{need + " 当前未开放，请联系管理员开启后再按指引配置。"},
+		}
+	}
+
+	out := make([]platformGuide, 0, 5)
+
+	// iOS / macOS：系统级加密 DNS 走 DoH（描述文件）或 DoT
+	if protos.DoH {
+		out = append(out,
+			platformGuide{
+				Platform:  "ios",
+				Supported: true,
+				Steps: []string{
+					"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
+					"选择「加密 DNS」，填入 DoH 地址：" + dohURL,
+					"或安装描述文件（.mobileconfig）批量下发，适合多设备",
+				},
 			},
-		},
-		{
-			Platform: "android",
+			platformGuide{
+				Platform:  "macos",
+				Supported: true,
+				Steps: []string{
+					"打开「系统设置」→「网络」→ 选中当前连接 →「详细信息」",
+					"切到「DNS」标签页，添加 DNS 服务器",
+					"如需加密 DNS，安装描述文件并填入：" + dohURL,
+				},
+			},
+		)
+	} else if protos.DoT {
+		out = append(out,
+			platformGuide{
+				Platform:  "ios",
+				Supported: true,
+				Steps: []string{
+					"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
+					"选择「加密 DNS」→「手动」，主机名填：" + host + dotNote,
+					"或安装描述文件（.mobileconfig）批量下发",
+				},
+			},
+			platformGuide{
+				Platform:  "macos",
+				Supported: true,
+				Steps: []string{
+					"打开「系统设置」→「网络」→ 选中当前连接 →「详细信息」",
+					"切到「DNS」标签页，添加 DNS 服务器",
+					"加密 DNS 主机名填：" + host + dotNote,
+				},
+			},
+		)
+	} else {
+		out = append(out,
+			unsupported("ios", "DoH / DoT"),
+			unsupported("macos", "DoH / DoT"),
+		)
+	}
+
+	// Android 的「私人 DNS」只支持 DoT
+	if protos.DoT {
+		out = append(out, platformGuide{
+			Platform:  "android",
+			Supported: true,
 			Steps: []string{
 				"打开「设置」→「网络和互联网」→「私人 DNS」",
 				"选择「私人 DNS 提供商主机名」",
 				"填入：" + host + "（Android 使用 DoT，端口固定 853）" + dotNote,
 			},
-		},
-		{
-			Platform: "windows",
+		})
+	} else {
+		out = append(out, unsupported("android", "DoT（Android 私人 DNS 只支持 DoT）"))
+	}
+
+	// Windows 11 原生 DoH；没有 DoH 时退到手动填 IP（需要明文 DNS 或本地代理）
+	if protos.DoH {
+		out = append(out, platformGuide{
+			Platform:  "windows",
+			Supported: true,
 			Steps: []string{
 				"打开「设置」→「网络和 Internet」→「以太网 / Wi-Fi」",
 				"编辑 DNS 服务器分配，改为手动",
-				"首选 DNS 填写本机可访问的 DoH 代理地址，或使用支持 DoH 的浏览器内置解析",
-				"Windows 11 原生支持 DoH：填写 IP 后在「DNS over HTTPS」下拉里选择「开（自动模板）」",
+				"Windows 11 原生支持 DoH：填入解析地址后在「DNS over HTTPS」下拉里选择「开（自动模板）」",
+				"或使用支持 DoH 的浏览器 / 客户端填入：" + dohURL,
 			},
-		},
-		{
-			Platform: "macos",
+		})
+	} else if protos.Plain {
+		out = append(out, platformGuide{
+			Platform:  "windows",
+			Supported: true,
 			Steps: []string{
-				"打开「系统设置」→「网络」→ 选中当前连接 →「详细信息」",
-				"切到「DNS」标签页，添加 DNS 服务器",
-				"如需加密 DNS，安装描述文件并填入：" + dohURL,
+				"打开「设置」→「网络和 Internet」→「以太网 / Wi-Fi」",
+				"编辑 DNS 服务器分配，改为手动，填入本服务的公网 IP",
+				"明文 DNS 不做加密，建议只在可信网络下使用",
 			},
-		},
-		{
-			Platform: "router",
+		})
+	} else {
+		out = append(out, unsupported("windows", "DoH / 普通 DNS"))
+	}
+
+	// 路由器：优先 DoT/DoH，只支持明文的路由器退到明文
+	switch {
+	case protos.DoT:
+		out = append(out, platformGuide{
+			Platform:  "router",
+			Supported: true,
 			Steps: []string{
 				"在路由器 DHCP 设置里把 DNS 指向本服务",
 				"若路由器支持 DoT/DoH，直接填入：" + host + dotNote,
-				"若只支持明文 DNS，请先把本机 IP 加入「来源 IP 归属」，再填本服务的公网 IP",
 			},
-		},
+		})
+	case protos.DoH:
+		out = append(out, platformGuide{
+			Platform:  "router",
+			Supported: true,
+			Steps: []string{
+				"在路由器 DHCP 设置里把 DNS 指向本服务",
+				"若路由器支持 DoH，填入：" + dohURL,
+			},
+		})
+	case protos.Plain:
+		out = append(out, platformGuide{
+			Platform:  "router",
+			Supported: true,
+			Steps: []string{
+				"在路由器 DHCP 设置里把 DNS 指向本服务的公网 IP",
+				"若只支持明文 DNS，请先把出口 IP 加入「来源 IP 归属」",
+			},
+		})
+	default:
+		out = append(out, unsupported("router", "DoT / DoH / 普通 DNS"))
 	}
+
+	return out
+}
+
+// protos 返回当前开启的接入协议。
+//
+// 读不到设置或三个全关时按「全开」处理：这个函数决定用户能不能拿到地址，
+// 因为一次读库失败就返回「全部未开放」，用户会以为服务挂了。
+func (s *Server) protos(ctx context.Context) protoSet {
+	set, err := s.store.GetSettings(ctx)
+	if err != nil || set == nil {
+		return protoSet{DoH: true, DoT: true, Plain: true}
+	}
+	ps := protoSet{DoH: set.EnableDoH, DoT: set.EnableDoT, Plain: set.EnablePlainDNS}
+	if !ps.DoH && !ps.DoT && !ps.Plain {
+		return protoSet{DoH: true, DoT: true, Plain: true}
+	}
+	return ps
 }

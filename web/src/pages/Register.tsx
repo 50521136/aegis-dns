@@ -34,19 +34,6 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
-// emailSuffixes 是注册页邮箱后缀联想项。
-// 按国内实际使用频率排：QQ / 163 / 126 最多，Gmail / Outlook 次之。
-const emailSuffixes = [
-  'qq.com',
-  '163.com',
-  '126.com',
-  'gmail.com',
-  'outlook.com',
-  'foxmail.com',
-  'sina.com',
-  'aliyun.com',
-]
-
 export default function Register() {
   const { register: registerUser } = useAuth()
   const toast = useToast()
@@ -56,6 +43,9 @@ export default function Register() {
   const [params] = useSearchParams()
   const inviteFromLink = (params.get('invite') ?? '').toUpperCase()
   const [showPassword, setShowPassword] = useState(false)
+  // 后台配置的允许邮箱后缀（空 = 不限制）
+  const [emailLocal, setEmailLocal] = useState('')
+  const [emailDomain, setEmailDomain] = useState('')
   const [dnsConfig, setDnsConfig] = useState<DnsConfig | null>(null)
   const {
     register,
@@ -71,6 +61,14 @@ export default function Register() {
   // 公开配置决定表单要显示哪些字段：不要邀请码的站点不该摆一个空框
   const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
   const cfg = cfgQuery.data
+  const allowedDomains = cfg?.email_domains ?? []
+
+  // 后缀列表拿到后默认选中第一个，用户只需要填用户名
+  useEffect(() => {
+    if (allowedDomains.length > 0 && !emailDomain) {
+      setEmailDomain(allowedDomains[0])
+    }
+  }, [allowedDomains, emailDomain])
   const [sending, setSending] = useState(false)
   const [countdown, setCountdown] = useState(0)
   const emailValue = watch('email')
@@ -177,37 +175,63 @@ export default function Register() {
 
         <div className="space-y-2">
           <Label htmlFor="email">邮箱</Label>
-          <Input
-            id="email"
-            type="email"
-            autoComplete="email"
-            placeholder="you@example.com"
-            list="email-providers"
-            {...register('email')}
-          />
-          {/* 后缀联想：国内用户大多用这几个，省得手打还打错
-              （QQ 邮箱最容易漏掉 @ 后面的 qq.com） */}
-          <datalist id="email-providers">
-            {emailSuffixes.map((d) => (
-              <option key={d} value={`@${d}`} />
-            ))}
-          </datalist>
-          {/* 点了联想项后光标位置不定，所以给一排可点的后缀按钮兜底 */}
-          <div className="flex flex-wrap gap-1.5">
-            {emailSuffixes.slice(0, 5).map((d) => {
-              const local = emailValue.includes('@') ? emailValue.split('@')[0] : emailValue
-              return (
-                <button
-                  key={d}
-                  type="button"
-                  className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
-                  onClick={() => setValue('email', `${local || 'you'}@${d}`, { shouldValidate: true })}
-                >
-                  @{d}
-                </button>
-              )
-            })}
-          </div>
+          {allowedDomains.length > 0 ? (
+            <>
+              {/* 后台配了允许的后缀：输入框只填 @ 前面那部分，
+                  后缀贴在输入框右侧（不是单独占一列），
+                  所以输入区宽度不受后缀长短影响。后缀只能从下拉里选。 */}
+              <div className="relative">
+                <Input
+                  id="email"
+                  type="text"
+                  autoComplete="username"
+                  placeholder="用户名"
+                  className="pr-[calc(0.75rem+var(--suffix-w,7rem))]"
+                  style={{ ['--suffix-w' as string]: `${Math.max(6, Math.max(...allowedDomains.map((d) => d.length)) + 2)}ch` }}
+                  value={emailLocal}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/@.*$/, '')
+                    setEmailLocal(v)
+                    setValue('email', v ? `${v}@${emailDomain}` : '', { shouldValidate: true })
+                  }}
+                />
+                <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                  <span>@</span>
+                  {allowedDomains.length === 1 ? (
+                    <span className="max-w-[9rem] truncate">{allowedDomains[0]}</span>
+                  ) : (
+                    <select
+                      className="pointer-events-auto max-w-[9rem] cursor-pointer appearance-none bg-transparent text-sm text-foreground outline-none"
+                      value={emailDomain}
+                      onChange={(e) => {
+                        setEmailDomain(e.target.value)
+                        setValue('email', emailLocal ? `${emailLocal}@${e.target.value}` : '', {
+                          shouldValidate: true,
+                        })
+                      }}
+                    >
+                      {allowedDomains.map((d) => (
+                        <option key={d} value={d}>
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                本站只接受这些邮箱后缀：{allowedDomains.map((d) => '@' + d).join('、')}
+              </p>
+            </>
+          ) : (
+            <Input
+              id="email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              {...register('email')}
+            />
+          )}
           {errors.email && <p className="text-xs text-danger">{errors.email.message}</p>}
         </div>
 

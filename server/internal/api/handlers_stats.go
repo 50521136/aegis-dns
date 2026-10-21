@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/50521136/aegis-dns/server/internal/store"
@@ -344,5 +345,28 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		"invite_reward_days": set.MemberRewardDays,
 		"signup_member_days": set.SignupMemberDays,
 		"allow_email_change": set.AllowEmailChange,
+		// 允许的邮箱后缀：注册页据此把后缀做成下拉，只能选不能填。
+		// 后台没配就返回空数组，注册页退化成自由输入。
+		"email_domains": splitDomainList(set.EmailDomainWhitelist),
 	})
+}
+
+// splitDomainList 把逗号分隔的后缀列表拆成数组给前端用。
+//
+// 和 normalizeDomainList 的区别：那个用于写库（规范化成字符串），
+// 这个只用于下发，不改变存储形态。
+func splitDomainList(raw string) []string {
+	out := []string{}
+	for _, f := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t' || r == '\r'
+	}) {
+		d := strings.ToLower(strings.TrimSpace(f))
+		d = strings.TrimPrefix(d, "@")
+		d = strings.TrimPrefix(d, ".")
+		if d == "" || !strings.Contains(d, ".") {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }

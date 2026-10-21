@@ -71,3 +71,14 @@ export async function getPublicStats(): Promise<PublicStats> {
   const { data } = await api.get<PublicStats>('/public/stats')
   return data
 }
+
+/**
+ * 清除解析缓存。
+ *
+ * 缓存住在 dnsd 进程里，apid 只能下发指令 —— 所以这里是「已下发」而不是「已清空」，
+ * dnsd 下次轮询（通常 30 秒内）才真正清。UI 文案要说清楚这一点。
+ */
+export async function flushCache(): Promise<{ ok: boolean; message: string }> {
+  const { data } = await api.post('/admin/cache/flush')
+  return data as { ok: boolean; message: string }
+}

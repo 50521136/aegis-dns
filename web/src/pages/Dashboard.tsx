@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -12,6 +12,7 @@ import {
   YAxis,
 } from 'recharts'
 import {
+  Eraser,
   Activity,
   Ban,
   BookOpen,
@@ -22,10 +23,12 @@ import {
   TrendingUp,
   Users,
 } from 'lucide-react'
-import { getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
+import { flushCache, getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
 import { getAdminUserTraffic } from '@/api/adminStats'
 import type { Scope } from '@/api/types'
 import { useAuth } from '@/hooks/useAuth'
+import { useToast } from '@/components/ui/toast'
+import { errorMessage } from '@/api/client'
 import { StatCard } from '@/components/StatCard'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -41,7 +44,6 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { EmptyState } from '@/components/EmptyState'
-import { errorMessage } from '@/api/client'
 import { formatCompact, formatNumber, formatPercent } from '@/lib/format'
 
 function formatTs(ts: string | number): string {
@@ -62,7 +64,19 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   const { user, dnsConfig } = useAuth()
   const isAdmin = scope === 'global'
   // 默认「今日」：每日请求量额度按北京自然日计，看今日才是能对上额度的数字
+  const toast = useToast()
+  const qc = useQueryClient()
   const [range, setRange] = useState<StatsRange>('today')
+
+  // 清除缓存：只对管理员开放（普通用户不该能清全站缓存）
+  const flush = useMutation({
+    mutationFn: flushCache,
+    onSuccess: (res) => {
+      toast.success('清除指令已下发', res.message)
+      qc.invalidateQueries({ queryKey: ['stats'] })
+    },
+    onError: (err) => toast.error('清除失败', errorMessage(err)),
+  })
 
   // 区间同时决定三个查询：改一次区间要一起变，否则卡片和图对不上。
   const summary = useQuery({
@@ -178,6 +192,19 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                   tone="success"
                   delta={s?.cache_hit_rate}
                   deltaLabel="命中率"
+                  action={
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5 text-[11px] text-muted-foreground hover:text-danger"
+                      loading={flush.isPending}
+                      onClick={() => flush.mutate()}
+                      title="清空解析缓存（dnsd 30 秒内执行）"
+                    >
+                      <Eraser className="size-3" />
+                      清除
+                    </Button>
+                  }
                 />
                 <StatCard
                   label="平均延迟"

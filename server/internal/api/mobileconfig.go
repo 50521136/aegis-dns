@@ -113,7 +113,7 @@ func xmlEscape(s string) string {
 // handleMobileConfig 下发当前用户的 iOS/macOS 加密 DNS 描述文件。
 func (s *Server) handleMobileConfig(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	cfg := buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r))
+	cfg := buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context()))
 
 	body := buildDNSProfile(u.ClientID, cfg.DoHURL, cfg.CertFingerprintSHA256)
 

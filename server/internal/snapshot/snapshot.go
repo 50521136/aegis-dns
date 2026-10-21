@@ -119,6 +119,9 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 			QueryTimeout:    settings.QueryTimeoutMS,
 			QueryLogSize:    settings.QueryLogSize,
 			EnableQueryLog:  settings.EnableQueryLog,
+			EnableDoH:       settings.EnableDoH,
+			EnableDoT:       settings.EnableDoT,
+			EnablePlainDNS:  settings.EnablePlainDNS,
 			EnableECS:       settings.EnableECS,
 			EnableDNSSEC:    settings.EnableDNSSEC,
 			AllowRootDomain: settings.AllowRootDomain,
@@ -158,6 +161,12 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 		snap.Users = append(snap.Users, us)
 	}
 	snap.GlobalFingerprint = globalFingerprint(settings, snap)
+	// 清除缓存请求序号：读不到就当 0（不清），不能让一次读库失败清掉全站缓存
+	if v, err := st.GetMeta(ctx, "cache_flush_seq"); err == nil {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			snap.CacheFlushSeq = n
+		}
+	}
 	return snap, nil
 }
 

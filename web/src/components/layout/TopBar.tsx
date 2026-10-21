@@ -56,7 +56,8 @@ export function TopBar({ title, onOpenNav }: TopBarProps) {
         {title && <h2 className="truncate text-lg font-semibold">{title}</h2>}
       </div>
 
-      <AnnouncementBell />
+      {/* 管理员不参与普通用户功能，公告（签到/邀请/新人指引）与他无关 */}
+      {!isAdmin && <AnnouncementBell />}
 
       <ThemeToggle />
 

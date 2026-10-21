@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { cn } from '@/lib/utils'
 import { useQuery } from '@tanstack/react-query'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -79,20 +80,30 @@ export default function DnsSetup() {
                 <CardTitle>分平台设置指引</CardTitle>
               </CardHeader>
               <CardContent>
-                <Tabs defaultValue={guides[0].platform}>
+                <Tabs defaultValue={(guides.find((g) => g.supported) ?? guides[0]).platform}>
                   <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:w-auto sm:flex-wrap">
                     {guides.map((g) => {
                       const meta = platformMeta[g.platform.toLowerCase()]
                       return (
-                        <TabsTrigger key={g.platform} value={g.platform}>
+                        <TabsTrigger
+                          key={g.platform}
+                          value={g.platform}
+                          className={cn(!g.supported && 'text-muted-foreground/60')}
+                        >
                           {meta?.icon}
                           {meta?.label ?? g.platform}
+                          {!g.supported && <span className="ml-1 text-[10px]">暂不支持</span>}
                         </TabsTrigger>
                       )
                     })}
                   </TabsList>
                   {guides.map((g) => (
                     <TabsContent key={g.platform} value={g.platform}>
+                      {!g.supported && (
+                        <p className="mb-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+                          该平台需要的协议当前未开放
+                        </p>
+                      )}
                       <ol className="space-y-2">
                         {g.steps.map((step, i) => (
                           <li key={i} className="flex items-start gap-3">
@@ -160,14 +171,25 @@ export default function DnsSetup() {
                   />
                 </div>
 
-                <CopyField label="DoH（DNS over HTTPS）" value={data.doh_url} />
+                {/* 管理员关掉的协议不下发地址，这里也就不显示 ——
+                    没有地址可复制，用户就不会去配一个连不上的东西 */}
+                {data.enable_doh && data.doh_url && (
+                  <CopyField label="DoH（DNS over HTTPS）" value={data.doh_url} />
+                )}
                 {/* 证书没有通配符时主推地址本身就是路径式，两个值一样，
                     再列一遍只会让人以为哪里配错了 */}
-                {data.doh_url_path !== data.doh_url && (
+                {data.enable_doh && data.doh_url_path && data.doh_url_path !== data.doh_url && (
                   <CopyField label="DoH（路径式，兼容不能改 Host 的客户端）" value={data.doh_url_path} />
                 )}
-                <CopyField label="DoT（DNS over TLS）" value={`${data.dot_host}:${data.dot_port}`} />
-                {data.plain_dns && <CopyField label="普通 DNS（UDP/TCP）" value={data.plain_dns} />}
+                {data.enable_dot && data.dot_host && (
+                  <CopyField label="DoT（DNS over TLS）" value={`${data.dot_host}:${data.dot_port}`} />
+                )}
+                {data.enable_plain_dns && data.plain_dns && (
+                  <CopyField label="普通 DNS（UDP/TCP）" value={data.plain_dns} />
+                )}
+                {!data.enable_doh && !data.enable_dot && !data.enable_plain_dns && (
+                  <p className="text-sm text-danger">管理员已关闭全部接入协议，请联系管理员。</p>
+                )}
               </CardContent>
             </Card>
 
@@ -177,14 +199,24 @@ export default function DnsSetup() {
                 <CardTitle>扫码配置</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col items-center gap-4">
-                <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
-                  <QRCodeSVG value={data.doh_url} size={168} level="M" />
-                </div>
-                <p className="text-center text-xs text-muted-foreground">
-                  使用支持 DoH 的客户端扫描
-                  <br />
-                  快速导入接入地址
-                </p>
+                {data.enable_doh && data.doh_url ? (
+                  <>
+                    <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
+                      <QRCodeSVG value={data.doh_url} size={168} level="M" />
+                    </div>
+                    <p className="text-center text-xs text-muted-foreground">
+                      使用支持 DoH 的客户端扫描
+                      <br />
+                      快速导入接入地址
+                    </p>
+                  </>
+                ) : (
+                  <p className="py-6 text-center text-xs text-muted-foreground">
+                    DoH 未开启，
+                    <br />
+                    暂无可扫码的接入地址
+                  </p>
+                )}
               </CardContent>
             </Card>
           </div>

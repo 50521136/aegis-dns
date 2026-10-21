@@ -56,7 +56,7 @@ func (s *Server) handleResetMyClientID(w http.ResponseWriter, r *http.Request) {
 		"used":          u.IDResetCount + 1,
 		"limit":         set.MaxIDResets,
 		"remaining":     set.MaxIDResets - u.IDResetCount - 1,
-		"dns_config":    buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
+		"dns_config":    buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context())),
 	})
 }
 
@@ -153,7 +153,7 @@ func (s *Server) handleSetMyClientID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_id":     cid,
 		"old_client_id": old,
-		"dns_config":    buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r)),
+		"dns_config":    buildDNSConfig(s.domain(r), cid, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context())),
 	})
 }
 

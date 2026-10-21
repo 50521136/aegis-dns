@@ -410,6 +410,11 @@
   .readout-m {
     font-size: var(--fs-display-m);
   }
+  /* 统计卡读数：原来固定 40px，八位数在手机上会顶出卡片。
+     用 clamp 让它在窄屏自动缩到 18px 左右，宽屏回到 28px。 */
+  .readout-stat {
+    font-size: clamp(1.15rem, 4.6vw, 1.75rem);
+  }
   .readout-unit {
     font-family: var(--font-mono);
     font-size: 0.45em;

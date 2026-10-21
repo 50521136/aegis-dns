@@ -135,6 +135,8 @@ export interface PublicConfig {
   invite_reward_days: number
   signup_member_days: number
   allow_email_change: boolean
+  /** 后台允许的邮箱后缀（空数组 = 不限制）。注册页据此把后缀锁成下拉。 */
+  email_domains: string[]
 }
 
 export async function getPublicConfig(): Promise<PublicConfig> {

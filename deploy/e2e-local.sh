@@ -902,6 +902,47 @@ echo "$WL" | grep -qi '后缀不在允许范围' && ok "白名单外的邮箱被
 WL2=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
   -d "{\"username\":\"wl2$$\",\"email\":\"wl2$$@qq.com\",\"password\":\"Passw0rd!23\"}")
 echo "$WL2" | grep -q '"access_token"' && ok "白名单内的邮箱可注册" || bad "白名单内被误拒: $(echo "$WL2" | head -c 120)"
+
+# 注册页要把白名单下发给前端，否则后缀下拉框无从渲染
+PDOMAINS=$(curl -fsS "$API/public/config" | grep -o '"email_domains":\[[^]]*\]')
+echo "$PDOMAINS" | grep -q 'qq.com' && ok "公开配置下发邮箱后缀白名单" || bad "没下发后缀: $PDOMAINS"
+echo "$PDOMAINS" | grep -q '163.com' && ok "后缀列表包含全部配置项" || bad "后缀不全: $PDOMAINS"
+
+hdr "接入协议开关"
+# 关掉 DoT：用户端不该再拿到 DoT 地址，Android 指引应标「暂不支持」
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_dot":false}' >/dev/null
+CFG=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $TOKEN")
+echo "$CFG" | grep -q '"enable_dot":false' && ok "DoT 开关状态已下发" || bad "开关没下发: $(echo "$CFG" | head -c 120)"
+echo "$CFG" | grep -q '"dot_host":""' && ok "关闭后不下发 DoT 主机名" || bad "DoT 主机名仍在下发"
+echo "$CFG" | grep -q '"dot_port":0' && ok "关闭后 DoT 端口归零" || bad "DoT 端口仍在"
+echo "$CFG" | grep -q '"platform":"android","supported":false' && ok "Android 指引标记为暂不支持" || bad "Android 没标记: $(echo "$CFG" | grep -o '"platform":"android"[^}]*')"
+echo "$CFG" | grep -q '"platform":"ios","supported":true' && ok "iOS 指引仍可用" || bad "iOS 被误标不可用"
+# 三个全关必须被拒
+code=$(curl -s -o /tmp/e2e_proto.json -w '%{http_code}' -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"enable_doh":false,"enable_dot":false,"enable_plain_dns":false}')
+[[ "$code" == "422" ]] && ok "三个协议全关被拒（422）" || bad "全关没拦住: $code"
+grep -qi '至少要保留一个' /tmp/e2e_proto.json && ok "全关提示明确" || bad "提示不对"
+# 恢复
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":true,"enable_dot":true,"enable_plain_dns":true}' >/dev/null
+
+hdr "清除缓存"
+FLUSH=$(curl -s -X POST "$API/admin/cache/flush" -H "Authorization: Bearer $ADMTOK")
+echo "$FLUSH" | grep -q '"ok":true' && ok "清除缓存接口可用" || bad "清除失败: $FLUSH"
+echo "$FLUSH" | grep -q '"seq"' && ok "返回清除序号" || bad "没返回序号"
+# 序号必须落进快照，dnsd 靠它判断要不要清
+sleep 1
+FSEQ=$(grep -o '"cache_flush_seq":[0-9]*' "$RUN/data/runtime/config.json" | head -1)
+[ -n "$FSEQ" ] && ok "清除序号已写入快照（$FSEQ）" || bad "快照里没有清除序号"
+# 普通用户不该能清全站缓存
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/cache/flush" -H "Authorization: Bearer $TOKEN")
+[[ "$code" == "403" ]] && ok "普通用户无法清除缓存（403）" || bad "普通用户能清缓存: $code"
+
+hdr "管理员不收公告"
+# 管理员不参与普通用户功能，公告接口对他没意义（前端也不再渲染铃铛）
+ACOUNT=$(curl -fsS "$API/me/announcements" -H "Authorization: Bearer $ADMTOK" | grep -o '"unread":[0-9]*' | head -1)
+[ -n "$ACOUNT" ] && ok "公告接口对管理员仍可用（前端隐藏）" || bad "公告接口异常"
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"email_domain_whitelist":""}' >/dev/null
 

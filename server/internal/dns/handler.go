@@ -70,6 +70,8 @@ type Handler struct {
 	// 指标
 	rejected atomic.Int64
 	panics   atomic.Int64
+	// protosRejected 统计因协议被关闭而拒绝的查询数
+	protosRejected atomic.Int64
 	// quotaRefused 统计因超出每日请求量上限被拒的次数
 	quotaRefused atomic.Int64
 	// quota 是每日请求量计数器（会员档位）
@@ -147,6 +149,17 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	start := time.Now()
 	// det 承载日志详情，贯穿整条管线逐步填充。
 	det := qdetail{Proto: protoOf(hint, w), ECS: ecsFrom(req)}
+
+	// 协议开关：管理员关掉的协议直接拒绝。
+	// 放在最前面是因为它和用户无关，没有任何后续处理的意义；
+	// 用 REFUSED 而不是丢包，客户端能立刻知道是「不让用」而不是「网络不通」。
+	if !h.protoEnabled(det.Proto) {
+		h.protosRejected.Add(1)
+		if w != nil {
+			_ = w.WriteMsg(refusedResponse(req))
+		}
+		return
+	}
 
 	// Panic 保护：任何一个查询 panic 都不能让 dnsd 进程退出。
 	// 这是「DNS 可用性优先」的兜底（文档 4.2）。
@@ -718,4 +731,28 @@ func clientWantsDNSSEC(req *dns.Msg) bool {
 	}
 	opt := req.IsEdns0()
 	return opt != nil && opt.Do()
+}
+
+// protoEnabled 判断某个接入协议是否被管理员开启。
+//
+// 快照里没写（老快照）时一律按开启处理，避免升级瞬间把服务关掉。
+func (h *Handler) protoEnabled(proto string) bool {
+	d := h.registry.Load().Defaults()
+	// 三个都是 false 说明这份快照里根本没有这些字段（老版本写出来的），
+	// 此时按「全部开启」处理。否则升级瞬间 dnsd 会先把所有查询拒掉，
+	// 直到 apid 写出新快照为止 —— 那几秒整个服务是不可用的。
+	// apid 侧校验保证合法配置不可能三个全关，所以这个判据不会误伤。
+	if !d.EnableDoH && !d.EnableDoT && !d.EnablePlainDNS {
+		return true
+	}
+	switch proto {
+	case "doh":
+		return d.EnableDoH
+	case "dot":
+		return d.EnableDoT
+	case "udp", "tcp", "":
+		return d.EnablePlainDNS
+	default:
+		return true
+	}
 }

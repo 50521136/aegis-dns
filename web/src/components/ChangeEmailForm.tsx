@@ -30,6 +30,7 @@ export function ChangeEmailForm({
 
   const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
   const cfg = cfgQuery.data
+  const allowedDomains = cfg?.email_domains ?? []
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -81,15 +82,30 @@ export function ChangeEmailForm({
       )}
       <div className="space-y-2">
         <Label htmlFor="new-email">新邮箱</Label>
+        {/* 后台配了允许后缀时，后缀同样只能选不能填 —— 换邮箱走的是同一套
+            白名单校验，让用户手填一个必然被拒的地址没有意义 */}
+        {allowedDomains.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            只接受：{allowedDomains.map((d) => '@' + d).join('、')}
+          </p>
+        )}
         <div className="flex gap-2">
           <Input
             id="new-email"
-            type="email"
+            type={allowedDomains.length > 0 ? 'text' : 'email'}
             className="min-w-0 flex-1"
-            placeholder="new@example.com"
+            placeholder={allowedDomains.length > 0 ? `用户名@${allowedDomains[0]}` : 'new@example.com'}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            list={allowedDomains.length > 0 ? 'change-email-domains' : undefined}
           />
+          {allowedDomains.length > 0 && (
+            <datalist id="change-email-domains">
+              {allowedDomains.map((d) => (
+                <option key={d} value={`@${d}`} />
+              ))}
+            </datalist>
+          )}
           <Button
             variant="secondary"
             disabled={sending || countdown > 0 || !cfg.email_available}

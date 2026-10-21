@@ -46,6 +46,8 @@ type Loader struct {
 	// 线上 1.7G 的机器上 dnsd 直接吃到 1.3G，被 OOM 杀了两次。
 	// 只留 「全局指纹 + 每用户指纹」 就够判断，几十 KB 的量级。
 	prevGlobalFP string
+	// lastFlushSeq 是上次处理过的「清除缓存」序号
+	lastFlushSeq int64
 	prevUserFP   map[string]string
 	// onReload 在每次成功重载后回调（用于刷新 handler 的运行时参数）。
 	onReload func(*model.Snapshot)
@@ -87,6 +89,16 @@ func (l *Loader) invalidateCache(snap *model.Snapshot) {
 	}
 	c := l.handler.Cache()
 	if c == nil {
+		return
+	}
+
+	// 管理员手动点了「清除缓存」：序号变了就整体清空，跟规则有没有变无关。
+	// 这条要放在指纹判断之前 —— 用户点清除的场景恰恰是「规则没动但缓存有脏数据」。
+	if snap.CacheFlushSeq != l.lastFlushSeq {
+		before := c.Len()
+		c.Flush()
+		l.lastFlushSeq = snap.CacheFlushSeq
+		l.log.Info("管理员清除缓存，已整体清空", "entries_dropped", before, "seq", snap.CacheFlushSeq)
 		return
 	}
 

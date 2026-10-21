@@ -132,6 +132,9 @@ const settingsSchema = z.object({
   allow_email_change: z.boolean(),
   enable_ecs: z.boolean(),
   enable_dnssec: z.boolean(),
+  enable_doh: z.boolean(),
+  enable_dot: z.boolean(),
+  enable_plain_dns: z.boolean(),
   signup_member_days: z.coerce.number().int().min(0),
   checkin_enabled: z.boolean(),
   checkin_days: z.coerce.number().int().min(0),
@@ -315,6 +318,34 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
               <CardDescription>两个都会改变转发给上游的报文，默认关闭。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* 接入协议开关：关掉后用户端不再显示对应地址，解析入口也会直接拒绝 */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium">接入协议</p>
+                <p className="text-xs text-muted-foreground">
+                  关掉之后「我的 DNS」不再显示该协议的地址，已按此协议接入的客户端会被拒绝（REFUSED）。
+                  三个至少要留一个开着。
+                </p>
+                {[
+                  { key: 'enable_doh' as const, name: 'DoH（DNS over HTTPS）', desc: '走 443，兼容性最好，浏览器和 iOS/macOS 都能用。' },
+                  { key: 'enable_dot' as const, name: 'DoT（DNS over TLS）', desc: '走 853，Android「私人 DNS」只认这个。' },
+                  { key: 'enable_plain_dns' as const, name: '普通 DNS（UDP/TCP 53）', desc: '不加密。出于防滥用考虑，用户页从不展示明文地址，这里只控制 53 端口是否接受查询。' },
+                ].map((it) => (
+                  <div
+                    key={it.key}
+                    className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{it.name}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{it.desc}</p>
+                    </div>
+                    {toggle(it.key)}
+                  </div>
+                ))}
+                {!form.watch('enable_doh') && !form.watch('enable_dot') && !form.watch('enable_plain_dns') && (
+                  <p className="text-xs text-danger">三个协议全部关闭后服务将不可用，保存会被拒绝。</p>
+                )}
+              </div>
+
               <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">EDNS Client Subnet（ECS）</p>

@@ -37,6 +37,8 @@ export interface Tokens {
 
 export interface PlatformGuide {
   platform: string
+  /** false 表示该平台需要的协议都被关掉了，页面显示「暂不支持」 */
+  supported: boolean
   steps: string[]
 }
 
@@ -49,6 +51,10 @@ export interface DnsConfig {
   dot_port: number
   plain_dns: string | null
   cert_fingerprint_sha256: string
+  /** 协议开关：关掉的协议后端不下发地址 */
+  enable_doh: boolean
+  enable_dot: boolean
+  enable_plain_dns: boolean
   platform_guides: PlatformGuide[]
 }
 

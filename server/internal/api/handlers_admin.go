@@ -205,6 +205,9 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"query_timeout_ms":         set.QueryTimeoutMS,
 		"query_log_size":           set.QueryLogSize,
 		"enable_query_log":         set.EnableQueryLog,
+		"enable_doh":               set.EnableDoH,
+		"enable_dot":               set.EnableDoT,
+		"enable_plain_dns":         set.EnablePlainDNS,
 		"sub_interval_hours":       set.SubIntervalH,
 		"query_log_retention_days": set.LogRetentionD,
 		"allow_register":           set.AllowRegister,
@@ -293,12 +296,16 @@ type settingsPatch struct {
 	QueryTimeoutMS *int      `json:"query_timeout_ms"`
 	QueryLogSize   *int      `json:"query_log_size"`
 	EnableQueryLog *bool     `json:"enable_query_log"`
-	SubIntervalH   *int      `json:"sub_interval_hours"`
-	LogRetentionD  *int      `json:"query_log_retention_days"`
-	AllowRegister  *bool     `json:"allow_register"`
-	InviteCode     *string   `json:"invite_code"`
-	UpdateRepo     *string   `json:"update_repo"`
-	UpdateChannel  *string   `json:"update_channel"`
+	// 协议开关用指针：漏传 = 不变，不会因为前端没带字段就把协议关掉
+	EnableDoH      *bool   `json:"enable_doh"`
+	EnableDoT      *bool   `json:"enable_dot"`
+	EnablePlainDNS *bool   `json:"enable_plain_dns"`
+	SubIntervalH   *int    `json:"sub_interval_hours"`
+	LogRetentionD  *int    `json:"query_log_retention_days"`
+	AllowRegister  *bool   `json:"allow_register"`
+	InviteCode     *string `json:"invite_code"`
+	UpdateRepo     *string `json:"update_repo"`
+	UpdateChannel  *string `json:"update_channel"`
 
 	MaxSubEntries      *int   `json:"max_sub_entries"`
 	FreeMaxRules       *int   `json:"free_max_rules"`
@@ -413,6 +420,9 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.StatsRetentionD, p.StatsRetentionD)
 	setInt(&dst.MaxIDResets, p.MaxIDResets)
 	setBool(&dst.EnableQueryLog, p.EnableQueryLog)
+	setBool(&dst.EnableDoH, p.EnableDoH)
+	setBool(&dst.EnableDoT, p.EnableDoT)
+	setBool(&dst.EnablePlainDNS, p.EnablePlainDNS)
 	setBool(&dst.AllowRegister, p.AllowRegister)
 	setBool(&dst.AllowRootDomain, p.AllowRootDomain)
 	setBool(&dst.AllowUserRules, p.AllowUserRules)
@@ -765,6 +775,10 @@ func validateSettings(s *model.GlobalSettings) error {
 	}
 	if s.CheckinDays < 0 || s.CheckinDays > 365 {
 		return errValidation("checkin_days 需在 0 到 365 之间")
+	}
+	// 三个协议全关等于服务对外不可用，直接拒绝保存
+	if !s.EnableDoH && !s.EnableDoT && !s.EnablePlainDNS {
+		return errValidation("DoH / DoT / 普通 DNS 至少要保留一个开启")
 	}
 	if s.CheckinBonusEvery < 0 || s.CheckinBonusEvery > 3650 {
 		return errValidation("checkin_bonus_every 需在 0 到 3650 之间（0 = 不设累计奖励）")

@@ -167,11 +167,17 @@ export function AnnouncementBell() {
                       {a.pinned && <Badge variant="secondary">置顶</Badge>}
                       {(a.read_at ?? 0) === 0 && <span className="size-1.5 shrink-0 rounded-full bg-danger" />}
                     </span>
-                    {a.body && (
-                      <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{a.body}</span>
-                    )}
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground/70">
-                      {formatDateTime(a.created_at)}
+                    {/* 只显示标题：列表里展开正文会把一条公告撑成三四行，
+                        几条下来整屏都是字，反而找不到想点的那条。
+                        正文在点击后的详情弹窗里看。 */}
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
+                      <span>{formatDateTime(a.created_at)}</span>
+                      <span className="text-muted-foreground/40">·</span>
+                      {(a.read_at ?? 0) === 0 ? (
+                        <span className="font-medium text-danger">未读</span>
+                      ) : (
+                        <span>已读</span>
+                      )}
                     </span>
                   </span>
                 </button>
