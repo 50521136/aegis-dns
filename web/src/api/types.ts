@@ -474,3 +474,30 @@ export interface AnnouncementList {
   items: Announcement[]
   unread: number
 }
+
+/** 单个用户的完整信息（管理员详情弹窗用） */
+export interface AdminUserDetail {
+  id: string
+  username: string
+  email: string
+  role: 'admin' | 'user'
+  client_id: string
+  enabled: boolean
+  use_global_rules: boolean
+  rules_enabled: boolean
+  subs_enabled: boolean
+  id_reset_count: number
+  custom_id_used: boolean
+  created_at: string
+  member_until: string
+  is_member: boolean
+  member_days: number
+  tier: 'free' | 'vip'
+  /** 生效配额（档位默认 + 手填覆盖） */
+  quota: { max_rules: number; max_subs: number; daily_queries: number }
+  /** 档位默认配额，用来显示「默认 200，你手填了 500」 */
+  quota_default: { max_rules: number; max_subs: number; daily_queries: number }
+  /** 手填覆盖：0 = 跟随档位，-1 = 不限 */
+  custom: { max_rules: number; max_subs: number; daily_queries: number }
+  usage: { rules?: number; subs?: number; today_queries?: number }
+}

@@ -1,17 +1,20 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
+  Eraser,
   RefreshCw,
   ScrollText,
   Search,
 } from 'lucide-react'
-import { getQueryLog } from '@/api/stats'
+import { clearMyLogs, getQueryLog } from '@/api/stats'
 import type { QueryLogItem } from '@/api/types'
 import { QueryLogDetail } from '@/components/QueryLogDetail'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ErrorState } from '@/components/ErrorState'
 import { Pagination } from '@/components/Pagination'
+import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -53,6 +56,18 @@ export default function QueryLog() {
   const [page, setPage] = useState(1)
   // 点开的那一条；null 表示弹窗关闭
   const [selected, setSelected] = useState<QueryLogItem | null>(null)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const toast = useToast()
+
+  const clearLogs = useMutation({
+    mutationFn: clearMyLogs,
+    onSuccess: () => {
+      toast.success('已清空你看到的日志', '管理员侧的记录仍然保留')
+      setConfirmClear(false)
+      query.refetch()
+    },
+    onError: () => toast.error('清空失败'),
+  })
   const [domainInput, setDomainInput] = useState('')
   const [domain, setDomain] = useState('')
   const [action, setAction] = useState('all')
@@ -86,15 +101,27 @@ export default function QueryLog() {
         description="最近的 DNS 查询记录，每 15 秒自动刷新"
         icon={<ScrollText className="size-5" />}
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => query.refetch()}
-            disabled={query.isFetching}
-          >
-            <RefreshCw className={query.isFetching ? 'animate-spin' : undefined} />
-            刷新
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => query.refetch()}
+              disabled={query.isFetching}
+            >
+              <RefreshCw className={query.isFetching ? 'animate-spin' : undefined} />
+              刷新
+            </Button>
+            {/* 清空的是「你自己看到的」，管理员那边的记录一条不动 */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmClear(true)}
+              disabled={clearLogs.isPending}
+            >
+              <Eraser />
+              清空日志
+            </Button>
+          </div>
         }
       />
 
@@ -243,6 +270,17 @@ export default function QueryLog() {
 
       {/* 单条详情：请求 / 响应 / 客户端 / 操作 */}
       <QueryLogDetail row={selected} onClose={() => setSelected(null)} />
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="清空查询日志？"
+        description="只会清空你自己看到的记录，管理员侧的审计日志仍然保留。清空后无法恢复。"
+        confirmText="清空"
+        destructive
+        loading={clearLogs.isPending}
+        onConfirm={() => clearLogs.mutate()}
+        onOpenChange={setConfirmClear}
+      />
     </div>
   )
 }

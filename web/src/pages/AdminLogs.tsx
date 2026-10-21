@@ -258,8 +258,22 @@ export default function AdminLogs() {
                 label: row.action,
                 variant: 'default' as const,
               }
+              // 管理员全局日志的手机卡片同样要能点开详情：
+              // 用户侧修过一次，这里漏了，手机上管理员依然点不动。
               return (
-                <div key={row.id} className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm">
+                <div
+                  key={row.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelected(row)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelected(row)
+                    }
+                  }}
+                  className="cursor-pointer rounded-2xl border border-border/50 bg-card p-4 shadow-sm transition-colors active:bg-muted/40"
+                >
                   <div className="flex items-center justify-between gap-2">
                     <span className="break-all font-mono text-[13px]">{row.domain}</span>
                     <Badge variant={meta.variant}>{label}</Badge>

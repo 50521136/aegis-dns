@@ -66,9 +66,46 @@ func QuotaFor(t Tier, s *GlobalSettings) Quota {
 	}
 }
 
-// QuotaForUser 是 TierOf + QuotaFor 的组合，调用方最常用这个。
+// QuotaForUser 是 TierOf + QuotaFor 的组合，再叠加管理员的单用户覆盖。
+//
+// 覆盖值的语义是「0 = 不覆盖」，所以不能直接用 0 表示「不限制」：
+// 想要某个用户不限请求量，得显式填一个负数（-1），
+// 由 applyOverride 统一把负数转成 0（0 在 Quota 里表示不限制）。
+// 这样「没填」和「填了不限」才分得开。
 func QuotaForUser(u *User, s *GlobalSettings, now time.Time) Quota {
-	return QuotaFor(TierOf(u, now), s)
+	q := QuotaFor(TierOf(u, now), s)
+	if u == nil {
+		return q
+	}
+	q.MaxRules = applyOverride(q.MaxRules, u.CustomMaxRules)
+	q.MaxSubs = applyOverride(q.MaxSubs, u.CustomMaxSubs)
+	q.DailyQueries = applyOverrideI64(q.DailyQueries, int64(u.CustomDailyQueries))
+	return q
+}
+
+// applyOverride 把管理员手填的值叠到档位默认上。
+// 0 = 用默认；-1 = 不限（Quota 里 0 表示不限）；其他正数直接覆盖。
+func applyOverride(def, custom int) int {
+	switch {
+	case custom == 0:
+		return def
+	case custom < 0:
+		return 0
+	default:
+		return custom
+	}
+}
+
+// applyOverrideI64 是 applyOverride 的 int64 版本（每日请求量是 int64）。
+func applyOverrideI64(def, custom int64) int64 {
+	switch {
+	case custom == 0:
+		return def
+	case custom < 0:
+		return 0
+	default:
+		return custom
+	}
 }
 
 // MemberRemainingDays 返回会员剩余天数，非会员返回 0。

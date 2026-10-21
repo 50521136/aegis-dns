@@ -254,6 +254,26 @@ type QueryLogFilter struct {
 	Action string
 	Limit  int
 	Offset int
+	// SinceTS > 0 时只返回该时间之后的记录。
+	// 用户「清空自己的日志」不删数据，只把自己的视图起点往后推，
+	// 靠的就是这个字段；管理员查询不传，所以不受影响。
+	SinceTS int64
+}
+
+// CountUserQueriesSince 从 query_rollup 汇总某个用户在 since 之后的请求总量。
+//
+// 不能用 query_log 统计：它只保留很短时间（可能被设成 10 分钟），
+// 拿它算「今日请求量」会得到一个明显偏小的数。query_rollup 是按
+// 5 分钟对齐的聚合表，不受日志保留策略影响。
+func (s *Store) CountUserQueriesSince(ctx context.Context, uid string, since int64) (int64, error) {
+	var n int64
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(total),0) FROM query_rollup WHERE user_id = ? AND ts >= ?`,
+		uid, since).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("统计用户请求量失败: %w", err)
+	}
+	return n, nil
 }
 
 // QueryLogs 分页查询日志。
@@ -272,6 +292,10 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 	if f.Action != "" {
 		where = append(where, "l.action = ?")
 		args = append(args, f.Action)
+	}
+	if f.SinceTS > 0 {
+		where = append(where, "l.ts > ?")
+		args = append(args, f.SinceTS)
 	}
 	clause := " WHERE " + strings.Join(where, " AND ")
 

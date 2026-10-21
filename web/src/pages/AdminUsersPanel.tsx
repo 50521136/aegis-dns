@@ -4,6 +4,7 @@ import {
   AtSign,
   Check,
   Gift,
+  Info,
   KeyRound,
   RefreshCw,
   Search,
@@ -25,6 +26,7 @@ import type { User } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
+import { AdminUserDetailDialog } from '@/components/AdminUserDetailDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Pagination } from '@/components/Pagination'
 import { Badge } from '@/components/ui/badge'
@@ -81,6 +83,8 @@ export function UsersPanel() {
   const [cidUser, setCidUser] = useState<User | null>(null)
   // 会员调整弹窗
   const [memberUser, setMemberUser] = useState<User | null>(null)
+  // 详情弹窗：会员状态、开关、使用量、配额覆盖都在这里改
+  const [detailUser, setDetailUser] = useState<string | null>(null)
   const [memberDays, setMemberDays] = useState(30)
   const [cidValue, setCidValue] = useState('')
 
@@ -441,6 +445,15 @@ export function UsersPanel() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              onClick={() => setDetailUser(u.id)}
+                              aria-label="查看详情"
+                              title="查看详情 / 调整配额"
+                            >
+                              <Info className="size-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
                               onClick={() => {
                                 setPwUser(u)
                                 setPwValue('')
@@ -559,6 +572,8 @@ export function UsersPanel() {
       />
 
       {/* 自定义接入 ID */}
+      <AdminUserDetailDialog userId={detailUser} onClose={() => setDetailUser(null)} />
+
       <Dialog
         open={Boolean(cidUser)}
         onOpenChange={(o) => {

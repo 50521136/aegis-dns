@@ -66,6 +66,16 @@ type User struct {
 	// MemberUntil 是会员到期时间（Unix 秒），0 表示从未开通/已过期。
 	// 档位不单独存字段：到期即自动降级，不需要任何定时任务。
 	MemberUntil int64 `json:"member_until"`
+	// CustomMaxRules / CustomMaxSubs / CustomDailyQueries 是管理员给单个用户
+	// 手填的配额覆盖。0 = 按档位默认（见 model.QuotaFor）。负数没有意义，
+	// 写入前会被钳到 >= 0。
+	CustomMaxRules     int `json:"custom_max_rules"`
+	CustomMaxSubs      int `json:"custom_max_subs"`
+	CustomDailyQueries int `json:"custom_daily_queries"`
+	// LogClearedAt 是用户「清空自己的日志」的时间点。
+	// 只影响用户自己的查询视图（ts > LogClearedAt），不删数据，
+	// 所以管理员视角照旧能查到 —— 用户清的是自己的视图，不是库。
+	LogClearedAt int64 `json:"-"`
 	// InvitedBy 记录拉新关系，用于统计与防止重复发放奖励。
 	InvitedBy string `json:"invited_by,omitempty"`
 }

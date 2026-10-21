@@ -1225,6 +1225,51 @@ for t in ("users","rules","subscriptions","sub_entries","query_rollup","top_doma
         print(f"  {t:16s} 读取失败 {e}")
 PY
 
+hdr "用户详情与配额覆盖"
+# 详情接口：会员状态、生效配额、档位默认、使用量都得有
+U1=$(curl -fsS "$API/admin/users?page=1&page_size=50" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;print(next(u['id'] for u in json.load(sys.stdin)['items'] if u['username']=='e2etest'))")
+DET=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK")
+for k in is_member member_days tier quota quota_default custom usage today_queries; do
+  if echo "$DET" | grep -q "\"$k\""; then ok "详情含 $k"; else bad "详情缺 $k"; fi
+done
+
+# 手填覆盖：规则 777、订阅 -1（不限）、请求 123456
+curl -fsS -X PUT "$API/admin/users/$U1/quota" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"max_rules":777,"max_subs":-1,"daily_queries":123456}' >/dev/null
+Q=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['quota']['max_rules'],d['quota']['max_subs'],d['quota']['daily_queries'])")
+set -- $Q
+[[ "$1" == "777" ]] && ok "配额覆盖生效（规则 777）" || bad "规则覆盖失败：$1"
+# -1 表示不限，而 Quota 里「不限」就是 0，所以生效值必须是 0，不能是 -1
+[[ "$2" == "0" ]] && ok "订阅 -1 归一成不限（0）" || bad "订阅 -1 没归一：$2"
+[[ "$3" == "123456" ]] && ok "请求量覆盖生效" || bad "请求量覆盖失败：$3"
+
+# 恢复默认：0 = 跟随档位
+curl -fsS -X PUT "$API/admin/users/$U1/quota" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"max_rules":0,"max_subs":0,"daily_queries":0}' >/dev/null
+C=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['custom']['max_rules'],d['custom']['max_subs'],d['custom']['daily_queries'])")
+[[ "$C" == "0 0 0" ]] && ok "恢复默认后不再覆盖" || bad "恢复默认失败：$C"
+
+hdr "用户清空日志不影响管理员"
+total_of() { python3 -c "import json,sys;print(json.load(sys.stdin).get('total',0))"; }
+$PROBE udp 127.0.0.1:15353 clear-probe.example.com >/dev/null 2>&1
+sleep 2
+UBEFORE=$(curl -fsS "$API/stats/querylog?page=1&page_size=5" -H "Authorization: Bearer $TOKEN" | total_of)
+ABEFORE=$(curl -fsS "$API/admin/stats/querylog?page=1&page_size=5" -H "Authorization: Bearer $ADMTOK" | total_of)
+[[ "${UBEFORE:-0}" -gt 0 ]] && ok "清空前用户能看到日志（$UBEFORE 条）" || bad "清空前用户日志为空"
+[[ "${ABEFORE:-0}" -gt 0 ]] && ok "清空前管理员能看到日志（$ABEFORE 条）" || bad "清空前管理员日志为空"
+
+curl -fsS -X POST "$API/logs/clear" -H "Authorization: Bearer $TOKEN" >/dev/null
+sleep 1
+UAFTER=$(curl -fsS "$API/stats/querylog?page=1&page_size=5" -H "Authorization: Bearer $TOKEN" | total_of)
+AAFTER=$(curl -fsS "$API/admin/stats/querylog?page=1&page_size=5" -H "Authorization: Bearer $ADMTOK" | total_of)
+[[ "${UAFTER:-0}" -eq 0 ]] && ok "用户清空后自己看不到旧日志" || bad "用户清空后仍看到 $UAFTER 条"
+# 这条是需求要害：用户清的是自己的视图，不能把管理员的审计记录一起清掉
+[[ "${AAFTER:-0}" -gt 0 ]] && ok "管理员仍能看到全部日志（$AAFTER 条）" || bad "管理员日志被误清（$AAFTER 条）"
+
 hdr "优雅关闭"
 kill -TERM "$DNSD_PID" "$APID_PID" 2>/dev/null
 wait "$DNSD_PID" 2>/dev/null

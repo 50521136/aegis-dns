@@ -173,6 +173,9 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/stats/timeseries", s.handleStatsTimeseries)
 			r.Get("/stats/top", s.handleStatsTop)
 			r.Get("/stats/querylog", s.handleQueryLog)
+			// 清空自己的日志视图：不删数据，只把起点推到当下，
+			// 管理员那边的审计记录不受影响。
+			r.Post("/logs/clear", s.handleClearMyLogs)
 
 			r.Get("/update/check", s.handleUpdateCheck)
 
@@ -205,6 +208,9 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/feedback/{id}", s.handleAdminReplyFeedback)
 
 				r.Get("/users", s.handleAdminListUsers)
+				r.Get("/users/{id}", s.handleAdminGetUser)
+				// 单用户配额覆盖（0 = 跟随档位，-1 = 不限）
+				r.Put("/users/{id}/quota", s.handleAdminSetUserQuota)
 				r.Put("/users/{id}", s.handleAdminUpdateUser)
 				r.Delete("/users/{id}", s.handleAdminDeleteUser)
 				r.Post("/users/bulk-delete", s.handleAdminBulkDeleteUsers)

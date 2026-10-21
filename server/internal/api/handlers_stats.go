@@ -157,6 +157,8 @@ func (s *Server) handleQueryLog(w http.ResponseWriter, r *http.Request) {
 		Action: q.Get("action"),
 		Limit:  limit,
 		Offset: offset,
+		// 用户自己清空过日志的话，只从那时之后开始看。
+		SinceTS: u.LogClearedAt,
 	})
 	if err != nil {
 		writeStoreError(w, err, "")

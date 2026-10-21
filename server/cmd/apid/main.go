@@ -222,8 +222,13 @@ func seedSettingsFromConfig(ctx context.Context, st *store.Store, cfg *config.Co
 
 // maintenanceLoop 每天清理过期统计与日志（文档 8.4）。
 func maintenanceLoop(ctx context.Context, st *store.Store, settings *modelSettings, log *slog.Logger) {
-	// 启动 5 分钟后先跑一次，之后每 24 小时一次。
-	timer := time.NewTimer(5 * time.Minute)
+	// 启动 1 分钟后先跑一次，之后每 1 分钟一次。
+	//
+	// 原来间隔是 24 小时（后来改到 10 分钟），但保留期是按分钟配的：
+	// 设成 10 分钟却每 10 分钟才扫一次，实际最老的记录能留到 20 分钟，
+	// 看起来就像「保留时间不生效」。按分钟扫的代价只是一条走 ts 索引的
+	// DELETE，绝大多数时候删 0 行，不值得为省这点开销让配置失真。
+	timer := time.NewTimer(1 * time.Minute)
 	defer timer.Stop()
 
 	for {
@@ -255,7 +260,7 @@ func maintenanceLoop(ctx context.Context, st *store.Store, settings *modelSettin
 			// 保留期是分钟级的，24 小时才清一次等于没清：
 			// 一小时窗口内攒的量要等到第二天才删。改成 10 分钟一次，
 			// 单次只删「超过 1 小时」的行，有 ts 索引，开销很小。
-			timer.Reset(10 * time.Minute)
+			timer.Reset(1 * time.Minute)
 		}
 	}
 }

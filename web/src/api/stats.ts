@@ -93,3 +93,13 @@ export async function flushMyCache(): Promise<{ ok: boolean; message: string }> 
   const { data } = await api.post('/me/cache/flush')
   return data as { ok: boolean; message: string }
 }
+
+/**
+ * 清空「我自己」看到的查询日志。
+ *
+ * 只把自己的视图起点推到当下，一条数据都不删 ——
+ * 管理员的审计日志仍然完整保留。要真删数据只能等保留策略到期。
+ */
+export async function clearMyLogs(): Promise<void> {
+  await api.post('/me/logs/clear')
+}

@@ -1,6 +1,7 @@
 import { api } from './client'
 import type {
   AdminSettings,
+  AdminUserDetail,
   AdminUserListResponse,
   SystemInfo,
   UpdateApplyResult,
@@ -180,4 +181,21 @@ export async function downloadBackup(): Promise<void> {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
+}
+
+/** 单个用户详情：会员状态、生效配额、使用量 */
+export async function getAdminUser(id: string): Promise<AdminUserDetail> {
+  const { data } = await api.get<AdminUserDetail>(`/admin/users/${id}`)
+  return data
+}
+
+/**
+ * 设置单用户配额覆盖。
+ * 0 = 跟随档位默认，-1 = 不限，正数 = 手填上限。
+ */
+export async function setAdminUserQuota(
+  id: string,
+  patch: { max_rules?: number; max_subs?: number; daily_queries?: number },
+): Promise<void> {
+  await api.put(`/admin/users/${id}/quota`, patch)
 }

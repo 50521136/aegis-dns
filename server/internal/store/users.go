@@ -13,14 +13,15 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
 	var enabled, useGlobal, rulesOn, subsOn, customUsed int
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
 		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed,
-		&u.MemberUntil, &u.InvitedBy, &u.CreatedAt)
+		&u.MemberUntil, &u.InvitedBy, &u.CreatedAt,
+		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +61,13 @@ func (s *Store) CreateUser(ctx context.Context, username, email, passwordHash, r
 			CreatedAt:    now,
 		}
 		_, err := s.write.ExecContext(ctx,
-			`INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			// 列名单独写死，不复用 userCols：
+			// userCols 是给 SELECT 用的，以后加字段只改一处就会让
+			// 「N values for M columns」当场炸掉（已经踩过一次）。
+			`INSERT INTO users (id, username, email, password_hash, role, client_id, enabled,
+			                    use_global_rules, id_reset_count, rules_enabled, subs_enabled,
+			                    custom_id_used, member_until, invited_by, created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			u.ID, u.Username, u.Email, u.PasswordHash, u.Role, u.ClientID,
 			boolInt(u.Enabled), boolInt(u.UseGlobalRules), u.IDResetCount,
 			boolInt(u.RulesEnabled), boolInt(u.SubsEnabled), boolInt(u.CustomIDUsed),
@@ -254,6 +261,37 @@ func (s *Store) UpdateUserFields(ctx context.Context, uid string, enabled *bool,
 	res, err := s.write.ExecContext(ctx, `UPDATE users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
 		return fmt.Errorf("更新用户失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateUserQuota 设置单个用户的配额覆盖。传 0 表示恢复按档位默认，
+// 传负数表示不限。三个值各自独立。
+func (s *Store) UpdateUserQuota(ctx context.Context, uid string, maxRules, maxSubs, dailyQueries int) error {
+	res, err := s.write.ExecContext(ctx,
+		`UPDATE users SET custom_max_rules = ?, custom_max_subs = ?, custom_daily_queries = ? WHERE id = ?`,
+		maxRules, maxSubs, dailyQueries, uid)
+	if err != nil {
+		return fmt.Errorf("更新用户配额失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearUserLogs 把用户的日志视图起点推到 now。
+//
+// 刻意不 DELETE：用户手动清空只该清掉「自己看到的」，
+// 管理员那边的审计记录必须留着 —— 否则用户一清，出了问题就查无实据。
+// 真正的删除只由保留策略（Cleanup）按时间做。
+func (s *Store) ClearUserLogs(ctx context.Context, uid string, now int64) error {
+	res, err := s.write.ExecContext(ctx, `UPDATE users SET log_cleared_at = ? WHERE id = ?`, now, uid)
+	if err != nil {
+		return fmt.Errorf("清空用户日志失败: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
