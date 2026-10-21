@@ -501,6 +501,50 @@ echo "$CL" | grep -q '"total"' && ok "手动清理接口可用" || bad "清理�
 # retention=0 时统计清理任务根本不会加入，key 直接不出现（而不是删了 0 行）
 echo "$CL" | grep -q '"query_rollup"' && bad "统计被误删: $CL" || ok "统计保留 0 天时不按时间删（保护生效）"
 
+hdr "查询日志只保留最近 1 小时"
+# 塞一条 2 小时前、一条 30 分钟前的日志，清理后只该删掉老的那条
+python3 - "$RUN/data/aegis.db" <<'PYEOF'
+import sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1])
+now = int(time.time())
+for dom, ts in (("e2e-old-2h.example", now - 7200), ("e2e-fresh-30m.example", now - 1800)):
+    db.execute("insert into query_log(user_id, ts, domain, qtype, rcode, action, client, latency_ms) values (?,?,?,?,?,?,?,?)",
+               ("", ts, dom, "A", "NOERROR", "allowed", "127.0.0.0/24", 1))
+db.commit()
+PYEOF
+CL2=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"query_log_retention_min":60}')
+echo "$CL2" | grep -q '"log_retention_min":60' && ok "保留期按分钟生效（60 分钟）" || bad "保留期没生效: $CL2"
+LEFT=$(python3 - "$RUN/data/aegis.db" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+rows = [r[0] for r in db.execute("select domain from query_log where domain like 'e2e-%.example'")]
+print(",".join(sorted(rows)))
+PYEOF
+)
+echo "$LEFT" | grep -q 'e2e-old-2h' && bad "2 小时前的日志没被删: $LEFT" || ok "超过 1 小时的日志已删除"
+echo "$LEFT" | grep -q 'e2e-fresh-30m' && ok "1 小时内的日志保留" || bad "30 分钟前的日志被误删: $LEFT"
+# 设置项也要按分钟回读
+SETLOG=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SETLOG" | grep -q '"query_log_retention_min"' && ok "日志保留期按分钟配置" || bad "设置项还是天数: $SETLOG"
+
+hdr "用户自助清除缓存"
+MFLUSH=$(curl -s -X POST "$API/me/cache/flush" -H "Authorization: Bearer $TOKEN")
+echo "$MFLUSH" | grep -q '"ok":true' && ok "普通用户可清除自己的缓存" || bad "自助清除失败: $MFLUSH"
+echo "$MFLUSH" | grep -q '"seq"' && ok "返回用户级清除序号" || bad "没返回序号"
+# 序号必须落进快照的该用户条目上，dnsd 靠它定向清
+sleep 2
+USEQ=$(python3 - "$RUN/data/runtime/config.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(sum(1 for u in d.get("users", []) if u.get("cache_flush_seq")))
+PYEOF
+)
+[ "${USEQ:-0}" -ge 1 ] && ok "用户清除序号已写入快照（$USEQ 个用户带序号）" || bad "快照里没有用户级序号"
+# 未登录不能清
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/me/cache/flush")
+[[ "$code" == "401" ]] && ok "未登录不能清除缓存（401）" || bad "未登录也能清: $code"
+
 hdr "订阅强制刷新"
 # 条目上限/解析规则改完后，缓存过的订阅会一直走 304 不重算，
 # 管理员改了设置却看不到变化。?force=1 给一个明确的「现在就重算」入口。

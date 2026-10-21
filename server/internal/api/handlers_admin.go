@@ -189,31 +189,31 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 // settingsJSON 补充只读的派生字段。
 func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 	out := map[string]any{
-		"domain":                   set.Domain,
-		"upstreams":                set.Upstreams,
-		"bootstrap_dns":            set.BootstrapDNS,
-		"proxy_url":                set.ProxyURL,
-		"proxy_enabled":            set.ProxyEnabled,
-		"blocking_mode":            set.BlockingMode,
-		"custom_ip":                set.CustomIP,
-		"fallback_policy":          set.FallbackPolicy,
-		"cache_size":               set.CacheSize,
-		"cache_min_ttl":            set.CacheMinTTL,
-		"cache_max_ttl":            set.CacheMaxTTL,
-		"rate_limit_qps":           set.RateLimitQPS,
-		"max_inflight":             set.MaxInflight,
-		"query_timeout_ms":         set.QueryTimeoutMS,
-		"query_log_size":           set.QueryLogSize,
-		"enable_query_log":         set.EnableQueryLog,
-		"enable_doh":               set.EnableDoH,
-		"enable_dot":               set.EnableDoT,
-		"enable_plain_dns":         set.EnablePlainDNS,
-		"sub_interval_hours":       set.SubIntervalH,
-		"query_log_retention_days": set.LogRetentionD,
-		"allow_register":           set.AllowRegister,
-		"invite_code":              set.InviteCode,
-		"update_repo":              set.UpdateRepo,
-		"update_channel":           set.UpdateChannel,
+		"domain":                  set.Domain,
+		"upstreams":               set.Upstreams,
+		"bootstrap_dns":           set.BootstrapDNS,
+		"proxy_url":               set.ProxyURL,
+		"proxy_enabled":           set.ProxyEnabled,
+		"blocking_mode":           set.BlockingMode,
+		"custom_ip":               set.CustomIP,
+		"fallback_policy":         set.FallbackPolicy,
+		"cache_size":              set.CacheSize,
+		"cache_min_ttl":           set.CacheMinTTL,
+		"cache_max_ttl":           set.CacheMaxTTL,
+		"rate_limit_qps":          set.RateLimitQPS,
+		"max_inflight":            set.MaxInflight,
+		"query_timeout_ms":        set.QueryTimeoutMS,
+		"query_log_size":          set.QueryLogSize,
+		"enable_query_log":        set.EnableQueryLog,
+		"enable_doh":              set.EnableDoH,
+		"enable_dot":              set.EnableDoT,
+		"enable_plain_dns":        set.EnablePlainDNS,
+		"sub_interval_hours":      set.SubIntervalH,
+		"query_log_retention_min": set.LogRetentionMin,
+		"allow_register":          set.AllowRegister,
+		"invite_code":             set.InviteCode,
+		"update_repo":             set.UpdateRepo,
+		"update_channel":          set.UpdateChannel,
 
 		// 配额：前端据此显示「已用 x / 上限 y」并在新建时提前拦。
 		"max_sub_entries": set.MaxSubEntries,
@@ -297,15 +297,15 @@ type settingsPatch struct {
 	QueryLogSize   *int      `json:"query_log_size"`
 	EnableQueryLog *bool     `json:"enable_query_log"`
 	// 协议开关用指针：漏传 = 不变，不会因为前端没带字段就把协议关掉
-	EnableDoH      *bool   `json:"enable_doh"`
-	EnableDoT      *bool   `json:"enable_dot"`
-	EnablePlainDNS *bool   `json:"enable_plain_dns"`
-	SubIntervalH   *int    `json:"sub_interval_hours"`
-	LogRetentionD  *int    `json:"query_log_retention_days"`
-	AllowRegister  *bool   `json:"allow_register"`
-	InviteCode     *string `json:"invite_code"`
-	UpdateRepo     *string `json:"update_repo"`
-	UpdateChannel  *string `json:"update_channel"`
+	EnableDoH       *bool   `json:"enable_doh"`
+	EnableDoT       *bool   `json:"enable_dot"`
+	EnablePlainDNS  *bool   `json:"enable_plain_dns"`
+	SubIntervalH    *int    `json:"sub_interval_hours"`
+	LogRetentionMin *int    `json:"query_log_retention_min"`
+	AllowRegister   *bool   `json:"allow_register"`
+	InviteCode      *string `json:"invite_code"`
+	UpdateRepo      *string `json:"update_repo"`
+	UpdateChannel   *string `json:"update_channel"`
 
 	MaxSubEntries      *int   `json:"max_sub_entries"`
 	FreeMaxRules       *int   `json:"free_max_rules"`
@@ -379,7 +379,7 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.QueryTimeoutMS, p.QueryTimeoutMS)
 	setInt(&dst.QueryLogSize, p.QueryLogSize)
 	setInt(&dst.SubIntervalH, p.SubIntervalH)
-	setInt(&dst.LogRetentionD, p.LogRetentionD)
+	setInt(&dst.LogRetentionMin, p.LogRetentionMin)
 	setInt(&dst.MaxSubEntries, p.MaxSubEntries)
 	setInt(&dst.FreeMaxRules, p.FreeMaxRules)
 	setInt(&dst.FreeMaxSubs, p.FreeMaxSubs)
@@ -555,8 +555,8 @@ func mergeSettings(dst *model.GlobalSettings, src *model.GlobalSettings) {
 	if src.SubIntervalH > 0 {
 		dst.SubIntervalH = src.SubIntervalH
 	}
-	if src.LogRetentionD > 0 {
-		dst.LogRetentionD = src.LogRetentionD
+	if src.LogRetentionMin > 0 {
+		dst.LogRetentionMin = src.LogRetentionMin
 	}
 	if src.UpdateRepo != "" {
 		dst.UpdateRepo = src.UpdateRepo

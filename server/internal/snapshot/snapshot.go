@@ -158,6 +158,12 @@ func Build(ctx context.Context, st *store.Store, version int64, changedUsers []s
 		// 不含配额与会员期 —— 那些不影响任何已缓存的应答，
 		// 算进来会让「加个会员天数」白白清掉这个用户的缓存。
 		us.Fingerprint = userFingerprint(u, us)
+		// 该用户自己的「清除缓存」序号（普通用户只能清自己那份）
+		if v, err := st.GetMeta(ctx, "cache_flush_user_seq:"+u.ID); err == nil {
+			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				us.CacheFlushSeq = n
+			}
+		}
 		snap.Users = append(snap.Users, us)
 	}
 	snap.GlobalFingerprint = globalFingerprint(settings, snap)

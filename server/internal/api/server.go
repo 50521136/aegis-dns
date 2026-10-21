@@ -124,6 +124,8 @@ func (s *Server) Handler() http.Handler {
 			// 之前前端直接调 /auth/email/send-code，而那是公开路由，
 			// currentUser 永远为空，所以永远返回「请先登录」。
 			r.Post("/me/email/send-code", s.handleSendEmailCode)
+			// 用户自助清除自己的解析缓存（只清自己的，不影响其他租户）
+			r.Post("/me/cache/flush", s.handleFlushMyCache)
 			// 自定义 client_id：每个用户只有一次机会，之后只能找管理员
 			r.Post("/me/client-id", s.handleSetMyClientID)
 			r.Get("/me/export", s.handleExport)

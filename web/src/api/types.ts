@@ -283,7 +283,7 @@ export interface AdminSettings {
   query_log_size: number
   enable_query_log: boolean
   sub_interval_hours: number
-  query_log_retention_days: number
+  query_log_retention_min: number
   allow_register: boolean
   invite_code: string
   update_repo: string

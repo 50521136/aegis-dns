@@ -82,3 +82,14 @@ export async function flushCache(): Promise<{ ok: boolean; message: string }> {
   const { data } = await api.post('/admin/cache/flush')
   return data as { ok: boolean; message: string }
 }
+
+/**
+ * 清除「我自己」的解析缓存（普通用户可用）。
+ *
+ * 和 flushCache 的区别：这个只清当前用户那一份，不影响其他租户；
+ * 管理员用 flushCache 清全站。
+ */
+export async function flushMyCache(): Promise<{ ok: boolean; message: string }> {
+  const { data } = await api.post('/me/cache/flush')
+  return data as { ok: boolean; message: string }
+}

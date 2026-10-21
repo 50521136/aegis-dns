@@ -242,13 +242,20 @@ func maintenanceLoop(ctx context.Context, st *store.Store, settings *modelSettin
 			if statsRet <= 0 {
 				statsRet = 0
 			}
-			rows, err := st.Cleanup(ctx, statsRet, s.LogRetentionD, 1000000)
+			logRet := s.LogRetentionMin
+			if logRet <= 0 {
+				logRet = 60
+			}
+			rows, err := st.Cleanup(ctx, statsRet, logRet, 1000000)
 			if err != nil {
 				log.Warn("清理过期数据失败", "err", err)
 			} else {
 				log.Info("清理过期数据完成", "deleted", rows)
 			}
-			timer.Reset(24 * time.Hour)
+			// 保留期是分钟级的，24 小时才清一次等于没清：
+			// 一小时窗口内攒的量要等到第二天才删。改成 10 分钟一次，
+			// 单次只删「超过 1 小时」的行，有 ts 索引，开销很小。
+			timer.Reset(10 * time.Minute)
 		}
 	}
 }

@@ -137,7 +137,12 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.QueryTimeoutMS = intOr(kv["query_timeout_ms"], set.QueryTimeoutMS)
 	set.QueryLogSize = intOr(kv["query_log_size"], set.QueryLogSize)
 	set.SubIntervalH = intOr(kv["sub_interval_hours"], set.SubIntervalH)
-	set.LogRetentionD = intOr(kv["query_log_retention_days"], set.LogRetentionD)
+	// 日志保留改成按分钟。老库里是 query_log_retention_days，按天换算过来。
+	set.LogRetentionMin = intOr(kv["query_log_retention_min"],
+		intOr(kv["query_log_retention_days"], 0)*1440)
+	if set.LogRetentionMin <= 0 {
+		set.LogRetentionMin = 60
+	}
 	if v, ok := kv["enable_query_log"]; ok {
 		set.EnableQueryLog = v == "1" || strings.EqualFold(v, "true")
 	}
@@ -237,31 +242,31 @@ func intOr(s string, def int) int {
 // SaveSettings 保存全局设置（全量覆盖）。
 func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) error {
 	pairs := map[string]string{
-		"domain":                   set.Domain,
-		"upstreams":                strings.Join(set.Upstreams, ","),
-		"bootstrap_dns":            strings.Join(set.BootstrapDNS, ","),
-		"proxy_url":                set.ProxyURL,
-		"proxy_enabled":            boolStr(set.ProxyEnabled),
-		"blocking_mode":            set.BlockingMode,
-		"custom_ip":                set.CustomIP,
-		"fallback_policy":          set.FallbackPolicy,
-		"cache_size":               strconv.Itoa(set.CacheSize),
-		"cache_min_ttl":            strconv.Itoa(set.CacheMinTTL),
-		"cache_max_ttl":            strconv.Itoa(set.CacheMaxTTL),
-		"rate_limit_qps":           strconv.Itoa(set.RateLimitQPS),
-		"max_inflight":             strconv.Itoa(set.MaxInflight),
-		"query_timeout_ms":         strconv.Itoa(set.QueryTimeoutMS),
-		"query_log_size":           strconv.Itoa(set.QueryLogSize),
-		"query_log_retention_days": strconv.Itoa(set.LogRetentionD),
-		"enable_query_log":         boolStr(set.EnableQueryLog),
-		"enable_doh":               boolStr(set.EnableDoH),
-		"enable_dot":               boolStr(set.EnableDoT),
-		"enable_plain_dns":         boolStr(set.EnablePlainDNS),
-		"allow_register":           boolStr(set.AllowRegister),
-		"invite_code":              set.InviteCode,
-		"update_repo":              set.UpdateRepo,
-		"update_channel":           set.UpdateChannel,
-		"sub_interval_hours":       strconv.Itoa(set.SubIntervalH),
+		"domain":                  set.Domain,
+		"upstreams":               strings.Join(set.Upstreams, ","),
+		"bootstrap_dns":           strings.Join(set.BootstrapDNS, ","),
+		"proxy_url":               set.ProxyURL,
+		"proxy_enabled":           boolStr(set.ProxyEnabled),
+		"blocking_mode":           set.BlockingMode,
+		"custom_ip":               set.CustomIP,
+		"fallback_policy":         set.FallbackPolicy,
+		"cache_size":              strconv.Itoa(set.CacheSize),
+		"cache_min_ttl":           strconv.Itoa(set.CacheMinTTL),
+		"cache_max_ttl":           strconv.Itoa(set.CacheMaxTTL),
+		"rate_limit_qps":          strconv.Itoa(set.RateLimitQPS),
+		"max_inflight":            strconv.Itoa(set.MaxInflight),
+		"query_timeout_ms":        strconv.Itoa(set.QueryTimeoutMS),
+		"query_log_size":          strconv.Itoa(set.QueryLogSize),
+		"query_log_retention_min": strconv.Itoa(set.LogRetentionMin),
+		"enable_query_log":        boolStr(set.EnableQueryLog),
+		"enable_doh":              boolStr(set.EnableDoH),
+		"enable_dot":              boolStr(set.EnableDoT),
+		"enable_plain_dns":        boolStr(set.EnablePlainDNS),
+		"allow_register":          boolStr(set.AllowRegister),
+		"invite_code":             set.InviteCode,
+		"update_repo":             set.UpdateRepo,
+		"update_channel":          set.UpdateChannel,
+		"sub_interval_hours":      strconv.Itoa(set.SubIntervalH),
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
 		"max_sub_entries":     strconv.Itoa(set.MaxSubEntries),

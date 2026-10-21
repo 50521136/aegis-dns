@@ -190,6 +190,10 @@ type UserSnap struct {
 	Rules     []Rule   `json:"rules,omitempty"`
 	// UseGlobalRules 为假时，dnsd 不为该用户挂全局层。
 	UseGlobalRules bool `json:"use_global_rules"`
+	// CacheFlushSeq 是该用户自己的「清除缓存」序号。
+	// 普通用户只能清自己的缓存，所以不能复用全局的 CacheFlushSeq ——
+	// 那个一改，全站缓存都会被清掉。
+	CacheFlushSeq int64 `json:"cache_flush_seq,omitempty"`
 	// 订阅条目在这里被「压平」成纯域名数组：数十万条时 JSON 体积最小。
 	SubAllow []string `json:"sub_allow,omitempty"`
 	SubBlock []string `json:"sub_block,omitempty"`
@@ -273,11 +277,18 @@ type GlobalSettings struct {
 	QueryLogSize   int    `json:"query_log_size"`
 	EnableQueryLog bool   `json:"enable_query_log"`
 	SubIntervalH   int    `json:"sub_interval_hours"`
-	LogRetentionD  int    `json:"query_log_retention_days"`
-	AllowRegister  bool   `json:"allow_register"`
-	InviteCode     string `json:"invite_code"`
-	UpdateRepo     string `json:"update_repo"`
-	UpdateChannel  string `json:"update_channel"`
+	// LogRetentionMin 是查询日志保留分钟数。
+	//
+	// 原来按「天」保留（默认 7 天），小机器上几百万行日志会把磁盘和
+	// 分页查询一起拖死。查询日志的用途是「刚才那条为什么被拦」，
+	// 一小时足够定位问题，再久就该看统计聚合了。
+	LogRetentionMin int `json:"query_log_retention_min"`
+	// LogRetentionD 是旧字段（按天），只用于读取老配置。
+	LogRetentionD int    `json:"query_log_retention_days,omitempty"`
+	AllowRegister bool   `json:"allow_register"`
+	InviteCode    string `json:"invite_code"`
+	UpdateRepo    string `json:"update_repo"`
+	UpdateChannel string `json:"update_channel"`
 
 	// --- 配额：不限制的话单个用户就能把内存打爆 ---
 	//
@@ -408,12 +419,12 @@ func DefaultSettings() GlobalSettings {
 		EnableDoT:      true,
 		EnablePlainDNS: true,
 		// 国内可达的两个公共解析器，用于解析 DoH/DoT 上游的主机名。
-		BootstrapDNS:  []string{"223.5.5.5", "119.29.29.29"},
-		SubIntervalH:  24,
-		LogRetentionD: 7,
-		AllowRegister: true,
-		InviteCode:    "",
-		UpdateChannel: "stable",
+		BootstrapDNS:    []string{"223.5.5.5", "119.29.29.29"},
+		SubIntervalH:    24,
+		LogRetentionMin: 60,
+		AllowRegister:   true,
+		InviteCode:      "",
+		UpdateChannel:   "stable",
 
 		AllowRootDomain: true,
 		StatsRetentionD: 30,

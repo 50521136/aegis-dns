@@ -23,7 +23,7 @@ import {
   TrendingUp,
   Users,
 } from 'lucide-react'
-import { flushCache, getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
+import { flushCache, flushMyCache, getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
 import { getAdminUserTraffic } from '@/api/adminStats'
 import type { Scope } from '@/api/types'
 import { useAuth } from '@/hooks/useAuth'
@@ -68,9 +68,9 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   const qc = useQueryClient()
   const [range, setRange] = useState<StatsRange>('today')
 
-  // 清除缓存：只对管理员开放（普通用户不该能清全站缓存）
+  // 清除缓存：管理员清全站，普通用户只清自己那份
   const flush = useMutation({
-    mutationFn: flushCache,
+    mutationFn: () => (isAdmin ? flushCache() : flushMyCache()),
     onSuccess: (res) => {
       toast.success('清除指令已下发', res.message)
       qc.invalidateQueries({ queryKey: ['stats'] })
@@ -199,10 +199,10 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                       className="h-6 px-1.5 text-[11px] text-muted-foreground hover:text-danger"
                       loading={flush.isPending}
                       onClick={() => flush.mutate()}
-                      title="清空解析缓存（dnsd 30 秒内执行）"
+                      title={isAdmin ? '清空全站解析缓存' : '清空你自己的解析缓存'}
                     >
                       <Eraser className="size-3" />
-                      清除
+                      {isAdmin ? '清除全站缓存' : '清除我的缓存'}
                     </Button>
                   }
                 />

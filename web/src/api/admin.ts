@@ -126,7 +126,7 @@ export interface CleanupResult {
   deleted: Record<string, number>
   total: number
   stats_retention_days: number
-  log_retention_days: number
+  log_retention_min: number
   duration_ms: number
 }
 

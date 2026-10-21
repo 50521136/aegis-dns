@@ -312,7 +312,7 @@ func (s *Server) handleAdminSetPassword(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		StatsDays  *int `json:"stats_retention_days"`
-		LogDays    *int `json:"query_log_retention_days"`
+		LogMinutes *int `json:"query_log_retention_min"`
 		MaxLogRows *int `json:"max_log_rows"`
 	}
 	// 允许空 body
@@ -331,9 +331,9 @@ func (s *Server) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
 	if req.StatsDays != nil {
 		statsDays = *req.StatsDays
 	}
-	logDays := set.LogRetentionD
-	if req.LogDays != nil {
-		logDays = *req.LogDays
+	logMin := set.LogRetentionMin
+	if req.LogMinutes != nil {
+		logMin = *req.LogMinutes
 	}
 	maxRows := 1000000
 	if req.MaxLogRows != nil {
@@ -341,7 +341,7 @@ func (s *Server) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	rows, err := s.store.Cleanup(r.Context(), statsDays, logDays, maxRows)
+	rows, err := s.store.Cleanup(r.Context(), statsDays, logMin, maxRows)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
@@ -351,13 +351,13 @@ func (s *Server) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
 		total += n
 	}
 	s.log.Info("管理员手动清理完成", "deleted", rows, "total", total,
-		"stats_days", statsDays, "log_days", logDays)
+		"stats_days", statsDays, "log_minutes", logMin)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted":              rows,
 		"total":                total,
 		"stats_retention_days": statsDays,
-		"log_retention_days":   logDays,
+		"log_retention_min":    logMin,
 		"duration_ms":          time.Since(start).Milliseconds(),
 	})
 }

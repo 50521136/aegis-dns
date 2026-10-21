@@ -46,9 +46,11 @@ type Loader struct {
 	// 线上 1.7G 的机器上 dnsd 直接吃到 1.3G，被 OOM 杀了两次。
 	// 只留 「全局指纹 + 每用户指纹」 就够判断，几十 KB 的量级。
 	prevGlobalFP string
-	// lastFlushSeq 是上次处理过的「清除缓存」序号
+	// lastFlushSeq 是上次处理过的「清除缓存」序号（全局）
 	lastFlushSeq int64
-	prevUserFP   map[string]string
+	// prevUserFlush 记录每个用户上次处理过的清除序号
+	prevUserFlush map[string]int64
+	prevUserFP    map[string]string
 	// onReload 在每次成功重载后回调（用于刷新 handler 的运行时参数）。
 	onReload func(*model.Snapshot)
 }
@@ -100,6 +102,26 @@ func (l *Loader) invalidateCache(snap *model.Snapshot) {
 		l.lastFlushSeq = snap.CacheFlushSeq
 		l.log.Info("管理员清除缓存，已整体清空", "entries_dropped", before, "seq", snap.CacheFlushSeq)
 		return
+	}
+
+	// 用户自助清除缓存：只清该用户自己的条目。
+	// 和全局清除分开判断 —— 普通用户点一下不该把全站缓存都清掉。
+	if l.prevUserFlush == nil {
+		l.prevUserFlush = make(map[string]int64, len(snap.Users))
+		for _, u := range snap.Users {
+			l.prevUserFlush[u.UserID] = u.CacheFlushSeq
+		}
+	} else {
+		for _, u := range snap.Users {
+			if prev, ok := l.prevUserFlush[u.UserID]; ok && prev == u.CacheFlushSeq {
+				continue
+			}
+			before := c.Len()
+			c.FlushUsers([]string{u.UserID})
+			l.prevUserFlush[u.UserID] = u.CacheFlushSeq
+			l.log.Info("用户清除缓存，已清空该用户条目",
+				"user", u.UserID, "entries_before", before, "entries_after", c.Len(), "seq", u.CacheFlushSeq)
+		}
 	}
 
 	// 第一次加载：没有旧指纹可比，直接清空（此时缓存本来就是空的）。

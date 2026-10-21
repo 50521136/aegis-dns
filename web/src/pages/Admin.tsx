@@ -98,7 +98,7 @@ const settingsSchema = z.object({
   query_log_size: z.coerce.number().int().min(0),
   enable_query_log: z.boolean(),
   sub_interval_hours: z.coerce.number().int().min(1),
-  query_log_retention_days: z.coerce.number().int().min(1),
+  query_log_retention_min: z.coerce.number().int().min(1),
   allow_register: z.boolean(),
   invite_code: z.string(),
   update_repo: z.string(),
@@ -439,7 +439,7 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
               />
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField form={form} name="query_log_size" label="内存日志缓冲条数" />
-                <NumberField form={form} name="query_log_retention_days" label="日志保留天数（0=不清理）" />
+                <NumberField form={form} name="query_log_retention_min" label="日志保留分钟（默认 60）" />
                 <NumberField form={form} name="stats_retention_days" label="统计保留天数（0=不清理）" />
                 <NumberField form={form} name="sub_interval_hours" label="订阅刷新间隔（小时）" />
                 <NumberField form={form} name="max_id_resets" label="自助重置 ID 次数（0=关闭）" />
@@ -972,7 +972,7 @@ function CleanupButton() {
         <p className="text-sm font-medium">立即清理过期数据</p>
         <p className="text-xs text-muted-foreground">
           {result
-            ? `上次删除 ${formatNumber(result.total)} 行（统计保留 ${result.stats_retention_days} 天 / 日志保留 ${result.log_retention_days} 天）`
+            ? `上次删除 ${formatNumber(result.total)} 行（统计保留 ${result.stats_retention_days} 天 / 日志保留 ${result.log_retention_min} 分钟）`
             : '按上面保存的保留天数清理统计与查询日志；定时任务每天自动跑一次'}
         </p>
       </div>

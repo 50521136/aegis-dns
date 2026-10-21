@@ -303,7 +303,7 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 }
 
 // Cleanup 按保留期清理统计与日志，返回删除行数。
-func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionDays, maxLogRows int) (map[string]int64, error) {
+func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionMin, maxLogRows int) (map[string]int64, error) {
 	out := map[string]int64{}
 	now := time.Now().Unix()
 
@@ -322,8 +322,11 @@ func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionDays, ma
 			del{"top_domains", `DELETE FROM top_domains WHERE ts < ?`, []any{statCutoff}},
 		)
 	}
-	if logRetentionDays > 0 {
-		logCutoff := now - int64(logRetentionDays)*86400
+	// 查询日志按分钟保留（默认 60 分钟）。
+	// 原来按天（默认 7 天），小机器上几百万行会把磁盘和分页查询一起拖死；
+	// 而日志的用途只是「刚才那条为什么被拦」，一小时足够定位。
+	if logRetentionMin > 0 {
+		logCutoff := now - int64(logRetentionMin)*60
 		jobs = append(jobs, del{"query_log", `DELETE FROM query_log WHERE ts < ?`, []any{logCutoff}})
 	}
 	jobs = append(jobs, del{"refresh_tokens", `DELETE FROM refresh_tokens WHERE expires_at < ?`, []any{now}})

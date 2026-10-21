@@ -94,27 +94,26 @@ export function StatCard({
         className,
       )}
     >
-      {/* 眉标：等宽 + 宽字距的小节标题 */}
-      <div className="flex items-start justify-between gap-3">
-        <span className="eyebrow">{label}</span>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {action}
-          {icon && (
-            <div className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg', iconToneMap[tone])}>
-              {icon}
-            </div>
-          )}
-        </div>
+      {/* 眉标：等宽 + 宽字距的小节标题。
+          标题必须 nowrap：手机两列时卡片只有 170px 左右，
+          标题行里一旦再塞进按钮，中文会被逐字竖排（「缓/存/命/中」）。 */}
+      <div className="flex items-start justify-between gap-2">
+        <span className="eyebrow min-w-0 truncate whitespace-nowrap">{label}</span>
+        {icon && (
+          <div className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg', iconToneMap[tone])}>
+            {icon}
+          </div>
+        )}
       </div>
 
-      {/* 读数：显示级等宽数字，单位小一号弱一档 */}
-      <div className={cn('mt-3 flex items-baseline', toneMap[tone])}>
+      {/* 读数居中：四张卡数字都在中线上，扫视时不用左右找 */}
+      <div className={cn('mt-3 flex items-baseline justify-center', toneMap[tone])}>
         <span className="readout readout-stat">{display}</span>
         {suffix && <span className="readout-unit">{suffix}</span>}
       </div>
 
       {delta !== undefined && (
-        <div className="mt-2.5 flex items-center gap-1.5 text-xs">
+        <div className="mt-2.5 flex items-center justify-center gap-1.5 text-xs">
           <span
             className={cn(
               'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 font-mono font-medium tabular-nums',
@@ -127,6 +126,9 @@ export function StatCard({
           {deltaLabel && <span className="text-muted-foreground">{deltaLabel}</span>}
         </div>
       )}
+
+      {/* 操作放数字下方：放在标题行会把标题挤成竖排 */}
+      {action && <div className="mt-2.5 flex justify-center">{action}</div>}
 
       {/* 刻度尺贴底对齐：有/无环比行的卡片，刻度都在同一水平线上 */}
       <div className="tick-row mt-auto pt-4" aria-hidden="true">
