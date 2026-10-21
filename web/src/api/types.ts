@@ -205,7 +205,7 @@ export interface TopResponse {
   items: TopDomain[]
 }
 
-export type QueryAction = 'allowed' | 'blocked' | 'cached' | 'rewritten'
+export type QueryAction = 'blocked' | 'allowed' | 'handled'
 
 export interface QueryLogItem {
   id: number
@@ -214,6 +214,8 @@ export interface QueryLogItem {
   qtype: string
   rcode: string
   action: QueryAction | string
+  /** 应答是否来自缓存。它是状态的修饰（显示成「已处理（缓存）」），不是状态本身 */
+  cache_hit?: boolean
   client: string
   latency_ms: number
   /** 接入协议：udp|tcp|dot|doh（老记录为空） */

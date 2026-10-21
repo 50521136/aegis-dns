@@ -27,6 +27,12 @@ type CacheEntry struct {
 	msg       *dns.Msg
 	storedAt  time.Time
 	expiresAt time.Time
+	// allowRule 记录这条应答是「命中放行规则后去上游拿到的」。
+	//
+	// 为什么要存：查询日志的状态分「允许项 / 已处理」，而缓存命中时
+	// 已经走不到规则匹配了，不记下来就永远只能显示「已处理（缓存）」，
+	// 明明是因为放行规则才通的域名，看起来跟普通解析一样。
+	allowRule bool
 }
 
 // cacheItem 是 LRU 链表节点载荷。
@@ -108,9 +114,20 @@ func (c *Cache) shardFor(k CacheKey) *cacheShard {
 // 注意：返回的副本带着**首次请求**的报文 ID。调用方必须把 Id 改成本次
 // 请求的 ID 再写回，否则客户端会丢弃应答（表现为超时）。这里不做替换，
 // 是因为缓存层拿不到本次请求；把契约写在文档注释里并配了回归测试。
+// Get 返回缓存应答与是否命中。
 func (c *Cache) Get(k CacheKey) (*dns.Msg, bool) {
+	msg, hit, _ := c.GetWithAllow(k)
+	return msg, hit
+}
+
+// GetWithAllow 额外返回「这条应答是否来自命中放行规则」。
+//
+// 放行规则命中的应答也会缓存，命中缓存时已经走不到规则匹配了；
+// 不把标记带出来，查询日志里就只能显示「已处理（缓存）」，
+// 明明是靠放行规则才通的域名，看起来和普通解析一样。
+func (c *Cache) GetWithAllow(k CacheKey) (*dns.Msg, bool, bool) {
 	if c == nil {
-		return nil, false
+		return nil, false, false
 	}
 	now := time.Now()
 	s := c.shardFor(k)
@@ -119,7 +136,7 @@ func (c *Cache) Get(k CacheKey) (*dns.Msg, bool) {
 	el, ok := s.items[k]
 	if !ok {
 		s.mu.Unlock()
-		return nil, false
+		return nil, false, false
 	}
 	item := el.Value.(*cacheItem)
 	entry := item.entry
@@ -128,7 +145,7 @@ func (c *Cache) Get(k CacheKey) (*dns.Msg, bool) {
 		s.lru.Remove(el)
 		delete(s.items, k)
 		s.mu.Unlock()
-		return nil, false
+		return nil, false, false
 	}
 	s.lru.MoveToFront(el)
 	msg := entry.msg.Copy()
@@ -145,7 +162,7 @@ func (c *Cache) Get(k CacheKey) (*dns.Msg, bool) {
 	for _, rr := range msg.Extra {
 		decTTL(rr, elapsed)
 	}
-	return msg, true
+	return msg, true, entry.allowRule
 }
 
 func decTTL(rr dns.RR, elapsed uint32) {
@@ -161,7 +178,13 @@ func decTTL(rr dns.RR, elapsed uint32) {
 //
 // 返回是否真的写入了：含 EDNS Client Subnet 的请求与 DNSSEC 元记录不缓存
 // （文档 4.3 的「不缓存」清单），因为它们的答案与查询者位置/签名状态相关。
+// Put 缓存一条应答（默认不是放行规则命中）。
 func (c *Cache) Put(k CacheKey, msg *dns.Msg, req *dns.Msg) bool {
+	return c.PutWith(k, msg, req, false)
+}
+
+// PutWith 缓存一条应答，并记下它是否来自「命中放行规则」。
+func (c *Cache) PutWith(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool) bool {
 	if c == nil || msg == nil {
 		return false
 	}

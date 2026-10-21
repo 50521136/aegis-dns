@@ -90,10 +90,14 @@ export function QueryLogDetail({
   const meta = useMemo(() => {
     if (!row) return null
     const blocked = row.action === 'blocked'
+    const allowed = row.action === 'allowed'
+    // 三分类：已拦截 / 允许项（命中放行规则）/ 已处理（正常解析、改写、缓存命中）。
+    // 缓存只是修饰，跟在状态后面。
+    const base = blocked ? '已拦截' : allowed ? '允许项' : '已处理'
     return {
       blocked,
-      actionLabel: blocked ? '拦截' : '放行',
-      actionVariant: blocked ? ('danger' as const) : ('success' as const),
+      actionLabel: row.cache_hit ? `${base}（缓存）` : base,
+      actionVariant: blocked ? ('danger' as const) : allowed ? ('success' as const) : ('default' as const),
     }
   }, [row])
 

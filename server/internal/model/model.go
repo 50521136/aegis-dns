@@ -497,12 +497,15 @@ type QueryLogRow struct {
 	UserID string `json:"user_id"`
 	// Username 只在查询时通过 LEFT JOIN 填充，用于管理员全局日志；
 	// 用户看自己的日志时不需要，为空即可。
-	Username  string `json:"username,omitempty"`
-	TS        int64  `json:"ts"`
-	Domain    string `json:"domain"`
-	QType     string `json:"qtype"`
-	RCode     string `json:"rcode"`
-	Action    string `json:"action"`
+	Username string `json:"username,omitempty"`
+	TS       int64  `json:"ts"`
+	Domain   string `json:"domain"`
+	QType    string `json:"qtype"`
+	RCode    string `json:"rcode"`
+	Action   string `json:"action"`
+	// CacheHit 表示这次应答来自缓存。它是状态的修饰（显示成「已处理（缓存）」），
+	// 不是独立状态。
+	CacheHit  bool   `json:"cache_hit"`
 	Client    string `json:"client"`
 	LatencyMS int64  `json:"latency_ms"`
 	// 详情字段：列表页用不到，点开单条时才需要。

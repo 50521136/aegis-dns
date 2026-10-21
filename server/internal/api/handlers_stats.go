@@ -165,13 +165,15 @@ func (s *Server) handleQueryLog(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(logs))
 	for _, l := range logs {
 		items = append(items, map[string]any{
-			"id":         l.ID,
-			"ts":         l.TS,
-			"time":       time.Unix(l.TS, 0).UTC().Format(time.RFC3339),
-			"domain":     l.Domain,
-			"qtype":      l.QType,
-			"rcode":      l.RCode,
-			"action":     l.Action,
+			"id":     l.ID,
+			"ts":     l.TS,
+			"time":   time.Unix(l.TS, 0).UTC().Format(time.RFC3339),
+			"domain": l.Domain,
+			"qtype":  l.QType,
+			"rcode":  l.RCode,
+			"action": l.Action,
+			// 缓存命中是状态的修饰，不是状态本身
+			"cache_hit":  l.CacheHit,
 			"client":     l.Client,
 			"latency_ms": l.LatencyMS,
 			// 详情字段：列表页不显示，点开单条时才用到。
@@ -265,15 +267,17 @@ func (s *Server) handleAdminQueryLog(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(logs))
 	for _, l := range logs {
 		items = append(items, map[string]any{
-			"id":         l.ID,
-			"user_id":    l.UserID,
-			"username":   l.Username,
-			"ts":         l.TS,
-			"time":       time.Unix(l.TS, 0).UTC().Format(time.RFC3339),
-			"domain":     l.Domain,
-			"qtype":      l.QType,
-			"rcode":      l.RCode,
-			"action":     l.Action,
+			"id":       l.ID,
+			"user_id":  l.UserID,
+			"username": l.Username,
+			"ts":       l.TS,
+			"time":     time.Unix(l.TS, 0).UTC().Format(time.RFC3339),
+			"domain":   l.Domain,
+			"qtype":    l.QType,
+			"rcode":    l.RCode,
+			"action":   l.Action,
+			// 缓存命中是状态的修饰，不是状态本身
+			"cache_hit":  l.CacheHit,
 			"client":     l.Client,
 			"latency_ms": l.LatencyMS,
 			// 详情字段：列表页不显示，点开单条时才用到。

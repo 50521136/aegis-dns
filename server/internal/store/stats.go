@@ -82,15 +82,16 @@ func (s *Store) WriteStats(ctx context.Context, rollups []RollupBucket, tops []T
 		}
 		if len(logs) > 0 {
 			stmt, err := tx.PrepareContext(ctx,
-				`INSERT INTO query_log (user_id, ts, domain, qtype, rcode, action, client, latency_ms,
+				`INSERT INTO query_log (user_id, ts, domain, qtype, rcode, action, cache_hit, client, latency_ms,
 				                        proto, ecs, upstream, answer, tracker, client_name)
-				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			if err != nil {
 				return err
 			}
 			defer stmt.Close()
 			for _, l := range logs {
-				if _, err := stmt.ExecContext(ctx, l.UserID, l.TS, l.Domain, l.QType, l.RCode, l.Action, l.Client, l.LatencyMS,
+				if _, err := stmt.ExecContext(ctx, l.UserID, l.TS, l.Domain, l.QType, l.RCode, l.Action,
+					boolInt(l.CacheHit), l.Client, l.LatencyMS,
 					l.Proto, l.ECS, l.Upstream, l.Answer, l.Tracker, l.ClientName); err != nil {
 					return err
 				}
@@ -282,7 +283,7 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 	args = append(args, f.Limit, f.Offset)
 	// LEFT JOIN 而不是 JOIN：用户被删后日志仍保留，要能看到历史行。
 	rows, err := s.read.QueryContext(ctx,
-		`SELECT l.id, l.user_id, COALESCE(u.username,''), l.ts, l.domain, l.qtype, l.rcode, l.action, l.client, l.latency_ms,
+		`SELECT l.id, l.user_id, COALESCE(u.username,''), l.ts, l.domain, l.qtype, l.rcode, l.action, l.cache_hit, l.client, l.latency_ms,
 		        l.proto, l.ecs, l.upstream, l.answer, l.tracker, l.client_name
 		 FROM query_log l LEFT JOIN users u ON u.id = l.user_id`+clause+
 			` ORDER BY l.ts DESC, l.id DESC LIMIT ? OFFSET ?`, args...)
@@ -293,10 +294,12 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 	var out []model.QueryLogRow
 	for rows.Next() {
 		var l model.QueryLogRow
-		if err := rows.Scan(&l.ID, &l.UserID, &l.Username, &l.TS, &l.Domain, &l.QType, &l.RCode, &l.Action, &l.Client, &l.LatencyMS,
+		var cacheHit int
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Username, &l.TS, &l.Domain, &l.QType, &l.RCode, &l.Action, &cacheHit, &l.Client, &l.LatencyMS,
 			&l.Proto, &l.ECS, &l.Upstream, &l.Answer, &l.Tracker, &l.ClientName); err != nil {
 			return nil, 0, err
 		}
+		l.CacheHit = cacheHit != 0
 		out = append(out, l)
 	}
 	return out, total, rows.Err()

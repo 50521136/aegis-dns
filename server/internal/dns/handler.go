@@ -139,6 +139,15 @@ func (h *Handler) ApplyDefaults(d model.Defaults) {
 	}
 }
 
+// 查询状态只有三种。缓存命中不是状态，是 qdetail.CacheHit 这个标记 ——
+// 否则「允许项」和「已处理」会被「缓存」这个伪状态挤掉，
+// 用户看不出某条到底是放行规则放过的、还是普通解析的。
+const (
+	actionBlocked = "blocked" // 已拦截
+	actionAllowed = "allowed" // 允许项（命中放行规则）
+	actionHandled = "handled" // 已处理（正常解析 / 改写 / 缓存命中）
+)
+
 // ServeDNS 实现 dns.Handler 接口（UDP/TCP 路径）。
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	h.Handle(w, req, nil)
@@ -300,7 +309,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// Stage 3 缓存查询。
 	cache := h.cache.Load()
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-		if msg, hit := cache.Get(key); hit {
+		if msg, hit, allowRule := cache.GetWithAllow(key); hit {
 			// 必须把报文 ID 改回本次请求的 ID。
 			//
 			// 缓存里存的是首次应答的副本，它带着「当时那个请求」的随机 ID。
@@ -309,19 +318,30 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			// 这个 bug 只在第二次查同一域名时才出现，所以极易漏测。
 			msg.Id = req.Id
 			det.Answer = answerFrom(msg)
-			h.record(user.UserID, q, "cached", dns.RcodeToString[msg.Rcode], time.Since(start), w, det)
+			// 缓存命中不是一种状态：状态看这条应答当初是不是放行规则给的，
+			// 「缓存」由 det.CacheHit 这个标记表达（列表显示成「已处理（缓存）」）。
+			det.CacheHit = true
+			status := actionHandled
+			if allowRule {
+				status = actionAllowed
+			}
+			h.record(user.UserID, q, status, dns.RcodeToString[msg.Rcode], time.Since(start), w, det)
 			_ = w.WriteMsg(msg)
 			return
 		}
 	}
 
 	// Stage 4 规则匹配。
+	// allowRule 表示「这次放行是规则明确允许的」，用于日志状态分类：
+	// 命中放行规则 → 允许项；其余正常解析/改写 → 已处理。
+	allowRule := false
 	rs := user.Rules.Load()
 	if rs != nil && !rs.Empty() {
 		decision := rs.Match(q.Name, q.Qtype)
 		switch decision.Action {
 		case rules.ActionAllow:
 			// 白名单：放行到上游，跳过后续拦截判断。
+			allowRule = true
 		case rules.ActionBlock:
 			resp := buildBlockResponse(req, d.BlockingMode, d.CustomIP)
 			det.Answer = answerFrom(resp)
@@ -331,7 +351,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		case rules.ActionRewrite:
 			resp := rewriteResponse(req, decision.Rewrite)
 			det.Answer = answerFrom(resp)
-			h.record(user.UserID, q, "rewritten", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
+			h.record(user.UserID, q, actionHandled, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 			_ = w.WriteMsg(resp)
 			return
 		}
@@ -398,10 +418,14 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 
 	// Stage 6 响应后处理：写缓存 + 统计。
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-		cache.Put(key, resp, req)
+		cache.PutWith(key, resp, req, allowRule)
 	}
 	det.Answer = answerFrom(resp)
-	h.record(user.UserID, q, "allowed", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
+	status := actionHandled
+	if allowRule {
+		status = actionAllowed
+	}
+	h.record(user.UserID, q, status, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 	_ = w.WriteMsg(resp)
 }
 
@@ -499,7 +523,9 @@ func (h *Handler) allow(userID string, qps int) bool {
 // 列表页只显示 domain/action，这些字段只在「点开单条」时才看得到 ——
 // 但它们必须在解析时采集，事后没有任何地方能补回来。
 type qdetail struct {
-	Proto      string // udp|tcp|dot|doh
+	Proto string // udp|tcp|dot|doh
+	// CacheHit 标记这次应答来自缓存。它是「状态」的修饰，不是状态本身。
+	CacheHit   bool
 	ECS        string // EDNS Client Subnet
 	Upstream   string // 实际应答的上游
 	Answer     string // 应答内容（截断）
@@ -541,6 +567,7 @@ func (h *Handler) record(userID string, q dns.Question, action, rcode string, du
 		QType:      dns.TypeToString[q.Qtype],
 		RCode:      rcode,
 		Action:     action,
+		CacheHit:   det.CacheHit,
 		Client:     client,
 		LatencyMS:  dur.Milliseconds(),
 		Proto:      det.Proto,

@@ -67,11 +67,14 @@ type topAcc struct {
 
 // Event 是一次查询的统计事件。
 type Event struct {
-	UserID    string
-	Domain    string
-	QType     string
-	RCode     string
-	Action    string // allowed | blocked | cached | rewritten | upstream
+	UserID string
+	Domain string
+	QType  string
+	RCode  string
+	// Action 是查询状态：blocked（已拦截）| allowed（允许项）| handled（已处理）。
+	// 缓存命中不是状态，是 CacheHit 这个标记。
+	Action    string
+	CacheHit  bool
 	Client    string // 已脱敏的客户端标识
 	LatencyMS int64
 	// 以下为日志详情，列表页不展示
@@ -109,13 +112,15 @@ func (c *Collector) SetQueryLogEnabled(on bool) { c.enabled.Store(on) }
 func (c *Collector) Record(ev Event) {
 	// 进程级计数。
 	c.total.Add(1)
-	switch ev.Action {
-	case "blocked":
+	switch {
+	case ev.Action == "blocked":
 		c.blocked.Add(1)
-	case "cached":
+	case ev.CacheHit:
+		// 缓存命中单独计数（命中率要用），状态本身仍是 allowed/handled
 		c.cached.Add(1)
-	case "rewritten":
-		c.rewrite.Add(1)
+		if ev.Action == "allowed" {
+			c.allowed.Add(1)
+		}
 	default:
 		c.allowed.Add(1)
 	}
@@ -135,11 +140,14 @@ func (c *Collector) Record(ev Event) {
 	}
 	r.total++
 	r.latency += ev.LatencyMS
-	switch ev.Action {
-	case "blocked":
+	switch {
+	case ev.Action == "blocked":
 		r.blocked++
-	case "cached":
+	case ev.CacheHit:
 		r.cached++
+		if ev.Action == "allowed" {
+			r.allowed++
+		}
 	default:
 		r.allowed++
 	}
@@ -167,6 +175,7 @@ func (c *Collector) Record(ev Event) {
 			QType:      ev.QType,
 			RCode:      ev.RCode,
 			Action:     ev.Action,
+			CacheHit:   ev.CacheHit,
 			Client:     ev.Client,
 			LatencyMS:  ev.LatencyMS,
 			Proto:      ev.Proto,

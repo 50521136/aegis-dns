@@ -28,11 +28,19 @@ import { errorMessage } from '@/api/client'
 import { formatDateTime, latencyTone } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+// 查询状态只有三种：已拦截 / 允许项 / 已处理。
+// 「缓存」不是状态，是修饰 —— 显示成「已处理（缓存）」「允许项（缓存）」。
 const ACTION_META: Record<string, { label: string; variant: 'success' | 'danger' | 'default' | 'warning' }> = {
-  allowed: { label: '放行', variant: 'success' },
-  blocked: { label: '拦截', variant: 'danger' },
-  cached: { label: '缓存', variant: 'default' },
-  rewritten: { label: '改写', variant: 'warning' },
+  blocked: { label: '已拦截', variant: 'danger' },
+  allowed: { label: '允许项', variant: 'success' },
+  handled: { label: '已处理', variant: 'default' },
+}
+
+/** statusLabel 拼出「状态（缓存）」这样的展示文案 */
+function statusLabel(action: string, cacheHit?: boolean) {
+  const meta = ACTION_META[action]
+  const base = meta?.label ?? action
+  return cacheHit ? `${base}（缓存）` : base
 }
 
 const toneClass = {
@@ -104,14 +112,13 @@ export default function QueryLog() {
         <div className="flex items-center gap-2">
           <Select value={action} onValueChange={(v) => { setAction(v); setPage(1) }}>
             <SelectTrigger className="w-32">
-              <SelectValue placeholder="全部动作" />
+              <SelectValue placeholder="全部状态" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部动作</SelectItem>
-              <SelectItem value="allowed">放行</SelectItem>
-              <SelectItem value="blocked">拦截</SelectItem>
-              <SelectItem value="cached">缓存</SelectItem>
-              <SelectItem value="rewritten">改写</SelectItem>
+              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="blocked">已拦截</SelectItem>
+              <SelectItem value="allowed">允许项</SelectItem>
+              <SelectItem value="handled">已处理</SelectItem>
             </SelectContent>
           </Select>
           <Button variant="secondary" onClick={doSearch}>
@@ -153,6 +160,7 @@ export default function QueryLog() {
               <TableBody>
                 {items.map((row) => {
                   const meta = ACTION_META[row.action] ?? { label: row.action, variant: 'default' as const }
+                  const label = statusLabel(row.action, row.cache_hit)
                   return (
                     <TableRow
                       key={row.id}
@@ -169,7 +177,7 @@ export default function QueryLog() {
                         <Badge variant="secondary">{row.qtype || '—'}</Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={meta.variant}>{meta.label}</Badge>
+                        <Badge variant={meta.variant}>{label}</Badge>
                       </TableCell>
                       <TableCell className="font-mono text-xs">{row.rcode || '—'}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
@@ -189,11 +197,12 @@ export default function QueryLog() {
           <div className="space-y-3 md:hidden">
             {items.map((row) => {
               const meta = ACTION_META[row.action] ?? { label: row.action, variant: 'default' as const }
+              const label = statusLabel(row.action, row.cache_hit)
               return (
                 <div key={row.id} className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm">
                   <div className="flex items-center justify-between gap-2">
                     <span className="break-all font-mono text-[13px]">{row.domain}</span>
-                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                    <Badge variant={meta.variant}>{label}</Badge>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span>{formatDateTime(row.ts)}</span>

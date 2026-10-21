@@ -341,25 +341,39 @@ if [[ -n "$SUBID" ]]; then
 import sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
 sub = sys.argv[2]
-for (d,) in db.execute("select domain from sub_entries where sub_id=? order by domain limit 400", (sub,)):
+n = 0
+for (d,) in db.execute("select domain from sub_entries where sub_id=? order by domain limit 2000", (sub,)):
     d = d.strip().lower().lstrip("*.").lstrip(".")
-    if "." in d and not d.startswith("-") and "_" not in d:
+    if "." in d and not d.startswith("-") and "_" not in d and len(d) < 60:
         print(d)
-        break
+        n += 1
+        if n >= 5:
+            break
 PYEOF
 )
   if [ -z "$PICK" ]; then
     bad "订阅条目为空，无法验证拦截"
   else
-    ok "从订阅里取样域名：$PICK"
-    for _ in $(seq 1 60); do
-      R=$($PROBE udp 127.0.0.1:15353 "$PICK" 2>/dev/null)
-      [[ "$R" == *"0.0.0.0"* ]] && break
-      sleep 1
+    # 多取几条逐个试：单条可能因为订阅按 max_sub_entries 截断、
+    # 或者快照还没跟上而查不到，拿一条就判定会让用例随机失败。
+    BLOCKED_ONE=""
+    for CAND in $PICK; do
+      for _ in $(seq 1 30); do
+        R=$($PROBE udp 127.0.0.1:15353 "$CAND" 2>/dev/null)
+        [[ "$R" == *"0.0.0.0"* || "$R" == *"NXDOMAIN"* ]] && break
+        sleep 1
+      done
+      if [[ "$R" == *"0.0.0.0"* || "$R" == *"NXDOMAIN"* ]]; then
+        BLOCKED_ONE="$CAND"
+        break
+      fi
     done
-    tblocked "订阅拦截生效（$PICK）" udp 127.0.0.1:15353 "$PICK"
-    # 子域继承：给取样域名加一层前缀
-    tblocked "订阅拦截子域继承（x.$PICK）" udp 127.0.0.1:15353 "x.$PICK"
+    if [ -n "$BLOCKED_ONE" ]; then
+      ok "订阅拦截生效（取样命中 $BLOCKED_ONE）"
+      tblocked "订阅拦截子域继承（x.$BLOCKED_ONE）" udp 127.0.0.1:15353 "x.$BLOCKED_ONE"
+    else
+      bad "取样的订阅域名一个都没被拦截"
+    fi
   fi
   t "订阅拦截子域（x.accounts.doubleclick.net）"   "0.0.0.0" udp 127.0.0.1:15353 x.accounts.doubleclick.net
 fi
@@ -735,6 +749,50 @@ echo "$SET2" | grep -q '"proxy_enabled":false' && ok "开关能关" || bad "开�
 # 清理：恢复成不启用
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"proxy_url":"","proxy_enabled":false}' >/dev/null
+
+hdr "查询状态三分类（缓存是标记不是状态）"
+# 状态只能是 blocked / allowed / handled；「缓存」用 cache_hit 表达。
+# 之前 cached 是独立 action，把「允许项」和「已处理」都挤掉了，
+# 用户看不出某条是放行规则放过的还是普通解析。
+# example.com 是 e2e 里确认会走缓存的那个域名（前面有专门用例），
+# 连查几次必然产生 cache_hit 记录；换别的域名可能因为上游 TTL 为 0 而永远不缓存。
+# 走 UDP（来源 IP 已登记到 $TOKEN 这个租户），和前面「缓存命中必须能正常应答」
+# 用例同一条路径 —— 那条能缓存，这条才一定拿得到 cache_hit。
+for _ in 1 2 3; do
+  $PROBE udp 127.0.0.1:15353 example.com >/dev/null 2>&1
+  sleep 1
+done
+$PROBE udp 127.0.0.1:15353 ads.example.com >/dev/null 2>&1
+sleep 16
+QL2=$(curl -fsS "$API/stats/querylog?page=1&page_size=30" -H "Authorization: Bearer $TOKEN")
+python3 - "$QL2" <<'PYEOF'
+import json, sys
+d = json.loads(sys.argv[1])
+rows = d.get("items", [])
+fails = 0
+def check(cond, ok, bad):
+    global fails
+    print(("  ✅ " if cond else "  ❌ ") + (ok if cond else bad))
+    if not cond:
+        fails += 1
+acts = {r.get("action") for r in rows}
+check(acts <= {"blocked", "allowed", "handled"}, f"状态取值只有三种：{sorted(acts)}",
+      f"出现了旧状态值：{sorted(acts - {'blocked','allowed','handled'})}")
+check("cached" not in acts, "缓存不再是独立状态", "仍出现 action=cached")
+hit = [r for r in rows if r.get("cache_hit")]
+check(len(hit) >= 1, f"缓存命中用 cache_hit 标记（{len(hit)} 条）", "没有 cache_hit 标记的记录")
+if hit:
+    r = hit[0]
+    check(r.get("action") in ("handled", "allowed"),
+          f"缓存命中状态仍是 {r.get('action')}（显示为「已处理/允许项（缓存）」）",
+          f"缓存命中状态异常：{r.get('action')}")
+blk = [r for r in rows if r.get("action") == "blocked"]
+check(len(blk) >= 1, f"拦截记录状态为 blocked（{len(blk)} 条）", "没有 blocked 记录")
+if blk:
+    check(not blk[0].get("cache_hit"), "拦截记录不带缓存标记（拦截不缓存）", "拦截记录被标成缓存命中")
+sys.exit(1 if fails else 0)
+PYEOF
+[ $? -eq 0 ] && ok "查询状态三分类断言全部通过" || bad "查询状态三分类断言失败"
 
 hdr "查询日志详情字段"
 # 详情弹窗要展示协议/ECS/上游/应答/追踪器 —— 这些只在解析时能采集，
