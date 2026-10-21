@@ -15,6 +15,20 @@ const (
 	TierVIP  Tier = "vip"
 )
 
+// TierDef 是管理员自定义的会员种类（档位）。
+//
+// 之前档位写死在代码里，只有 free/vip 两档；想加「高级会员」就得改代码重新发版。
+// 现在档位是一张表，配额全在库里。
+type TierDef struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Sort         int    `json:"sort"`
+	MaxRules     int    `json:"max_rules"`
+	MaxSubs      int    `json:"max_subs"`
+	DailyQueries int64  `json:"daily_queries"`
+	IsDefault    bool   `json:"is_default"`
+}
+
 // Quota 是某个档位在某套全局设置下的实际配额。字段为 0 表示不限制。
 type Quota struct {
 	Tier         Tier  `json:"tier"`
@@ -66,16 +80,47 @@ func QuotaFor(t Tier, s *GlobalSettings) Quota {
 	}
 }
 
+// QuotaForTierDef 把库里的一条档位定义转成配额。
+func QuotaForTierDef(t TierDef) Quota {
+	return Quota{
+		Tier:         Tier(t.ID),
+		MaxRules:     t.MaxRules,
+		MaxSubs:      t.MaxSubs,
+		DailyQueries: t.DailyQueries,
+	}
+}
+
 // QuotaForUser 是 TierOf + QuotaFor 的组合，再叠加管理员的单用户覆盖。
 //
 // 覆盖值的语义是「0 = 不覆盖」，所以不能直接用 0 表示「不限制」：
 // 想要某个用户不限请求量，得显式填一个负数（-1），
 // 由 applyOverride 统一把负数转成 0（0 在 Quota 里表示不限制）。
 // 这样「没填」和「填了不限」才分得开。
-func QuotaForUser(u *User, s *GlobalSettings, now time.Time) Quota {
-	q := QuotaFor(TierOf(u, now), s)
+func QuotaForUser(u *User, s *GlobalSettings, tiers map[string]TierDef, now time.Time) Quota {
 	if u == nil {
-		return q
+		return QuotaFor(TierFree, s)
+	}
+	var q Quota
+	// 优先级：显式指定的档位 > 按会员状态判定的 free/vip。
+	// 显式档位优先是因为它就是「管理员指定了这个用户是什么等级」，
+	// 而 member_until 只表达「会员到什么时候」，两者冲突时以后者为准会让人费解。
+	//
+	// 自动判定这条路径也要先查 tiers 表：free/vip 的配额在两个地方出现过
+	// （settings 的 free_max_rules 和 tiers 表里的 free 行）。
+	// 如果这里只读 settings，管理员在「会员种类」里改了 vip 的配额，
+	// 自动档的用户却毫无变化 —— 两个真相来源，迟早对不上。
+	// 现在统一以 tiers 表为准，settings 只作为 tiers 缺行时的兜底。
+	if u.TierID != "" {
+		if t, ok := tiers[u.TierID]; ok {
+			q = QuotaForTierDef(t)
+		}
+	}
+	if q.Tier == "" {
+		if t, ok := tiers[string(TierOf(u, now))]; ok {
+			q = QuotaForTierDef(t)
+		} else {
+			q = QuotaFor(TierOf(u, now), s)
+		}
 	}
 	q.MaxRules = applyOverride(q.MaxRules, u.CustomMaxRules)
 	q.MaxSubs = applyOverride(q.MaxSubs, u.CustomMaxSubs)

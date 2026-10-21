@@ -13,7 +13,7 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at, tier_id`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
@@ -21,7 +21,7 @@ func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
 		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed,
 		&u.MemberUntil, &u.InvitedBy, &u.CreatedAt,
-		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt)
+		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt, &u.TierID)
 	if err != nil {
 		return nil, err
 	}

@@ -28,7 +28,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { errorMessage } from '@/api/client'
-import { formatDateTime, latencyTone } from '@/lib/format'
+import { formatDateTimeSec, latencyTone } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 // 查询状态只有三种：已拦截 / 允许项 / 已处理。
@@ -195,7 +195,7 @@ export default function QueryLog() {
                       onClick={() => setSelected(row)}
                     >
                       <TableCell className="text-xs text-muted-foreground tabular-nums">
-                        {formatDateTime(row.ts)}
+                        {formatDateTimeSec(row.ts)}
                       </TableCell>
                       <TableCell>
                         <span className="font-mono text-[13px]">{row.domain}</span>
@@ -246,7 +246,7 @@ export default function QueryLog() {
                     <Badge variant={meta.variant}>{label}</Badge>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <span>{formatDateTime(row.ts)}</span>
+                    <span>{formatDateTimeSec(row.ts)}</span>
                     <Badge variant="secondary">{row.qtype || '—'}</Badge>
                     <span className="font-mono">{row.rcode || '—'}</span>
                     <span className={cn('font-mono tabular-nums', toneClass[latencyTone(row.latency_ms)])}>

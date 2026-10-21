@@ -51,6 +51,20 @@ export function formatDateTime(input: string | number | Date | null | undefined)
   }).format(d)
 }
 
+/**
+ * 带秒的时间，例如 2026/10/21 18:23:17。
+ *
+ * 日志排查经常要对着秒看「这条和那条是不是同一次请求」，
+ * 只到分钟根本对不上。query_log 的 ts 就是秒级整数，没有更细的精度。
+ */
+export function formatDateTimeSec(input: string | number | Date | null | undefined): string {
+  if (input === null || input === undefined || input === '') return '—'
+  const d = input instanceof Date ? input : typeof input === 'number' ? new Date(input * 1000) : new Date(input)
+  if (Number.isNaN(d.getTime())) return '—'
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 /** 仅日期 */
 export function formatDate(input: string | number | Date | null | undefined): string {
   if (input === null || input === undefined || input === '') return '—'

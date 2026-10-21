@@ -33,12 +33,13 @@ type DNS struct {
 	ACME   ACME `yaml:"acme"`
 	// QueryLogRing 是内存查询环形缓冲的容量（dnsd 侧，未落库前的暂存）。
 	QueryLogRing int `yaml:"query_log_ring"`
-	// StatsFlushSeconds 是统计与查询日志批量落库的间隔，默认 10 秒。
+	// StatsFlushSeconds 是统计与查询日志批量落库的间隔，默认 3 秒。
 	//
-	// 原来是 60 秒，实际用起来就是「刚查的域名要等一分钟才出现在日志里」，
-	// 用户第一反应是「日志坏了 / 统计不准」。10 秒基本感觉不到延迟，
-	// 而写入次数只增加到 6 倍 —— 批量落库是一条事务，成本远小于每查询一次。
-	// 落库在后台协程里做，不占查询路径，调小不影响解析延迟。
+	// 原来是 60 秒 → 10 秒 → 现在 3 秒。每次都是一样的反馈：
+	// 「刚查的域名要等一会儿才出现在日志里」。前端还叠了一次自动刷新，
+	// 间隔越长，用户越容易以为漏记了。
+	// 落库在后台协程里做，是一条批量事务，不占查询路径；
+	// 调小只增加写入次数，不影响解析延迟。
 	StatsFlushSeconds int `yaml:"stats_flush_seconds"`
 }
 
@@ -200,7 +201,7 @@ func (c *Config) normalize() error {
 		c.DNS.QueryLogRing = 1000
 	}
 	if c.DNS.StatsFlushSeconds <= 0 {
-		c.DNS.StatsFlushSeconds = 10
+		c.DNS.StatsFlushSeconds = 3
 	}
 	// 下限 1 秒：再小就变成每条查询一次事务，会把 WAL 写爆。
 	if c.DNS.StatsFlushSeconds < 1 {

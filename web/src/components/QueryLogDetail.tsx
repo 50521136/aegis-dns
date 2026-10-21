@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/dialog'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
-import { formatDateTime } from '@/lib/format'
+import { formatDateTimeSec } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 /**
@@ -111,39 +111,38 @@ export function QueryLogDetail({
           （只写 max-w-2xl 在 md 断点会被基类盖掉，看起来像「弹窗大小不对」）。 */}
       <DialogContent className="max-h-[85dvh] gap-3 p-4 md:max-w-2xl md:gap-4 md:p-6">
         <DialogHeader>
-          <DialogTitle className="flex flex-wrap items-center gap-2">
-            <span className="break-all font-mono text-base">{row.domain}</span>
+          <DialogTitle className="break-all font-mono text-base">{row.domain}</DialogTitle>
+          <DialogDescription className="flex flex-wrap items-center gap-2">
+            <span className="font-mono">{formatDateTimeSec(row.ts)}</span>
             <Badge variant={meta.actionVariant}>{meta.actionLabel}</Badge>
-            {row.tracker && (
-              <Badge variant="warning" title={`命中的追踪器后缀：${row.tracker}`}>
-                <Radar className="size-3" />
-                追踪器
-              </Badge>
-            )}
-          </DialogTitle>
-          <DialogDescription>{formatDateTime(row.ts)}</DialogDescription>
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* 追踪器单独拎出来一行：命中时它是这条日志最值得看的信息，
+              塞进「请求」小格里跟 ECS 混在一起等于没显示。 */}
+          {row.tracker && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3">
+              <Radar className="size-4 shrink-0 text-warning" />
+              <span className="text-sm font-medium text-warning">{row.tracker}</span>
+              <span className="text-xs text-muted-foreground">· 来源 内置追踪器库</span>
+            </div>
+          )}
+
           <Section title="请求">
             <Field label="类型" value={row.qtype || '—'} mono />
-            <Field label="协议" value={row.proto ? row.proto.toUpperCase() : '—'} mono />
+            <Field label="协议" value={protoLabel(row.proto)} mono />
             <Field label="ECS" value={row.ecs || '—'} mono />
-            <Field
-              label="已知追踪器"
-              value={row.tracker || '未命中'}
-              mono
-              tone={row.tracker ? 'warning' : undefined}
-            />
+            <Field label="缓存" value={row.cache_hit ? '命中' : '未命中'} />
           </Section>
 
           <Section title="响应">
-            <Field label="状态" value={meta.actionLabel} tone={meta.blocked ? 'danger' : 'success'} />
-            <Field label="响应代码" value={row.rcode || '—'} mono />
             <Field label="DNS 服务器" value={row.upstream || '—'} mono />
             <Field label="耗时" value={`${row.latency_ms} ms`} mono />
+            <Field label="响应代码" value={row.rcode || '—'} mono />
+            <Field label="状态" value={meta.actionLabel} tone={meta.blocked ? 'danger' : 'success'} />
             <div className="sm:col-span-2">
-              <p className="eyebrow mb-1">响应</p>
+              <p className="eyebrow mb-1">应答</p>
               <pre className="max-h-40 overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
                 {row.answer || '（无应答记录）'}
               </pre>
@@ -217,6 +216,23 @@ export function QueryLogDetail({
       </DialogContent>
     </Dialog>
   )
+}
+
+/** 协议显示名：AdGuard 那种「DNS-over-TLS」写法，比裸 dot 好认。 */
+function protoLabel(proto: string | undefined): string {
+  switch ((proto || '').toLowerCase()) {
+    case 'doh':
+      return 'DNS-over-HTTPS'
+    case 'dot':
+      return 'DNS-over-TLS'
+    case 'tcp':
+      return 'DNS-over-TCP'
+    case 'udp':
+    case 'plain':
+      return '明文 DNS'
+    default:
+      return proto ? proto.toUpperCase() : '—'
+  }
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

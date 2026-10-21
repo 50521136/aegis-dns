@@ -244,7 +244,8 @@ func (s *Server) handleMyMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	q := model.QuotaForUser(u, set, now)
+	tiers, _ := s.store.TierMap(r.Context())
+	q := model.QuotaForUser(u, set, tiers, now)
 	stats, err := s.store.GetInviteStats(r.Context(), u.ID)
 	if err != nil {
 		writeStoreError(w, err, "")

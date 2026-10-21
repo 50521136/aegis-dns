@@ -457,6 +457,11 @@ curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Co
        "free_max_subs":2,"max_sub_entries":1000,"vip_max_rules":100,"vip_max_subs":5}' >/dev/null
 SET_AFTER=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
 echo "$SET_AFTER" | grep -q '"free_max_rules":7' && ok "配额 free_max_rules 已持久化" || bad "配额未持久化"
+# settings 与 tiers 必须双向同步：配额换算以 tiers 表为准，
+# 改了设置却不进 tiers，就会出现「改了不生效」。
+TV=$(curl -fsS "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;print([t for t in json.load(sys.stdin)['items'] if t['id']=='free'][0]['max_rules'])")
+[[ "$TV" == "7" ]] && ok "设置已同步到 free 档位" || bad "free 档位未同步：$TV"
 echo "$SET_AFTER" | grep -q '"max_sub_entries":1000' && ok "配额 max_sub_entries 已持久化" || bad "配额未持久化"
 echo "$SET_AFTER" | grep -q '"allow_root_domain":false' && ok "主域名开关已持久化（能存 false）" || bad "主域名开关未持久化"
 echo "$SET_AFTER" | grep -q '"max_id_resets":2' && ok "重置次数上限已持久化" || bad "重置次数未持久化"
@@ -835,7 +840,9 @@ if trk is None:
     fails += check(False, "", "查不到 doubleclick.net 的日志")
 else:
     fails += check(bool(trk.get("answer")), "记录了应答内容", "answer 缺失")
-    fails += check(trk.get("tracker") == "doubleclick.net", "识别出已知追踪器", "追踪器未识别: %r" % trk.get("tracker"))
+    # 追踪器现在返回「名称（类别）」而不是裸后缀：
+    # 只写后缀的话日志里看不出是哪家的、干什么用的，等于没信息。
+    fails += check(trk.get("tracker") == "DoubleClick（广告）", "识别出已知追踪器", "追踪器未识别: %r" % trk.get("tracker"))
 
 sys.exit(1 if fails else 0)
 PYEOF
@@ -1269,6 +1276,42 @@ AAFTER=$(curl -fsS "$API/admin/stats/querylog?page=1&page_size=5" -H "Authorizat
 [[ "${UAFTER:-0}" -eq 0 ]] && ok "用户清空后自己看不到旧日志" || bad "用户清空后仍看到 $UAFTER 条"
 # 这条是需求要害：用户清的是自己的视图，不能把管理员的审计记录一起清掉
 [[ "${AAFTER:-0}" -gt 0 ]] && ok "管理员仍能看到全部日志（$AAFTER 条）" || bad "管理员日志被误清（$AAFTER 条）"
+
+hdr "会员种类（多档位）"
+TIERS=$(curl -fsS "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK")
+echo "$TIERS" | grep -q '"id":"free"' && ok "内置档位 free 已播种" || bad "缺内置档位 free"
+echo "$TIERS" | grep -q '"id":"vip"' && ok "内置档位 vip 已播种" || bad "缺内置档位 vip"
+
+# 新增一个自定义档位「高级会员」
+curl -fsS -X POST "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"svip","name":"高级会员","sort":20,"max_rules":500,"max_subs":30,"daily_queries":0}' >/dev/null
+curl -fsS "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" | grep -q '"id":"svip"' \
+  && ok "自定义档位已创建" || bad "自定义档位创建失败"
+
+# 指定给用户后，配额必须按该档位算
+curl -fsS -X PUT "$API/admin/users/$U1/tier" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"tier_id":"svip"}' >/dev/null
+TQ=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['quota']['max_rules'],d['quota']['max_subs'])")
+[[ "$TQ" == "500 30" ]] && ok "档位配额生效（规则 500 / 订阅 30）" || bad "档位配额不对：$TQ"
+
+# 改回自动：应当回到会员档 200/10
+curl -fsS -X PUT "$API/admin/users/$U1/tier" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"tier_id":""}' >/dev/null
+# 期望值取「这个用户当前档位」对应的那条 tier 记录，不要写死数字：
+# 用户在 e2e 里可能已经不是会员了，硬按 vip 比会误报。
+EXPQ=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);t=d['tiers'][d['tier']];print(t['max_rules'],t['max_subs'])")
+AQ=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['quota']['max_rules'],d['quota']['max_subs'])")
+[[ "$AQ" == "$EXPQ" ]] && ok "改回自动后按档位算（$EXPQ）" || bad "改回自动后配额不对：$AQ，期望 $EXPQ"
+
+# 内置档位不能删；没人用的自定义档位可以删
+FREECODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/free" -H "Authorization: Bearer $ADMTOK")
+[[ "$FREECODE" == "422" ]] && ok "内置档位拒绝删除（422）" || bad "内置档位删除未拒绝：$FREECODE"
+DELCODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/svip" -H "Authorization: Bearer $ADMTOK")
+[[ "$DELCODE" == "200" ]] && ok "无人使用的自定义档位可删除" || bad "自定义档位删除失败：$DELCODE"
 
 hdr "优雅关闭"
 kill -TERM "$DNSD_PID" "$APID_PID" 2>/dev/null

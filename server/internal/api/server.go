@@ -211,6 +211,12 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/users/{id}", s.handleAdminGetUser)
 				// 单用户配额覆盖（0 = 跟随档位，-1 = 不限）
 				r.Put("/users/{id}/quota", s.handleAdminSetUserQuota)
+				// 会员种类（档位）管理
+				r.Get("/tiers", s.handleListTiers)
+				r.Post("/tiers", s.handleSaveTier)
+				r.Put("/tiers/{id}", s.handleSaveTier)
+				r.Delete("/tiers/{id}", s.handleDeleteTier)
+				r.Put("/users/{id}/tier", s.handleSetUserTier)
 				r.Put("/users/{id}", s.handleAdminUpdateUser)
 				r.Delete("/users/{id}", s.handleAdminDeleteUser)
 				r.Post("/users/bulk-delete", s.handleAdminBulkDeleteUsers)

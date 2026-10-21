@@ -497,6 +497,11 @@ func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 	// 代理改了要立刻生效，不必等重启。
 	s.applyProxy(r.Context(), cur)
 
+	// 设置里的 free/vip 配额先同步进 tiers 表，再重建快照。
+	// 顺序不能反：配额换算以 tiers 为准，先重建的话快照里拿到的还是旧配额，
+	// 表现就是「改了设置不生效」，要等下一次重建才偶然好。
+	s.syncSettingsToTiers(r.Context())
+
 	// 全局设置影响所有租户，必须全量重建快照。
 	if _, err := s.coord.Changed(r.Context()); err != nil {
 		writeStoreError(w, err, "")

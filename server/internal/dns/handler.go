@@ -167,6 +167,14 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		if w != nil {
 			_ = w.WriteMsg(refusedResponse(req))
 		}
+		// 协议被关掉的查询也要记一条：否则用户在日志里完全看不到
+		// 「我的明文请求去哪了」，只会以为程序漏记。
+		// 这里还没走到解析问题段，q 尚未定义，直接从 req 里取。
+		if req != nil && len(req.Question) > 0 {
+			h.record("", req.Question[0], "blocked", "REFUSED", time.Since(start), w, qdetail{
+				Proto: det.Proto,
+			})
+		}
 		return
 	}
 
@@ -574,9 +582,25 @@ func (h *Handler) record(userID string, q dns.Question, action, rcode string, du
 		ECS:        det.ECS,
 		Upstream:   det.Upstream,
 		Answer:     det.Answer,
-		Tracker:    matchTracker(domain),
+		Tracker:    trackerLabel(domain),
 		ClientName: det.ClientName,
 	})
+}
+
+// trackerLabel 把追踪器整理成日志里显示的标签：「名称（类别）」。
+//
+// 单独包一层是为了让日志里永远只有一种格式：
+// 命中就写「QQ International（客户交互）」，没命中就空着。
+// 前端不需要再判断有没有类别、要不要拼括号。
+func trackerLabel(domain string) string {
+	name, category := matchTracker(domain)
+	if name == "" {
+		return ""
+	}
+	if category == "" {
+		return name
+	}
+	return name + "（" + category + "）"
 }
 
 // ecsFrom 提取 EDNS Client Subnet 选项，形如 "1.2.3.0/24"。

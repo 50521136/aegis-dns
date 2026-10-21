@@ -499,5 +499,20 @@ export interface AdminUserDetail {
   quota_default: { max_rules: number; max_subs: number; daily_queries: number }
   /** 手填覆盖：0 = 跟随档位，-1 = 不限 */
   custom: { max_rules: number; max_subs: number; daily_queries: number }
+  /** 管理员直接指定的档位；空串 = 按会员状态自动判定 */
+  tier_id: string
+  /** 全部可选档位 */
+  tiers: Record<string, TierDef>
   usage: { rules?: number; subs?: number; today_queries?: number }
+}
+
+/** 会员种类（档位）：每个档位一套配额，0 表示不限 */
+export interface TierDef {
+  id: string
+  name: string
+  sort: number
+  max_rules: number
+  max_subs: number
+  daily_queries: number
+  is_default: boolean
 }

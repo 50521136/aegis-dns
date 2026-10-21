@@ -27,8 +27,9 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 
 	// 档位默认与生效配额都给：前端要能显示「会员档 200，你手填了 500」，
 	// 只给生效值的话管理员看不出这个数是他自己改过的。
+	tiers, _ := s.store.TierMap(r.Context())
 	def := model.QuotaFor(model.TierOf(u, now), mustSettings(s, r))
-	eff := model.QuotaForUser(u, mustSettings(s, r), now)
+	eff := model.QuotaForUser(u, mustSettings(s, r), tiers, now)
 
 	usage := map[string]any{}
 	if ruleCount, err := s.store.CountRules(r.Context(), u.ID, false); err == nil {
@@ -77,7 +78,9 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 			"max_subs":      u.CustomMaxSubs,
 			"daily_queries": u.CustomDailyQueries,
 		},
-		"usage": usage,
+		"tier_id": u.TierID,
+		"tiers":   tiers,
+		"usage":   usage,
 	})
 }
 

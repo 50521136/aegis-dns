@@ -72,6 +72,9 @@ type User struct {
 	CustomMaxRules     int `json:"custom_max_rules"`
 	CustomMaxSubs      int `json:"custom_max_subs"`
 	CustomDailyQueries int `json:"custom_daily_queries"`
+	// TierID 是管理员直接指定的会员种类（tiers.id）。
+	// 空串表示按 member_until 自动判定 free/vip，兼容老的会员逻辑。
+	TierID string `json:"tier_id"`
 	// LogClearedAt 是用户「清空自己的日志」的时间点。
 	// 只影响用户自己的查询视图（ts > LogClearedAt），不删数据，
 	// 所以管理员视角照旧能查到 —— 用户清的是自己的视图，不是库。

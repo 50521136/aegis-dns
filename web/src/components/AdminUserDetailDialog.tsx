@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Ban, CheckCircle2, Loader2, RotateCcw } from 'lucide-react'
 
 import { getAdminUser, setAdminUserQuota, updateUser } from '@/api/admin'
+import { setUserTier } from '@/api/tiers'
 import type { AdminUserDetail } from '@/api/types'
 import { formatDateTime } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
@@ -90,6 +91,17 @@ export function AdminUserDetailDialog({
     onError: () => toast.error('保存失败'),
   })
 
+  // 档位：显式指定优先于「按会员状态自动判定」
+  const assignTier = useMutation({
+    mutationFn: (tierId: string) => setUserTier(userId as string, tierId),
+    onSuccess: () => {
+      toast.success('档位已更新')
+      qc.invalidateQueries({ queryKey: ['admin-user', userId] })
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+    },
+    onError: () => toast.error('设置档位失败'),
+  })
+
   const toggle = useMutation({
     mutationFn: (patch: {
       enabled?: boolean
@@ -161,6 +173,32 @@ export function AdminUserDetailDialog({
               </div>
               <Row label="档位">{u.tier === 'vip' ? '会员档' : '普通档'}</Row>
               <Row label="到期时间">{formatDateTime(u.member_until) || '—'}</Row>
+
+              <div className="mt-2 space-y-1 border-t border-border/40 pt-2">
+                <Label htmlFor="tier-select" className="text-xs text-muted-foreground">
+                  会员种类（决定配额）
+                </Label>
+                <select
+                  id="tier-select"
+                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
+                  value={u.tier_id}
+                  disabled={assignTier.isPending}
+                  onChange={(e) => assignTier.mutate(e.target.value)}
+                >
+                  <option value="">自动（按会员状态：会员档 / 普通档）</option>
+                  {Object.values(u.tiers ?? {})
+                    .sort((a, b) => a.sort - b.sort)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                        {t.is_default ? '（默认）' : ''}
+                      </option>
+                    ))}
+                </select>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  选了具体档位后，这个用户的配额就按该档位算，与会员到期时间无关。
+                </p>
+              </div>
             </section>
 
             {/* 开关 */}

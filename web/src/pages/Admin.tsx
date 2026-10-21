@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { TierPanel } from '@/components/TierPanel'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, type UseFormReturn } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -873,6 +874,7 @@ export function AdminMemberPage() {
     >
       <SettingsPanel section="member" />
       <div className="space-y-6">
+        <TierPanel />
         <MemberOverview />
         <InvitePanel />
       </div>

@@ -115,7 +115,8 @@ func (s *Server) subQuota(ctx context.Context, uid string, global bool) int {
 	if err != nil || u == nil {
 		return 0
 	}
-	return model.QuotaForUser(u, set, time.Now()).MaxSubs
+	tiers, _ := s.store.TierMap(ctx)
+	return model.QuotaForUser(u, set, tiers, time.Now()).MaxSubs
 }
 
 // checkSubQuota 在新增订阅前检查配额。

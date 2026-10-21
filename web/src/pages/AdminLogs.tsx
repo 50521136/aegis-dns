@@ -26,7 +26,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatDateTime, latencyTone } from '@/lib/format'
+import { formatDateTimeSec, latencyTone } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { QueryLogItem } from '@/api/types'
 import { QueryLogDetail } from '@/components/QueryLogDetail'
@@ -217,7 +217,7 @@ export default function AdminLogs() {
                       onClick={() => setSelected(row)}
                     >
                       <TableCell className="text-xs text-muted-foreground tabular-nums">
-                        {formatDateTime(row.ts)}
+                        {formatDateTimeSec(row.ts)}
                       </TableCell>
                       <TableCell>
                         <span className="text-sm">{row.username || '已删除用户'}</span>
@@ -283,7 +283,7 @@ export default function AdminLogs() {
                       <ShieldAlert className="size-3" />
                       {row.username || '已删除用户'}
                     </span>
-                    <span>{formatDateTime(row.ts)}</span>
+                    <span>{formatDateTimeSec(row.ts)}</span>
                     <Badge variant="secondary">{row.qtype || '—'}</Badge>
                     <span className={cn('font-mono tabular-nums', toneClass[latencyTone(row.latency_ms)])}>
                       {row.latency_ms} ms
