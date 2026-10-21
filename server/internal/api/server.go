@@ -120,6 +120,10 @@ func (s *Server) Handler() http.Handler {
 			// iOS / macOS 的加密 DNS 描述文件，系统级批量下发用
 			r.Get("/me/mobileconfig", s.handleMobileConfig)
 			r.Post("/me/reset-client-id", s.handleResetMyClientID)
+			// 更换邮箱的验证码必须带登录态：服务端要知道「谁在换」。
+			// 之前前端直接调 /auth/email/send-code，而那是公开路由，
+			// currentUser 永远为空，所以永远返回「请先登录」。
+			r.Post("/me/email/send-code", s.handleSendEmailCode)
 			// 自定义 client_id：每个用户只有一次机会，之后只能找管理员
 			r.Post("/me/client-id", s.handleSetMyClientID)
 			r.Get("/me/export", s.handleExport)

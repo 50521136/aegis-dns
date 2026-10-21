@@ -52,6 +52,7 @@ function formatTs(ts: string | number): string {
 
 const RANGES: { value: StatsRange; label: string }[] = [
   { value: '1h', label: '1 小时' },
+  { value: 'today', label: '今日' },
   { value: '24h', label: '24 小时' },
   { value: '7d', label: '7 天' },
   { value: '30d', label: '30 天' },
@@ -60,7 +61,8 @@ const RANGES: { value: StatsRange; label: string }[] = [
 export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   const { user, dnsConfig } = useAuth()
   const isAdmin = scope === 'global'
-  const [range, setRange] = useState<StatsRange>('24h')
+  // 默认「今日」：每日请求量额度按北京自然日计，看今日才是能对上额度的数字
+  const [range, setRange] = useState<StatsRange>('today')
 
   // 区间同时决定三个查询：改一次区间要一起变，否则卡片和图对不上。
   const summary = useQuery({

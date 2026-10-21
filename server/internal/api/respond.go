@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/50521136/aegis-dns/server/internal/bjtime"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -140,6 +141,11 @@ func timeRange(s string, now time.Time) time.Time {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" {
 		s = "24h"
+	}
+	// today 是北京时间的「今天 0 点起」，不是滚动的 24 小时。
+	// 每日请求量额度按北京自然日计，所以统计也得以 0 点为界，两边口径一致。
+	if s == "today" {
+		return time.Unix(bjtime.StartOfDay(bjtime.Today()), 0)
 	}
 	if strings.HasSuffix(s, "d") {
 		if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil {

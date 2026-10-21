@@ -135,8 +135,8 @@ const settingsSchema = z.object({
   signup_member_days: z.coerce.number().int().min(0),
   checkin_enabled: z.boolean(),
   checkin_days: z.coerce.number().int().min(0),
-  checkin_streak_days: z.coerce.number().int().min(0),
-  checkin_streak_bonus: z.coerce.number().int().min(0),
+  checkin_bonus_every: z.coerce.number().int().min(0),
+  checkin_bonus_days: z.coerce.number().int().min(0),
 })
 
 type SettingsForm = z.infer<typeof settingsSchema>
@@ -507,12 +507,12 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
               />
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField form={form} name="checkin_days" label="单次签到赠送天数" />
-                <NumberField form={form} name="checkin_streak_days" label="连签门槛（天，0=不设）" />
-                <NumberField form={form} name="checkin_streak_bonus" label="连签额外奖励天数" />
+                <NumberField form={form} name="checkin_bonus_every" label="累计签到门槛（天，0=不设）" />
+                <NumberField form={form} name="checkin_bonus_days" label="累计额外奖励天数" />
               </div>
               <p className="text-xs text-muted-foreground">
-                连签奖励按门槛的整数倍发放（门槛 7 天时，第 7、14、21 天各触发一次），
-                避免第 8 天又领一次第 7 天的奖励。
+                按累计签到天数发放，不要求连续：门槛 7 天时，累计第 7、14、21 天各触发一次。
+                中间漏签不影响，累计够天数就给。
               </p>
             </CardContent>
           </Card>

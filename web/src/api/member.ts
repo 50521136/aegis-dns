@@ -101,7 +101,10 @@ export async function deleteAnnouncement(id: number): Promise<void> {
 
 /** 发送邮箱验证码（注册验证 / 找回密码） */
 export async function sendEmailCode(email: string, purpose: 'register' | 'reset' | 'change') {
-  const { data } = await api.post('/auth/email/send-code', { email, purpose })
+  // 换邮箱必须走带登录态的接口：/auth/email/send-code 是公开路由，
+  // 服务端拿不到 currentUser，会一律回「请先登录」。
+  const url = purpose === 'change' ? '/me/email/send-code' : '/auth/email/send-code'
+  const { data } = await api.post(url, { email, purpose })
   return data as { sent: boolean; message: string }
 }
 

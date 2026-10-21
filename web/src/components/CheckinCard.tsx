@@ -41,8 +41,9 @@ export function CheckinCard() {
   // 后端没开签到就整块不显示，而不是给一个永远点不动的按钮
   if (!d.enabled) return null
 
+  // 距离下一次累计奖励还差几天（按累计签到天数算，不要求连续）
   const untilBonus =
-    d.streak_days > 0 ? d.streak_days - (d.streak % d.streak_days) : 0
+    d.streak_days > 0 ? d.streak_days - (d.total_days % d.streak_days) : 0
 
   return (
     <Card>
@@ -54,12 +55,12 @@ export function CheckinCard() {
         </CardTitle>
         <CardDescription>
           {d.streak_days > 0 && d.streak_bonus > 0
-            ? `连续签到 ${d.streak_days} 天额外送 ${d.streak_bonus} 天`
+            ? `累计签到每 ${d.streak_days} 天额外送 ${d.streak_bonus} 天`
             : '每天签到一次即可获得会员天数'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 min-[360px]:grid-cols-3">
           <Stat icon={<Flame className="size-3.5" />} label="连续签到" value={`${d.streak} 天`} />
           <Stat icon={<Gift className="size-3.5" />} label="累计签到" value={`${d.total_days} 天`} />
           <Stat icon={<Sparkles className="size-3.5" />} label="会员剩余" value={`${d.member_days} 天`} />
@@ -68,8 +69,8 @@ export function CheckinCard() {
         {d.streak_days > 0 && d.streak_bonus > 0 && !d.checked_today && (
           <p className="text-xs text-muted-foreground">
             {untilBonus === 0
-              ? `今天签到就触发连签奖励，额外 +${d.streak_bonus} 天`
-              : `再连签 ${untilBonus} 天可额外获得 ${d.streak_bonus} 天`}
+              ? `今天签到就触发累计奖励，额外 +${d.streak_bonus} 天`
+              : `再累计签到 ${untilBonus} 天可额外获得 ${d.streak_bonus} 天`}
           </p>
         )}
 

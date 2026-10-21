@@ -34,6 +34,19 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
+// emailSuffixes 是注册页邮箱后缀联想项。
+// 按国内实际使用频率排：QQ / 163 / 126 最多，Gmail / Outlook 次之。
+const emailSuffixes = [
+  'qq.com',
+  '163.com',
+  '126.com',
+  'gmail.com',
+  'outlook.com',
+  'foxmail.com',
+  'sina.com',
+  'aliyun.com',
+]
+
 export default function Register() {
   const { register: registerUser } = useAuth()
   const toast = useToast()
@@ -48,6 +61,7 @@ export default function Register() {
     register,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -163,7 +177,37 @@ export default function Register() {
 
         <div className="space-y-2">
           <Label htmlFor="email">邮箱</Label>
-          <Input id="email" type="email" autoComplete="email" placeholder="you@example.com" {...register('email')} />
+          <Input
+            id="email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@example.com"
+            list="email-providers"
+            {...register('email')}
+          />
+          {/* 后缀联想：国内用户大多用这几个，省得手打还打错
+              （QQ 邮箱最容易漏掉 @ 后面的 qq.com） */}
+          <datalist id="email-providers">
+            {emailSuffixes.map((d) => (
+              <option key={d} value={`@${d}`} />
+            ))}
+          </datalist>
+          {/* 点了联想项后光标位置不定，所以给一排可点的后缀按钮兜底 */}
+          <div className="flex flex-wrap gap-1.5">
+            {emailSuffixes.slice(0, 5).map((d) => {
+              const local = emailValue.includes('@') ? emailValue.split('@')[0] : emailValue
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+                  onClick={() => setValue('email', `${local || 'you'}@${d}`, { shouldValidate: true })}
+                >
+                  @{d}
+                </button>
+              )
+            })}
+          </div>
           {errors.email && <p className="text-xs text-danger">{errors.email.message}</p>}
         </div>
 

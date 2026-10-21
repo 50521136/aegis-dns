@@ -306,10 +306,15 @@ type GlobalSettings struct {
 	CheckinEnabled bool `json:"checkin_enabled"`
 	// CheckinDays 是单次签到赠送的天数。
 	CheckinDays int `json:"checkin_days"`
-	// CheckinStreakDays 是「连续签到多少天」触发额外奖励的门槛，0 表示不设连签奖励。
-	CheckinStreakDays int `json:"checkin_streak_days"`
-	// CheckinStreakBonus 是达到连签门槛时额外赠送的天数。
-	CheckinStreakBonus int `json:"checkin_streak_bonus"`
+	// CheckinBonusEvery 是「累计签到满多少天」触发额外奖励的门槛，0 表示不设累计奖励。
+	CheckinBonusEvery int `json:"checkin_bonus_every"`
+	// CheckinBonusDays 是达到累计门槛时额外赠送的天数。
+	CheckinBonusDays int `json:"checkin_bonus_days"`
+	// CheckinStreakDays / CheckinStreakBonus 是旧字段（按连续签到计奖励）。
+	// 保留只为读取老配置：NormalizeCheckin 会把它们搬到新字段上，
+	// 否则升级后用户已配好的 7/7 会静默失效。
+	CheckinStreakDays  int `json:"checkin_streak_days,omitempty"`
+	CheckinStreakBonus int `json:"checkin_streak_bonus,omitempty"`
 
 	// --- 邮件服务 ---
 	//
@@ -412,10 +417,10 @@ func DefaultSettings() GlobalSettings {
 		UserInviteMaxCodes: 5,
 		SignupMemberDays:   0,
 
-		CheckinEnabled:     false,
-		CheckinDays:        1,
-		CheckinStreakDays:  7,
-		CheckinStreakBonus: 7,
+		CheckinEnabled:    false,
+		CheckinDays:       1,
+		CheckinBonusEvery: 7,
+		CheckinBonusDays:  7,
 
 		// 邮件默认关闭：没配 SMTP 就打开验证会让所有人都注册不了。
 		SMTPEnabled:          false,

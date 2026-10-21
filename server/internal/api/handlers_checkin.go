@@ -23,8 +23,8 @@ func (s *Server) handleGetCheckin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":       set.CheckinEnabled,
 		"daily_days":    set.CheckinDays,
-		"streak_days":   set.CheckinStreakDays,
-		"streak_bonus":  set.CheckinStreakBonus,
+		"streak_days":   set.CheckinBonusEvery,
+		"streak_bonus":  set.CheckinBonusDays,
 		"checked_today": st.CheckedToday,
 		"streak":        st.Streak,
 		"total_days":    st.TotalDays,
@@ -46,7 +46,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, CodeFeatureDisabled, "本站未开启签到", nil)
 		return
 	}
-	res, err := s.store.Checkin(r.Context(), u.ID, set.CheckinDays, set.CheckinStreakDays, set.CheckinStreakBonus)
+	res, err := s.store.Checkin(r.Context(), u.ID, set.CheckinDays, set.CheckinBonusEvery, set.CheckinBonusDays)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return

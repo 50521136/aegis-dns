@@ -166,8 +166,10 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.UserInviteMaxCodes = intOr(kv["user_invite_max_codes"], set.UserInviteMaxCodes)
 	set.SignupMemberDays = intOr(kv["signup_member_days"], set.SignupMemberDays)
 	set.CheckinDays = intOr(kv["checkin_days"], set.CheckinDays)
-	set.CheckinStreakDays = intOr(kv["checkin_streak_days"], set.CheckinStreakDays)
-	set.CheckinStreakBonus = intOr(kv["checkin_streak_bonus"], set.CheckinStreakBonus)
+	// 累计签到奖励。老库里存的是 checkin_streak_days / checkin_streak_bonus
+	//（按连续签到计），升级后必须继续生效，否则管理员配好的 7/7 会变成 0/0。
+	set.CheckinBonusEvery = intOr(kv["checkin_bonus_every"], intOr(kv["checkin_streak_days"], set.CheckinBonusEvery))
+	set.CheckinBonusDays = intOr(kv["checkin_bonus_days"], intOr(kv["checkin_streak_bonus"], set.CheckinBonusDays))
 	// 一组布尔开关：逐个写 if 太啰嗦且容易漏，用表驱动。
 	for _, kvp := range []struct {
 		key string
@@ -249,19 +251,22 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"sub_interval_hours":       strconv.Itoa(set.SubIntervalH),
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
-		"max_sub_entries":       strconv.Itoa(set.MaxSubEntries),
-		"free_max_rules":        strconv.Itoa(set.FreeMaxRules),
-		"free_max_subs":         strconv.Itoa(set.FreeMaxSubs),
-		"free_daily_queries":    strconv.FormatInt(set.FreeDailyQueries, 10),
-		"vip_max_rules":         strconv.Itoa(set.VipMaxRules),
-		"vip_max_subs":          strconv.Itoa(set.VipMaxSubs),
-		"vip_daily_queries":     strconv.FormatInt(set.VipDailyQueries, 10),
-		"member_reward_days":    strconv.Itoa(set.MemberRewardDays),
-		"signup_member_days":    strconv.Itoa(set.SignupMemberDays),
-		"checkin_enabled":       boolStr(set.CheckinEnabled),
-		"checkin_days":          strconv.Itoa(set.CheckinDays),
-		"checkin_streak_days":   strconv.Itoa(set.CheckinStreakDays),
-		"checkin_streak_bonus":  strconv.Itoa(set.CheckinStreakBonus),
+		"max_sub_entries":     strconv.Itoa(set.MaxSubEntries),
+		"free_max_rules":      strconv.Itoa(set.FreeMaxRules),
+		"free_max_subs":       strconv.Itoa(set.FreeMaxSubs),
+		"free_daily_queries":  strconv.FormatInt(set.FreeDailyQueries, 10),
+		"vip_max_rules":       strconv.Itoa(set.VipMaxRules),
+		"vip_max_subs":        strconv.Itoa(set.VipMaxSubs),
+		"vip_daily_queries":   strconv.FormatInt(set.VipDailyQueries, 10),
+		"member_reward_days":  strconv.Itoa(set.MemberRewardDays),
+		"signup_member_days":  strconv.Itoa(set.SignupMemberDays),
+		"checkin_enabled":     boolStr(set.CheckinEnabled),
+		"checkin_days":        strconv.Itoa(set.CheckinDays),
+		"checkin_bonus_every": strconv.Itoa(set.CheckinBonusEvery),
+		"checkin_bonus_days":  strconv.Itoa(set.CheckinBonusDays),
+		// 老键继续写：万一回滚到旧二进制，奖励设置不会丢
+		"checkin_streak_days":   strconv.Itoa(set.CheckinBonusEvery),
+		"checkin_streak_bonus":  strconv.Itoa(set.CheckinBonusDays),
 		"allow_user_invite":     boolStr(set.AllowUserInvite),
 		"user_invite_max_codes": strconv.Itoa(set.UserInviteMaxCodes),
 

@@ -8,7 +8,7 @@ import type {
   TopResponse,
 } from './types'
 
-export type StatsRange = '1h' | '24h' | '7d' | '30d'
+export type StatsRange = 'today' | '1h' | '24h' | '7d' | '30d'
 export type TopType = 'all' | 'blocked'
 
 // 统计接口的用户版与管理版返回结构一致，只是作用域不同：

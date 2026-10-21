@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -43,6 +44,16 @@ export default function DnsSetup() {
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe })
   const { data: membership } = useQuery({ queryKey: ['membership'], queryFn: getMyMembership })
 
+  // 安卓排第一：手机用户占绝大多数，进来先看到自己平台的步骤。
+  // 只把 android 提前，其余保持后端给的顺序（iOS / Windows / macOS）。
+  const guides = useMemo(() => {
+    const list = data?.platform_guides ?? []
+    return [...list].sort((a, b) => {
+      const rank = (p: string) => (p.toLowerCase() === 'android' ? 0 : 1)
+      return rank(a.platform) - rank(b.platform)
+    })
+  }, [data])
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -60,6 +71,71 @@ export default function DnsSetup() {
         </div>
       ) : data ? (
         <>
+
+          {/* 分平台指引 */}
+          {guides.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>分平台设置指引</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Tabs defaultValue={guides[0].platform}>
+                  <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:w-auto sm:flex-wrap">
+                    {guides.map((g) => {
+                      const meta = platformMeta[g.platform.toLowerCase()]
+                      return (
+                        <TabsTrigger key={g.platform} value={g.platform}>
+                          {meta?.icon}
+                          {meta?.label ?? g.platform}
+                        </TabsTrigger>
+                      )
+                    })}
+                  </TabsList>
+                  {guides.map((g) => (
+                    <TabsContent key={g.platform} value={g.platform}>
+                      <ol className="space-y-2">
+                        {g.steps.map((step, i) => (
+                          <li key={i} className="flex items-start gap-3">
+                            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary tabular-nums">
+                              {i + 1}
+                            </span>
+                            <span className="pt-0.5 text-sm">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
+
+                      {/* iOS / macOS 原生支持 com.apple.dnsSettings.managed，
+                          装了描述文件就系统级生效，不用逐台手填地址。
+                          Windows / Android 没有等价机制，不给这个按钮。 */}
+                      {(g.platform === 'ios' || g.platform === 'macos') && data.client_id && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                              try {
+                                await downloadMobileConfig(data.client_id)
+                                toast.success('描述文件已下载', '打开后到「设置」里安装即可')
+                              } catch (err) {
+                                toast.error('下载失败', errorMessage(err))
+                              }
+                            }}
+                          >
+                            <Download />
+                            下载 .mobileconfig 描述文件
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            装上后系统级生效，适合多设备
+                          </span>
+                        </div>
+                      )}
+                    </TabsContent>
+                  ))}
+                </Tabs>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             {/* 地址列表 */}
             <Card className="lg:col-span-2">
@@ -131,69 +207,6 @@ export default function DnsSetup() {
             </Card>
           )}
 
-          {/* 分平台指引 */}
-          {data.platform_guides && data.platform_guides.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>分平台设置指引</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Tabs defaultValue={data.platform_guides[0].platform}>
-                  <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:w-auto sm:flex-wrap">
-                    {data.platform_guides.map((g) => {
-                      const meta = platformMeta[g.platform.toLowerCase()]
-                      return (
-                        <TabsTrigger key={g.platform} value={g.platform}>
-                          {meta?.icon}
-                          {meta?.label ?? g.platform}
-                        </TabsTrigger>
-                      )
-                    })}
-                  </TabsList>
-                  {data.platform_guides.map((g) => (
-                    <TabsContent key={g.platform} value={g.platform}>
-                      <ol className="space-y-2">
-                        {g.steps.map((step, i) => (
-                          <li key={i} className="flex items-start gap-3">
-                            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary tabular-nums">
-                              {i + 1}
-                            </span>
-                            <span className="pt-0.5 text-sm">{step}</span>
-                          </li>
-                        ))}
-                      </ol>
-
-                      {/* iOS / macOS 原生支持 com.apple.dnsSettings.managed，
-                          装了描述文件就系统级生效，不用逐台手填地址。
-                          Windows / Android 没有等价机制，不给这个按钮。 */}
-                      {(g.platform === 'ios' || g.platform === 'macos') && data.client_id && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={async () => {
-                              try {
-                                await downloadMobileConfig(data.client_id)
-                                toast.success('描述文件已下载', '打开后到「设置」里安装即可')
-                              } catch (err) {
-                                toast.error('下载失败', errorMessage(err))
-                              }
-                            }}
-                          >
-                            <Download />
-                            下载 .mobileconfig 描述文件
-                          </Button>
-                          <span className="text-xs text-muted-foreground">
-                            装上后系统级生效，适合多设备
-                          </span>
-                        </div>
-                      )}
-                    </TabsContent>
-                  ))}
-                </Tabs>
-              </CardContent>
-            </Card>
-          )}
         </>
       ) : null}
     </div>

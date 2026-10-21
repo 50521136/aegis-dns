@@ -83,7 +83,8 @@ export function InviteCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* 战绩 */}
-        <div className="grid grid-cols-3 gap-2">
+        {/* 极窄屏（<360）三列会把「累计获得」挤成两行，退成两列更稳 */}
+        <div className="grid grid-cols-2 gap-2 min-[360px]:grid-cols-3">
           <Stat label="已邀请" value={formatNumber(d.invited)} suffix="人" />
           <Stat label="累计获得" value={formatNumber(d.earned_days)} suffix="天" />
           <Stat
@@ -97,18 +98,22 @@ export function InviteCard() {
         {primary ? (
           <div className="space-y-2">
             <p className="eyebrow">我的邀请链接</p>
-            <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2">
-              <Link2 className="size-4 shrink-0 text-muted-foreground" />
-              <code className="min-w-0 flex-1 truncate font-mono text-[13px]">
-                {primary.link ?? primary.code}
-              </code>
+            {/* 链接单独一行、按钮单独一行：并排时复制按钮会把长链接压得只剩十几个字符 */}
+            <div className="space-y-2 rounded-xl border border-border bg-muted/30 px-3 py-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <Link2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <code className="min-w-0 flex-1 break-all font-mono text-[12px] leading-snug">
+                  {primary.link ?? primary.code}
+                </code>
+              </div>
               <Button
                 size="sm"
                 variant="secondary"
+                className="w-full sm:w-auto"
                 onClick={() => copy(primary.link ?? primary.code, primary.link ?? primary.code)}
               >
                 {copied === primary.link ? <Check /> : <Copy />}
-                复制
+                复制邀请链接
               </Button>
             </div>
             <div className="flex flex-wrap items-center gap-2">

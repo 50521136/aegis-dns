@@ -860,12 +860,25 @@ curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Co
 
 hdr "每日签到"
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
-  -d '{"checkin_enabled":true,"checkin_days":2,"checkin_streak_days":3,"checkin_streak_bonus":5}' >/dev/null
+  -d '{"checkin_enabled":true,"checkin_days":2,"checkin_bonus_every":3,"checkin_bonus_days":5}' >/dev/null
 CK0=$(curl -fsS "$API/me/checkin" -H "Authorization: Bearer $GTOK")
 echo "$CK0" | grep -q '"checked_today":false' && ok "签到状态初始为未签到" || bad "初始状态不对: $CK0"
 CK1=$(curl -s -X POST "$API/me/checkin" -H "Authorization: Bearer $GTOK")
 echo "$CK1" | grep -q '"granted":2' && ok "首次签到得 2 天" || bad "签到没发天数: $CK1"
 echo "$CK1" | grep -q '"streak":1' && ok "连续天数从 1 开始" || bad "连签计数不对"
+# 累计口径：累计天数要单独统计，奖励按累计算而不是连续
+echo "$CK1" | grep -q '"total_days":1' && ok "累计签到天数为 1" || bad "累计天数不对: $CK1"
+# 累计门槛未到（1/3）不该发奖励
+echo "$CK1" | grep -q '"bonus":0' && ok "未到累计门槛不发奖励" || bad "不该有奖励: $CK1"
+# 设置项按新键名回读
+SETCK=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SETCK" | grep -q '"checkin_bonus_every":3' && ok "累计门槛设置已生效（新键名）" || bad "累计门槛没生效: $SETCK"
+echo "$SETCK" | grep -q '"checkin_bonus_days":5' && ok "累计奖励天数已生效" || bad "累计奖励没生效"
+# 老键名仍然兼容（老脚本/回滚场景）
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"checkin_streak_days":4,"checkin_streak_bonus":6}' >/dev/null
+SETCK2=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SETCK2" | grep -q '"checkin_bonus_every":4' && ok "老键名 checkin_streak_days 仍能生效" || bad "老键名失效: $SETCK2"
 # 重复签到必须被拒
 code=$(curl -s -o /tmp/e2e_ck.json -w '%{http_code}' -X POST "$API/me/checkin" -H "Authorization: Bearer $GTOK")
 [[ "$code" == "409" ]] && ok "同一天重复签到被拒（409）" || bad "重复签到没拦住: $code"

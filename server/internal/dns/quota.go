@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"github.com/50521136/aegis-dns/server/internal/bjtime"
 	"sync"
 	"time"
 )
@@ -18,7 +19,7 @@ import (
 type dailyQuota struct {
 	mu sync.Mutex
 	m  map[string]*dayCount
-	// day 是当前统计的自然日（UTC，unix/86400）。跨天时整表清空。
+	// day 是当前统计的北京自然日（见 bjtime）。跨天时整表清空。
 	day int64
 }
 
@@ -39,7 +40,7 @@ func (q *dailyQuota) allow(uid string, limit int64, now time.Time) bool {
 	if limit <= 0 || uid == "" {
 		return true
 	}
-	day := now.Unix() / 86400
+	day := bjtime.Day(now)
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -64,7 +65,7 @@ func (q *dailyQuota) allow(uid string, limit int64, now time.Time) bool {
 
 // usage 返回该用户今天的已用次数（用于面板展示与排障）。
 func (q *dailyQuota) usage(uid string, now time.Time) int64 {
-	day := now.Unix() / 86400
+	day := bjtime.Day(now)
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.day != day {

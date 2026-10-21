@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/50521136/aegis-dns/server/internal/bjtime"
 )
 
 // CheckinState 是某用户的签到状态。
@@ -22,12 +24,15 @@ type CheckinState struct {
 	LastDay int64 `json:"last_day"`
 }
 
-// dayIndex 把时间换算成 UTC 自然日序号。
-func dayIndex(t time.Time) int64 { return t.Unix() / 86400 }
+// dayIndex 把时间换算成北京自然日序号。
+//
+// 曾经用 UTC（t.Unix()/86400），结果签到要到北京时间早上 8 点才更新，
+// 凌晨签到会被算进前一天。统一走 bjtime，全站一个口径。
+func dayIndex(t time.Time) int64 { return bjtime.Day(t) }
 
 // GetCheckinState 读取签到状态。
 func (s *Store) GetCheckinState(ctx context.Context, uid string) (*CheckinState, error) {
-	today := dayIndex(time.Now())
+	today := bjtime.Today()
 	st := &CheckinState{}
 	var lastDay int64
 	var streak, granted int
@@ -76,9 +81,13 @@ type CheckinResult struct {
 //
 // 全过程在一个事务里：签到记录与会员天数必须同时成立。
 // 分开写会出现「签到成功但天数没加」或「天数加了还能再签一次」。
-func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, streakDays, streakBonus int) (*CheckinResult, error) {
+// bonusEvery / bonusDays：每累计签到 bonusEvery 天，额外赠送 bonusDays 天。
+//
+// 原来按「连续签到」算奖励，断一天就归零，对偶尔漏签的用户惩罚过重；
+// 改成累计口径后，签满 7 天就一定有奖励，只是不再要求连续。
+func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, bonusEvery, bonusDays int) (*CheckinResult, error) {
 	now := time.Now()
-	today := dayIndex(now)
+	today := bjtime.Today()
 	res := &CheckinResult{}
 
 	err := s.tx(ctx, func(tx *sql.Tx) error {
@@ -102,11 +111,19 @@ func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, streakDays, 
 		}
 		streak := prevStreak + 1
 
+		// 累计签到天数 = 已签过的不重复天数（含本次）
+		var totalBefore int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM checkins WHERE user_id = ?`, uid).Scan(&totalBefore); err != nil {
+			return err
+		}
+		totalAfter := totalBefore + 1
+
 		granted := dailyDays
 		bonus := 0
-		// 连签奖励：达到门槛的整数倍才给，避免第 8 天又给一次第 7 天的奖励
-		if streakDays > 0 && streakBonus > 0 && streak%streakDays == 0 {
-			bonus = streakBonus
+		// 累计奖励：每签满 bonusEvery 天给一次，避免第 8 天又给一次第 7 天的奖励
+		if bonusEvery > 0 && bonusDays > 0 && totalAfter%bonusEvery == 0 {
+			bonus = bonusDays
 			granted += bonus
 		}
 
@@ -132,6 +149,7 @@ func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, streakDays, 
 			res.MemberUntil = next
 		}
 		res.Streak = streak
+		res.TotalDays = totalAfter
 		res.Granted = granted
 		res.Bonus = bonus
 		return nil

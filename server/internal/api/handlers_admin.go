@@ -227,8 +227,8 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"signup_member_days":    set.SignupMemberDays,
 		"checkin_enabled":       set.CheckinEnabled,
 		"checkin_days":          set.CheckinDays,
-		"checkin_streak_days":   set.CheckinStreakDays,
-		"checkin_streak_bonus":  set.CheckinStreakBonus,
+		"checkin_bonus_every":   set.CheckinBonusEvery,
+		"checkin_bonus_days":    set.CheckinBonusDays,
 		"enable_ecs":            set.EnableECS,
 		"enable_dnssec":         set.EnableDNSSEC,
 
@@ -300,19 +300,22 @@ type settingsPatch struct {
 	UpdateRepo     *string   `json:"update_repo"`
 	UpdateChannel  *string   `json:"update_channel"`
 
-	MaxSubEntries        *int    `json:"max_sub_entries"`
-	FreeMaxRules         *int    `json:"free_max_rules"`
-	FreeMaxSubs          *int    `json:"free_max_subs"`
-	FreeDailyQueries     *int64  `json:"free_daily_queries"`
-	VipMaxRules          *int    `json:"vip_max_rules"`
-	VipMaxSubs           *int    `json:"vip_max_subs"`
-	VipDailyQueries      *int64  `json:"vip_daily_queries"`
-	MemberRewardDays     *int    `json:"member_reward_days"`
-	AllowUserInvite      *bool   `json:"allow_user_invite"`
-	UserInviteMaxCodes   *int    `json:"user_invite_max_codes"`
-	SignupMemberDays     *int    `json:"signup_member_days"`
-	CheckinEnabled       *bool   `json:"checkin_enabled"`
-	CheckinDays          *int    `json:"checkin_days"`
+	MaxSubEntries      *int   `json:"max_sub_entries"`
+	FreeMaxRules       *int   `json:"free_max_rules"`
+	FreeMaxSubs        *int   `json:"free_max_subs"`
+	FreeDailyQueries   *int64 `json:"free_daily_queries"`
+	VipMaxRules        *int   `json:"vip_max_rules"`
+	VipMaxSubs         *int   `json:"vip_max_subs"`
+	VipDailyQueries    *int64 `json:"vip_daily_queries"`
+	MemberRewardDays   *int   `json:"member_reward_days"`
+	AllowUserInvite    *bool  `json:"allow_user_invite"`
+	UserInviteMaxCodes *int   `json:"user_invite_max_codes"`
+	SignupMemberDays   *int   `json:"signup_member_days"`
+	CheckinEnabled     *bool  `json:"checkin_enabled"`
+	CheckinDays        *int   `json:"checkin_days"`
+	CheckinBonusEvery  *int   `json:"checkin_bonus_every"`
+	CheckinBonusDays   *int   `json:"checkin_bonus_days"`
+	// 旧字段：老客户端/老脚本仍可能发这两个，收下来搬到新字段
 	CheckinStreakDays    *int    `json:"checkin_streak_days"`
 	CheckinStreakBonus   *int    `json:"checkin_streak_bonus"`
 	EnableECS            *bool   `json:"enable_ecs"`
@@ -383,8 +386,11 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.SignupMemberDays, p.SignupMemberDays)
 	setBool(&dst.CheckinEnabled, p.CheckinEnabled)
 	setInt(&dst.CheckinDays, p.CheckinDays)
-	setInt(&dst.CheckinStreakDays, p.CheckinStreakDays)
-	setInt(&dst.CheckinStreakBonus, p.CheckinStreakBonus)
+	setInt(&dst.CheckinBonusEvery, p.CheckinBonusEvery)
+	setInt(&dst.CheckinBonusDays, p.CheckinBonusDays)
+	// 兼容老字段名（按连续签到计奖励的年代）
+	setInt(&dst.CheckinBonusEvery, p.CheckinStreakDays)
+	setInt(&dst.CheckinBonusDays, p.CheckinStreakBonus)
 	setBool(&dst.EnableECS, p.EnableECS)
 	setBool(&dst.EnableDNSSEC, p.EnableDNSSEC)
 	setBool(&dst.AllowEmailChange, p.AllowEmailChange)
@@ -760,11 +766,11 @@ func validateSettings(s *model.GlobalSettings) error {
 	if s.CheckinDays < 0 || s.CheckinDays > 365 {
 		return errValidation("checkin_days 需在 0 到 365 之间")
 	}
-	if s.CheckinStreakDays < 0 || s.CheckinStreakDays > 3650 {
-		return errValidation("checkin_streak_days 需在 0 到 3650 之间（0 = 不设连签奖励）")
+	if s.CheckinBonusEvery < 0 || s.CheckinBonusEvery > 3650 {
+		return errValidation("checkin_bonus_every 需在 0 到 3650 之间（0 = 不设累计奖励）")
 	}
-	if s.CheckinStreakBonus < 0 || s.CheckinStreakBonus > 3650 {
-		return errValidation("checkin_streak_bonus 需在 0 到 3650 之间")
+	if s.CheckinBonusDays < 0 || s.CheckinBonusDays > 3650 {
+		return errValidation("checkin_bonus_days 需在 0 到 3650 之间")
 	}
 	// 邮件：只有启用时才要求配全，否则「先填一半保存」会被卡住。
 	if s.SMTPEnabled {
