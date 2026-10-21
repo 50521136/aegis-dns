@@ -37,6 +37,8 @@ type ParseResult struct {
 	Entries []Entry
 	// Skipped 是被跳过的行数（注释、空行、不支持的语法）。
 	Skipped int
+	// Invalid 是被丢弃的非法域名条数（裸 TLD、CSS 片段、纯数字等）。
+	Invalid int
 	// Errors 是「看起来是规则但解析失败」的前若干条错误。
 	Errors []error
 	// Detected 是嗅探出的格式（format=auto 时）。
@@ -183,6 +185,20 @@ func Parse(content []byte, format Format, listType string) (*ParseResult, error)
 			res.Skipped++
 			continue
 		}
+		// 域名合法性校验。
+		//
+		// 公共列表里混着外观规则、CSS 片段、统计口径的垃圾行，
+		// 解析出来会变成 "_468x60_"、"192.168" 这种「域名」。
+		// 其中单标签条目（com / net / clicks）最致命：
+		// 后缀匹配下 `com` 会命中**所有 .com 域名**，
+		// 一条 allow 条目就能把整个 TLD 的拦截全部放行 ——
+		// 线上实测 AdGuard Allowlist 里的 `com`/`net` 让拦截率直接归零。
+		if !plausibleDomain(p.Domain) {
+			res.Invalid++
+			res.Skipped++
+			continue
+		}
+
 		// 订阅只承载「拦/放」两类，不承载改写能力。但带 $dnsrewrite 的行
 		// 不能直接丢：公共列表用它表达「把这个域名解析到黑洞域名」，
 		// 本质上就是拦截。按列表类型降级成对应的类别。
@@ -237,4 +253,44 @@ func SplitByKind(entries []Entry) (block, allow []string) {
 		}
 	}
 	return block, allow
+}
+
+// plausibleDomain 判断解析出来的字符串是否像一个真实域名。
+//
+// 为什么必须校验：公共列表里混着外观规则与 CSS 片段，解析后会得到
+// "_468x60_"、"192.168" 这类「域名」。单标签条目（com / net）尤其危险 ——
+// 后缀匹配下 `com` 命中所有 .com 域名，一条 allow 就能把整个 TLD 放行。
+// 宁可丢掉这些行（计入 Invalid 便于排查），也不能让它们进规则集。
+func plausibleDomain(d string) bool {
+	if d == "" || len(d) > 253 {
+		return false
+	}
+	// 至少两段：裸 TLD 一律拒绝
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 {
+			return false
+		}
+		// 下划线是服务记录（_dmarc）或 CSS 片段（_ad_300），不是域名
+		if strings.ContainsAny(l, "_ \t/\\:*?#[]{}()<>@!$%^&'\"") {
+			return false
+		}
+		if l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+	}
+	// 顶级域必须含字母：挡住 "192.168" 这种 IP 片段
+	tld := labels[len(labels)-1]
+	hasLetter := false
+	for i := 0; i < len(tld); i++ {
+		c := tld[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			hasLetter = true
+			break
+		}
+	}
+	return hasLetter
 }

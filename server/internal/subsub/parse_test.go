@@ -172,3 +172,59 @@ func TestDescribeStatus(t *testing.T) {
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+// 裸 TLD 必须被丢弃。
+//
+// 线上事故：AdGuard Allowlist 解析出 `com` / `net` 两个单标签条目，
+// 后缀匹配下它们命中所有 .com / .net 域名 —— 拦截率直接归零，
+// 而列表本身看起来「只有 1028 条，很正常」。
+func TestParseRejectsBareTLDAndJunk(t *testing.T) {
+	content := []byte(`! Title: allowlist
+@@||good.example.com^
+@@com
+@@net
+@@clicks
+@@_468x60_
+@@_ad_300
+@@192.168
+@@||cdn.example.com^
+`)
+	res, err := Parse(content, FormatAdblock, "allowlist")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range res.Entries {
+		got[e.Domain] = true
+	}
+	for _, bad := range []string{"com", "net", "clicks", "_468x60_", "_ad_300", "192.168"} {
+		if got[bad] {
+			t.Errorf("非法条目 %q 不该进入规则集", bad)
+		}
+	}
+	for _, ok := range []string{"good.example.com", "cdn.example.com"} {
+		if !got[ok] {
+			t.Errorf("正常域名 %q 被误丢", ok)
+		}
+	}
+	if res.Invalid < 6 {
+		t.Errorf("Invalid 计数不对: %d（期望至少 6）", res.Invalid)
+	}
+	t.Logf("保留 %d 条，丢弃非法 %d 条", len(res.Entries), res.Invalid)
+}
+
+func TestPlausibleDomain(t *testing.T) {
+	good := []string{"example.com", "a.b.c.d.example.co.uk", "xn--fiqs8s.cn", "1example.com"}
+	bad := []string{"", "com", "net", "192.168", "_dmarc.example.com", "-bad.com", "bad-.com",
+		"a..b", "exa mple.com", "example.com/path", "*.example.com"}
+	for _, d := range good {
+		if !plausibleDomain(d) {
+			t.Errorf("%q 应判为合法", d)
+		}
+	}
+	for _, d := range bad {
+		if plausibleDomain(d) {
+			t.Errorf("%q 应判为非法", d)
+		}
+	}
+}
