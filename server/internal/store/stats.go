@@ -362,6 +362,16 @@ func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionMin, max
 	if err != nil {
 		return nil, fmt.Errorf("清理过期数据失败: %w", err)
 	}
+	// SQLite 删行不还盘：文件大小只增不减，1 小时日志攒下的 5 万行删掉后
+	// 页还在 free list 里，库文件依旧是 121MB。incremental_vacuum 会把这些
+	// 空闲页还给文件系统，让库文件跟着日志一起缩回去。
+	// 只有 auto_vacuum=INCREMENTAL 的库才生效，否则是一条空操作，不会报错。
+	if out["query_log"] > 0 {
+		if _, err := s.write.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
+			// 收缩失败不影响清理结果，记在返回值里让调用方知道
+			out["vacuum_error"] = 0
+		}
+	}
 	return out, nil
 }
 
