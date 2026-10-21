@@ -344,6 +344,20 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                 {!form.watch('enable_doh') && !form.watch('enable_dot') && !form.watch('enable_plain_dns') && (
                   <p className="text-xs text-danger">三个协议全部关闭后服务将不可用，保存会被拒绝。</p>
                 )}
+                {/* DoH 是主路径：iOS/macOS 描述文件、二维码、路径式地址全靠它。
+                    关掉之后这些入口会一起消失，用户会以为服务坏了。 */}
+                {!form.watch('enable_doh') && (
+                  <p className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+                    关闭 DoH 会连带失效：iOS / macOS 描述文件、接入二维码、路径式 DoH 地址，
+                    以及所有用 DoH 接入的设备（会直接收到 REFUSED）。只保留 DoT 时，
+                    Android「私人 DNS」仍可用，其余平台需要改用支持 DoT 的客户端。
+                  </p>
+                )}
+                {!form.watch('enable_dot') && (
+                  <p className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+                    关闭 DoT 后 Android「私人 DNS」无法接入，该平台指引会显示「暂不支持」。
+                  </p>
+                )}
               </div>
 
               <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
