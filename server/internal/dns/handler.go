@@ -61,6 +61,10 @@ type Handler struct {
 	// inflight 是当前在处理中的查询数，用于系统状态展示。
 	inflight atomic.Int64
 
+	// flight 合并「同一域名并发查询」，避免冷启动时一批相同请求
+	// 各自打上游（详见 inflight.go）。
+	flight *flightGroup
+
 	// limiters 是每租户的令牌桶，按需创建。
 	limiters sync.Map
 
@@ -87,6 +91,7 @@ func NewHandler(reg *Registry, cache *Cache, collector *stats.Collector, log *sl
 		log:       log,
 		sem:       make(chan struct{}, 300),
 		quota:     newDailyQuota(),
+		flight:    newFlightGroup(),
 	}
 	if cache == nil {
 		cache = NewCache(10000, 60, 86400)
@@ -316,8 +321,11 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 
 	// Stage 3 缓存查询。
 	cache := h.cache.Load()
-	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-		if msg, hit, allowRule, cachedAction := cache.GetWithAllow(key, req); hit {
+	// cacheKey 在 Stage 5 的并发合并里还要用（同一域名合并成一次上游查询），
+	// 所以在这里算一次存下来，避免热路径上重复做小写与去尾点。
+	cacheKey, cacheable := CacheKeyFrom(user.UserID, req)
+	if cacheable && cache != nil {
+		if msg, hit, allowRule, cachedAction := cache.GetWithAllow(cacheKey, req); hit {
 			// 必须把报文 ID 改回本次请求的 ID。
 			//
 			// 缓存里存的是首次应答的副本，它带着「当时那个请求」的随机 ID。
@@ -366,8 +374,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			//
 			// 规则变更时缓存会被定向失效（FlushUsers），所以不会出现
 			// 「规则删了但还被拦」的残留。
-			if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-				cache.PutWithAction(key, resp, req, "blocked")
+			if cacheable && cache != nil {
+				cache.PutWithAction(cacheKey, resp, req, "blocked")
 			}
 			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, "blocked", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
@@ -376,8 +384,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		case rules.ActionRewrite:
 			resp := rewriteResponse(req, decision.Rewrite)
 			// 改写结果同理：只由规则决定，可以缓存。
-			if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-				cache.PutWithAction(key, resp, req, actionHandled)
+			if cacheable && cache != nil {
+				cache.PutWithAction(cacheKey, resp, req, actionHandled)
 			}
 			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, actionHandled, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
@@ -422,7 +430,26 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			}
 		}
 	}
-	resp, upSrc, err := pool.ExchangeWithSource(ctx, upReq)
+	// Stage 5 上游解析。
+	//
+	// 并发合并：同一租户 + 同一域名 + 同一类型 + 同一 DO 位的请求只放一条
+	// 去问上游，其余等它的结果（详见 inflight.go 的说明）。
+	//
+	// 只在「这条请求本来就会进缓存」时才合并 —— 带 ECS 的请求不进缓存，
+	// 合并它们会把 leader 网段的答案发给别人，那是错答案而不是性能优化。
+	fkey, mergeable := flightKeyOf(cacheKey, cacheable, applyDNSSEC, req)
+	if !mergeable {
+		fkey = "" // 不参与合并，直接问上游
+	}
+	resp, upSrc, err, shared := h.flight.Do(ctx, fkey,
+		func() (*dns.Msg, string, error) {
+			return pool.ExchangeWithSource(ctx, upReq)
+		})
+	if shared && resp != nil {
+		// 等待者拿到的是别人那次的共享副本：leader 还会继续改它
+		// （回填 ID、置 Compress、写缓存），这里必须先复制。
+		resp = resp.Copy()
+	}
 	det.Upstream = upSrc
 	if err != nil {
 		h.upstreamErrs.Add(1)
@@ -446,8 +473,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 
 	// Stage 6 响应后处理：写缓存 + 统计。
-	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-		cache.PutWith(key, resp, req, allowRule)
+	if cacheable && cache != nil {
+		cache.PutWith(cacheKey, resp, req, allowRule)
 	}
 	det.Answer = h.detail(resp)
 	status := actionHandled
