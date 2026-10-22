@@ -31,10 +31,18 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "")
 		return
 	}
+	// 档位表一次取出：列表里每个用户都要把种类 id 翻成显示名，
+	// 逐个查库就是 N+1。
+	tiers, _ := s.store.TierMap(r.Context())
+	now := time.Now()
 	items := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		ruleCount, _ := s.store.CountRules(r.Context(), u.ID, false)
 		ips, _ := s.store.ListUserIPs(r.Context(), u.ID)
+		// 会员状态由后端算好（种类 + 有效期），前端只负责显示。
+		// 漏掉这几个字段的表现是「列表里永远看不到会员徽章」——
+		// 前端按 member_days/member_forever 判断，拿不到就当成非会员。
+		mem := model.MemberStateOf(u, tiers, now)
 		items = append(items, map[string]any{
 			"id":         u.ID,
 			"username":   u.Username,
@@ -51,6 +59,14 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 			"rules_enabled":    u.RulesEnabled,
 			"subs_enabled":     u.SubsEnabled,
 			"custom_id_used":   u.CustomIDUsed,
+			// 会员状态
+			"member_until":   mem.Until,
+			"member_days":    mem.Days,
+			"member_forever": mem.Forever,
+			"is_member":      mem.IsMember,
+			"tier":           mem.Tier,
+			"tier_name":      mem.TierName,
+			"tier_id":        mem.AssignedTier,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
