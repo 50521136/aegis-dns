@@ -22,10 +22,15 @@ import {
   ShieldCheck,
   TrendingUp,
   Users,
+  Crown,
+  CheckCircle2,
+  CalendarCheck,
+  ArrowRight,
 } from 'lucide-react'
 import { flushCache, flushMyCache, getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
 import { getAdminUserTraffic } from '@/api/adminStats'
 import type { Scope } from '@/api/types'
+import { getCheckin } from '@/api/member'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
@@ -128,9 +133,10 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
 
   return (
     <div className="space-y-6">
+      {isAdmin ? (
       <PageHeader
-        title={isAdmin ? '全站总览' : `你好，${user?.username ?? ''}`}
-        description={isAdmin ? '所有租户的查询与拦截情况' : '这里是你的 DNS 服务总览'}
+        title="全站总览"
+        description="所有租户的查询与拦截情况"
         icon={<Activity className="size-5" />}
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -150,17 +156,46 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
               <RefreshCw className={refreshing ? 'animate-spin' : undefined} />
               刷新
             </Button>
-            {!isAdmin && (
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/app/setup">
+                <BookOpen />
+                接入配置
+              </Link>
+            </Button>
+          </div>
+        }
+      />
+      ) : (
+        <UserGreeting
+          username={user?.username ?? ''}
+          actions={
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={range} onValueChange={(v) => setRange(v as StatsRange)}>
+                <SelectTrigger className="h-9 w-28 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RANGES.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" onClick={refreshAll} disabled={refreshing}>
+                <RefreshCw className={refreshing ? 'animate-spin' : undefined} />
+                刷新
+              </Button>
               <Button variant="outline" size="sm" asChild>
                 <Link to="/app/setup">
                   <BookOpen />
                   接入配置
                 </Link>
               </Button>
-            )}
-          </div>
-        }
-      />
+            </div>
+          }
+        />
+      )}
 
 
 
@@ -464,5 +499,87 @@ function QuickLink({
         </p>
       </div>
     </Link>
+  )
+}
+
+/**
+ * UserGreeting 是普通用户总览页的头部。
+ *
+ * 取代原来的 PageHeader：标题行右侧把「用户名 / 会员状态 / 剩余天数 / 签到状态」
+ * 一次给全，用户不用再点进「我的账户」才知道自己还剩几天、今天签没签。
+ *
+ * 高度刻意与 PageHeader 一致（标题 + 一行副文本），不额外撑高首屏 ——
+ * 总览最该先看到的是四个统计数字，不是身份信息。
+ */
+function UserGreeting({
+  username,
+  actions,
+}: {
+  username: string
+  actions?: React.ReactNode
+}) {
+  const checkin = useQuery({
+    queryKey: ['checkin'],
+    queryFn: getCheckin,
+    // 签到状态一天只变一次，没必要频繁拉
+    staleTime: 60_000,
+  })
+
+  const isMember = (checkin.data?.member_days ?? 0) > 0
+  const days = checkin.data?.member_days ?? 0
+  const checkedToday = checkin.data?.checked_today ?? false
+  const checkinOn = checkin.data?.enabled ?? false
+
+  return (
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-start gap-3">
+        <div className="m-pill mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl text-primary">
+          <Activity className="size-5" />
+        </div>
+        <div className="min-w-0">
+          <h1 className="flex min-w-0 items-center gap-2 text-2xl font-semibold leading-tight tracking-tight">
+            <span className="shrink-0">你好，</span>
+            <span className="min-w-0 truncate rounded-lg bg-primary/10 px-2 py-0.5 font-mono text-base text-primary">
+              {username}
+            </span>
+          </h1>
+          {/* 手机上一行只放得下「说明 + 两个标签」，放不下就折行。
+              说明文字在小屏隐藏：页面标题已经是「总览」，重复一遍纯占高度。 */}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <span className="hidden sm:inline">这里是你的 DNS 服务总览</span>
+            <span aria-hidden className="hidden text-border sm:inline">·</span>
+            {isMember ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-xs text-warning">
+                <Crown className="size-3" />
+                会员<span className="hidden sm:inline"> · </span>
+                <span className="sm:hidden"> </span>剩 {days} 天
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs">
+                普通用户
+              </span>
+            )}
+            {checkinOn && (
+              checkedToday ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
+                  <CheckCircle2 className="size-3" />
+                  今日已签到
+                </span>
+              ) : (
+                <Link
+                  to="/app/account"
+                  className="inline-flex items-center gap-1 rounded-full border border-primary/40 px-2 py-0.5 text-xs text-primary transition-colors hover:bg-primary/10"
+                >
+                  <CalendarCheck className="size-3" />
+                  去签到
+                  <ArrowRight className="size-3" />
+                </Link>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </div>
   )
 }

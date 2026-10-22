@@ -34,6 +34,7 @@ import type {
   SubscriptionInput,
 } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
+import { GlobalLayerHint, QuotaReadout } from '@/components/UserLayerHints'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -124,7 +125,9 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
     // 后台同步期间每 3 秒轮询一次，全部同步完自动停止 —— 否则用户得手动刷新
     // 才知道下载好了没有。
     refetchInterval: (query) =>
-      (query.state.data ?? []).some((x) => x.last_status?.startsWith('pending')) ? 3000 : false,
+      (query.state.data?.items ?? []).some((x) => x.last_status?.startsWith('pending'))
+        ? 3000
+        : false,
   })
   const presetsQuery = useQuery({
     queryKey: ['subscriptions', 'presets'],
@@ -134,9 +137,10 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
 
   // 已经在列表里的源不能再加一次：同一份列表重复导入只会白占配额、
   // 把订阅列表撑得看不出重点，而用户点下去之前是不知道的。
-  const existingUrls = new Set((listQuery.data ?? []).map((s) => s.url))
+  const existingUrls = new Set((listQuery.data?.items ?? []).map((s) => s.url))
 
-  const items = listQuery.data ?? []
+  const items = listQuery.data?.items ?? []
+  const limit = listQuery.data?.limit ?? 0
 
   const form = useForm<SubForm>({
     resolver: zodResolver(schema),
@@ -258,6 +262,14 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
           </>
         }
       />
+
+      {/* 订阅配额 + 全局层状态。
+          之前这一页完全看不到「还能加几个订阅」，用户只有点「添加订阅」
+          提交之后才知道已经满了。 */}
+      <div className="flex flex-wrap items-center gap-3">
+        {!isGlobal && <GlobalLayerHint />}
+        <QuotaReadout used={items.length} limit={limit} unit="个订阅" />
+      </div>
 
       {listQuery.isError ? (
         <ErrorState message={errorMessage(listQuery.error)} onRetry={() => listQuery.refetch()} />

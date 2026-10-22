@@ -23,6 +23,7 @@ import {
 import { errorMessage } from '@/api/client'
 import type { Rule, RuleInput, RuleKind, Scope } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
+import { GlobalLayerHint } from '@/components/UserLayerHints'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -275,8 +276,12 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
         }
       />
 
-      {/* 配额读数：仪器化风格，用尽时变红提醒，而不是等到提交才报错 */}
-      {limit > 0 && (
+      {/* 配额读数 + 全局层状态：
+          用户看到「某域名还是被拦」，往往是因为全局层还在生效 ——
+          把开关状态放在这一页，不用跑去设置里找。 */}
+      <div className="flex flex-wrap items-center gap-3">
+        {!isGlobal && <GlobalLayerHint />}
+        {limit > 0 && (
         <div className="flex items-center gap-3 text-xs">
           <span className="eyebrow">配额</span>
           <span
@@ -295,7 +300,8 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
             />
           </div>
         </div>
-      )}
+        )}
+      </div>
 
       {/* 工具条 */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -407,17 +413,11 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
                       </span>
                     </TableCell>
                     <TableCell>
-                      {rule.qtypes?.length ? (
-                        <div className="flex flex-wrap gap-1">
-                          {rule.qtypes.map((q) => (
-                            <Badge key={q} variant="secondary">
-                              {q}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">全部</span>
-                      )}
+                      {/* 合成一行文本而不是一排 Badge：Badge 会换行，一行规则被撑成两行，
+                          一页能看多少条直接减半 */}
+                      <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                        {rule.qtypes?.length ? rule.qtypes.join(' ') : '全部'}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <Switch
@@ -451,56 +451,56 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
             </Table>
           </div>
 
-          {/* 移动端卡片列表 */}
-          <div className="space-y-3 md:hidden">
+          {/* 移动端：一行一条。
+              之前是四行的卡片，一屏只能看 3 条；压成一行后同样高度能看 8~9 条，
+              浏览长列表的体验差得很多。 */}
+          <div className="space-y-1.5 md:hidden">
             {items.map((rule) => (
-              <div key={rule.id} className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      checked={selected.has(rule.id)}
-                      onCheckedChange={() => toggleOne(rule.id)}
-                      aria-label="选择"
-                    />
-                    <Badge variant={KIND_TONE[rule.kind]}>{KIND_LABEL[rule.kind]}</Badge>
-                  </div>
-                  <Switch
-                    checked={rule.enabled}
-                    onCheckedChange={(v) => toggleEnabled.mutate({ id: rule.id, enabled: v })}
-                    aria-label="启用"
-                  />
-                </div>
-                <p className="mt-3 break-all font-mono text-[13px]">{rule.pattern}</p>
-                {rule.value && (
-                  <p className="mt-1 break-all font-mono text-xs text-muted-foreground">→ {rule.value}</p>
-                )}
-                <div className="mt-3 flex items-center justify-between">
-                  <div className="flex flex-wrap gap-1">
-                    {rule.qtypes?.length ? (
-                      rule.qtypes.map((q) => (
-                        <Badge key={q} variant="secondary">
-                          {q}
-                        </Badge>
-                      ))
-                    ) : (
-                      <span className="text-xs text-muted-foreground">全部记录类型</span>
-                    )}
-                  </div>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon-sm" onClick={() => openEdit(rule)} aria-label="编辑">
-                      <Pencil />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => setPendingDelete(rule)}
-                      aria-label="删除"
-                      className="text-danger"
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </div>
+              <div
+                key={rule.id}
+                className="flex items-center gap-2 rounded-xl border border-border/50 bg-card px-3 py-2 shadow-sm"
+              >
+                <Checkbox
+                  checked={selected.has(rule.id)}
+                  onCheckedChange={() => toggleOne(rule.id)}
+                  aria-label="选择"
+                />
+                <Badge variant={KIND_TONE[rule.kind]} className="shrink-0">
+                  {KIND_LABEL[rule.kind]}
+                </Badge>
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-[13px]"
+                  title={`${rule.pattern}${rule.value ? ` → ${rule.value}` : ''}`}
+                >
+                  {rule.pattern}
+                  {rule.value && (
+                    <span className="text-muted-foreground"> → {rule.value}</span>
+                  )}
+                </span>
+                <Switch
+                  checked={rule.enabled}
+                  onCheckedChange={(v) => toggleEnabled.mutate({ id: rule.id, enabled: v })}
+                  aria-label="启用"
+                  className="shrink-0"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => openEdit(rule)}
+                  aria-label="编辑"
+                  className="shrink-0"
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setPendingDelete(rule)}
+                  aria-label="删除"
+                  className="shrink-0 text-danger"
+                >
+                  <Trash2 />
+                </Button>
               </div>
             ))}
           </div>
