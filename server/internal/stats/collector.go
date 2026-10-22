@@ -117,17 +117,23 @@ func (c *Collector) QueryLogEnabled() bool { return c != nil && c.enabled.Load()
 // 不做任何分配以外的工作（map key 用拼接字符串，Go 会复用底层缓冲）。
 func (c *Collector) Record(ev Event) {
 	// 进程级计数。
+	//
+	// 「是否命中缓存」和「拦截 / 放行」是两个正交维度，必须分开累加。
+	// 早先这里把 CacheHit 写在 switch 的第二个分支里，结果被拦截的查询
+	// 命中缓存时只进 blocked、永远进不了 cached —— 而拦截类占线上 36%
+	// 的流量、命中率 77%，这批全被漏算，面板上的命中率被系统性低估到
+	// 6.8%，真实值其实是 53%。命中率一旦失真，所有围绕缓存的调优判断
+	// 都会跟着错（本人据此先后误判为「容量打满」和「域名长尾」）。
 	c.total.Add(1)
-	switch {
-	case ev.Action == "blocked":
-		c.blocked.Add(1)
-	case ev.CacheHit:
-		// 缓存命中单独计数（命中率要用），状态本身仍是 allowed/handled
+	if ev.CacheHit {
 		c.cached.Add(1)
-		if ev.Action == "allowed" {
-			c.allowed.Add(1)
-		}
+	}
+	switch ev.Action {
+	case "blocked":
+		c.blocked.Add(1)
 	default:
+		// allowed 与 handled 都算放行：handled 表示「正常解析过」，
+		// 它对用户而言同样是通的，不计入放行会让 allowed 与 total 对不上。
 		c.allowed.Add(1)
 	}
 	c.latencyN.Add(1)
@@ -146,14 +152,12 @@ func (c *Collector) Record(ev Event) {
 	}
 	r.total++
 	r.latency += ev.LatencyMS
-	switch {
-	case ev.Action == "blocked":
-		r.blocked++
-	case ev.CacheHit:
+	if ev.CacheHit {
 		r.cached++
-		if ev.Action == "allowed" {
-			r.allowed++
-		}
+	}
+	switch ev.Action {
+	case "blocked":
+		r.blocked++
 	default:
 		r.allowed++
 	}
