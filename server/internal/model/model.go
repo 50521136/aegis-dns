@@ -77,6 +77,10 @@ type User struct {
 	TierID string `json:"tier_id"`
 	// DailyReport 是用户是否订阅每日邮件日报，默认关闭。
 	DailyReport bool `json:"daily_report"`
+	// ReportTime 是日报推送时间（北京时间 "HH:MM"），由用户自己设。
+	// 唯一的时间来源：管理员那边只留总开关，不再有全局时间，
+	// 否则又会出现「两处都能改、谁生效说不清」的老问题。
+	ReportTime string `json:"report_time"`
 	// LogClearedAt 是用户「清空自己的日志」的时间点。
 	// 只影响用户自己的查询视图（ts > LogClearedAt），不删数据，
 	// 所以管理员视角照旧能查到 —— 用户清的是自己的视图，不是库。

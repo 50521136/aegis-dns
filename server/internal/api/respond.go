@@ -208,8 +208,10 @@ type userJSON struct {
 	SubsEnabled    bool `json:"subs_enabled"`
 	CustomIDUsed   bool `json:"custom_id_used"`
 	// DailyReport 是用户自己的每日邮件日报订阅开关。
-	DailyReport bool   `json:"daily_report"`
-	CreatedAt   string `json:"created_at"`
+	DailyReport bool `json:"daily_report"`
+	// ReportTime 是日报推送时间（北京时间 HH:MM），由用户自己设。
+	ReportTime string `json:"report_time"`
+	CreatedAt  string `json:"created_at"`
 
 	// 会员信息。档位不落库，这里按当前时间实时算出来给前端，
 	// 前端不需要自己判断 member_until 有没有过期。
@@ -231,6 +233,7 @@ func toUserJSON(u *model.User) userJSON {
 		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
 		CustomIDUsed: u.CustomIDUsed,
 		DailyReport:  u.DailyReport,
+		ReportTime:   u.ReportTime,
 		CreatedAt:    time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
 		MemberUntil:  u.MemberUntil,
 		MemberDays:   u.MemberRemainingDays(time.Now()),

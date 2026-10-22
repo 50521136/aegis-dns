@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/50521136/aegis-dns/server/internal/auth"
+	"github.com/50521136/aegis-dns/server/internal/bjtime"
 	"github.com/50521136/aegis-dns/server/internal/id"
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
@@ -338,26 +339,97 @@ func normalizeCIDR(in string) (string, error) {
 // 保留 json 导入以避免在未使用时不报错（导出结构体用了它）。
 var _ = json.Marshal
 
-// handleSetDailyReport 开关自己的每日邮件日报。
+// handleSetDailyReport 开关自己的每日邮件日报，并设置推送时间。
 //
-// 这是「用户主动订阅的通知」，默认关闭，只有用户自己开才会收到。
-// 管理员的总开关关掉时，用户开也发不出去 —— 但这里不做拦截：
-// 用户的选择要能记住，总开关重新打开后应该继续按他的意愿发。
+// 默认关闭、默认 09:00：这是用户主动订阅的通知，不该默认替他开。
+// 时间由用户自己定，精确到分钟 —— 管理员那边只有总开关，不再有全局时间。
 func (s *Server) handleSetDailyReport(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	var body struct {
-		Enabled *bool `json:"enabled"`
+		Enabled *bool  `json:"enabled"`
+		Time    string `json:"time"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if body.Enabled == nil {
-		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "缺少 enabled 字段", nil)
+	if body.Enabled == nil && body.Time == "" {
+		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "缺少 enabled 或 time 字段", nil)
 		return
 	}
-	if err := s.store.SetUserDailyReport(r.Context(), u.ID, *body.Enabled); err != nil {
+	if body.Time != "" {
+		if !validHHMM(body.Time) {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "推送时间格式应为 HH:MM（北京时间）", nil)
+			return
+		}
+		if err := s.store.SetUserReportTime(r.Context(), u.ID, body.Time); err != nil {
+			writeStoreError(w, err, "")
+			return
+		}
+	}
+	if body.Enabled != nil {
+		if err := s.store.SetUserDailyReport(r.Context(), u.ID, *body.Enabled); err != nil {
+			writeStoreError(w, err, "")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleTestDailyReport 立刻给自己发一封测试日报。
+//
+// 不检查总开关：测试的目的就是验证 SMTP 和排版，
+// 总开关关着时更应该让用户能当场试出问题，而不是等到开了才发现发不出去。
+func (s *Server) handleTestDailyReport(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u.Email == "" {
+		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "还没有填写邮箱，无法发送", nil)
+		return
+	}
+	set, err := s.store.GetSettings(r.Context())
+	if err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"daily_report": *body.Enabled})
+	cfg := mailConfig(set)
+	if err := cfg.Validate(); err != nil {
+		writeError(w, http.StatusBadGateway, CodeInternal, "邮件服务未配置好: "+err.Error(), nil)
+		return
+	}
+
+	today := bjtime.Today()
+	from := bjtime.StartOfDay(today - 1)
+	to := bjtime.StartOfDay(today)
+	dateStr := time.Unix(from+8*3600, 0).UTC().Format("2006-01-02")
+
+	// 昨天没数据就退到今天，再没有就用最近 7 天。
+	// 测试推送的意义是「看到样子」，拿空白数据也能看出排版，
+	// 但能给真数据当然更好。
+	for _, w2 := range [][2]int64{{from, to}, {bjtime.StartOfDay(today), time.Now().Unix()}} {
+		if d, err := s.store.DailyReport(r.Context(), u.ID, w2[0], w2[1], 5); err == nil && d.Total > 0 {
+			from, to = w2[0], w2[1]
+			break
+		}
+	}
+
+	if err := s.sendDailyReport(r.Context(), cfg, set, u, from, to, dateStr, true); err != nil {
+		s.log.Warn("发送测试日报失败", "user", u.Username, "err", err)
+		writeError(w, http.StatusBadGateway, CodeInternal, "发送失败: "+err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "to": u.Email})
+}
+
+// validHHMM 校验 "HH:MM" 形式的北京时间。
+func validHHMM(s string) bool {
+	if len(s) != 5 || s[2] != ':' {
+		return false
+	}
+	h := int(s[0]-'0')*10 + int(s[1]-'0')
+	m := int(s[3]-'0')*10 + int(s[4]-'0')
+	for _, c := range []byte{s[0], s[1], s[3], s[4]} {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return h >= 0 && h <= 23 && m >= 0 && m <= 59
 }

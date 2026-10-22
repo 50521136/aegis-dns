@@ -117,7 +117,6 @@ const settingsSchema = z.object({
   // 保存时又会把旧值写回去，等于互相覆盖。
   member_reward_days: z.coerce.number().int().min(1),
   daily_report_enabled: z.boolean(),
-  daily_report_hour: z.coerce.number().int().min(0).max(23),
   allow_user_invite: z.boolean(),
   user_invite_max_codes: z.coerce.number().int().min(0),
   smtp_enabled: z.boolean(),
@@ -541,16 +540,10 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                 checked={Boolean(form.watch('daily_report_enabled'))}
                 onChange={(v) => form.setValue('daily_report_enabled', v)}
               />
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                <NumberField
-                  form={form}
-                  name="daily_report_hour"
-                  label="发送时间（北京时间 0-23 点）"
-                />
-              </div>
               <p className="text-xs text-muted-foreground">
-                只统计「昨天 0 点到今天 0 点」的数据。当天没有任何查询的用户不会收到邮件 ——
-                空报表发几次，用户就会去退订。
+                推送时间由每个用户在自己的「设置 → 安全 → 通知设置」里设置（默认 09:00）——
+                时间只留一个来源，避免两处都能改。用户在那里还能点「测试推送」当场确认排版。
+                只统计「昨天 0 点到今天 0 点」的数据；当天没有任何查询的用户不会收到邮件。
               </p>
             </CardContent>
           </Card>

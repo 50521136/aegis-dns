@@ -1329,12 +1329,38 @@ curl -fsS -X PUT "$API/me/daily-report" -H "Authorization: Bearer $TOKEN" \
 DR2=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | python3 -c "import json,sys;print(json.load(sys.stdin)['daily_report'])")
 [[ "$DR2" == "False" ]] && ok "用户可以自己关闭日报" || bad "关闭日报失败：$DR2"
 
-# 总开关与发送时间要能持久化
+# 总开关要能持久化（推送时间已改为每个用户自己设，管理员侧不再有全局时间）
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
-  -H 'Content-Type: application/json' -d '{"daily_report_enabled":true,"daily_report_hour":8}' >/dev/null
+  -H 'Content-Type: application/json' -d '{"daily_report_enabled":true}' >/dev/null
 DRS=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
-  | python3 -c "import json,sys;d=json.load(sys.stdin);print(int(d['daily_report_enabled']),d['daily_report_hour'])")
-[[ "$DRS" == "1 8" ]] && ok "日报总开关与发送时间已持久化" || bad "日报设置未持久化：$DRS"
+  | python3 -c "import json,sys;print(int(json.load(sys.stdin)['daily_report_enabled']))")
+[[ "$DRS" == "1" ]] && ok "日报总开关已持久化" || bad "日报总开关未持久化：$DRS"
+
+# 推送时间：默认 09:00，用户可改到任意分钟
+RT0=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['report_time'])")
+[[ "$RT0" == "09:00" ]] && ok "推送时间默认 09:00" || bad "默认推送时间不对：$RT0"
+curl -fsS -X PUT "$API/me/daily-report" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"time":"07:35"}' >/dev/null
+RT1=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['report_time'])")
+[[ "$RT1" == "07:35" ]] && ok "推送时间精确到分钟（07:35）" || bad "推送时间保存失败：$RT1"
+
+# 非法时间必须拒绝，否则会静默变成「永远不发」
+for BAD in "25:99" "9:5" "aa:bb" "07:60"; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$API/me/daily-report" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"time\":\"$BAD\"}")
+  [[ "$CODE" == "422" ]] && ok "非法时间 $BAD 被拒绝" || bad "非法时间 $BAD 未被拒绝（$CODE）"
+done
+
+# 测试推送：没配 SMTP 时应明确报错，而不是假装成功
+TC=$(curl -s -o /tmp/e2e_testpush.json -w '%{http_code}' -X POST "$API/me/daily-report/test" \
+  -H "Authorization: Bearer $TOKEN")
+if [[ "$TC" == "200" || "$TC" == "502" ]]; then
+  ok "测试推送接口可用（HTTP $TC）"
+else
+  bad "测试推送接口异常（HTTP $TC）: $(head -c 160 /tmp/e2e_testpush.json)"
+fi
 
 hdr "流量排行时间范围"
 for R in today 1h 24h 7d 30d; do

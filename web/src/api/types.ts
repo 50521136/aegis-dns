@@ -28,6 +28,8 @@ export interface User {
   invited_by?: string
   /** 是否订阅每日邮件日报 */
   daily_report?: boolean
+  /** 日报推送时间（北京时间 HH:MM） */
+  report_time?: string
 }
 
 export interface Tokens {

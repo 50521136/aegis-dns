@@ -105,6 +105,8 @@ type DailyReport struct {
 	TopDomains   []ReportRow
 	// DailyQuota 为 0 表示不限
 	DailyQuota int64
+	// IsTest 表示这是用户手动点的「测试推送」
+	IsTest bool
 }
 
 // ReportRow 是日报表格里的一行。
@@ -123,7 +125,18 @@ func DailyReportEmail(r DailyReport) string {
 
 	var b strings.Builder
 
-	b.WriteString(`<p style="margin:0 0 4px;color:` + colorInk + `;font-size:18px;font-weight:600;">昨日解析日报</p>`)
+	title := "昨日解析日报"
+	if r.IsTest {
+		title = "日报测试推送"
+	}
+	b.WriteString(`<p style="margin:0 0 4px;color:` + colorInk + `;font-size:18px;font-weight:600;">` + title + `</p>`)
+
+	if r.IsTest {
+		b.WriteString(`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eef2ff;border-radius:10px;margin:0 0 16px;">`)
+		b.WriteString(`<tr><td style="padding:10px 14px;color:#3730a3;font-size:12px;line-height:1.7;">`)
+		b.WriteString(`这是一封测试推送，用来确认邮箱和排版都正常。正式日报会在你设定的时间发出。`)
+		b.WriteString(`</td></tr></table>`)
+	}
 	b.WriteString(`<p style="margin:0 0 20px;color:` + colorMute + `;font-size:13px;line-height:1.7;">`)
 	b.WriteString(htmlEscape(r.Date) + ` · ` + htmlEscape(r.Username) + ` · ` + htmlEscape(r.Domain))
 	b.WriteString(`</p>`)

@@ -13,7 +13,7 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at, tier_id, daily_report`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at, tier_id, daily_report, report_time`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
@@ -21,7 +21,7 @@ func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
 		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed,
 		&u.MemberUntil, &u.InvitedBy, &u.CreatedAt,
-		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt, &u.TierID, &dailyReport)
+		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt, &u.TierID, &dailyReport, &u.ReportTime)
 	if err != nil {
 		return nil, err
 	}
@@ -618,6 +618,42 @@ func (s *Store) UsersForDailyReport(ctx context.Context) ([]*model.User, error) 
 		  ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("列出日报订阅用户失败: %w", err)
+	}
+	defer rows.Close()
+	var out []*model.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SetUserReportTime 设置某个用户的日报推送时间（北京时间 "HH:MM"）。
+func (s *Store) SetUserReportTime(ctx context.Context, uid, hhmm string) error {
+	res, err := s.write.ExecContext(ctx, `UPDATE users SET report_time = ? WHERE id = ?`, hhmm, uid)
+	if err != nil {
+		return fmt.Errorf("设置日报时间失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UsersDueDailyReport 返回「订阅了日报 + 有邮箱 + 推送时间正好是 hhmm」的用户。
+//
+// 判断放在 SQL 里而不是把全部用户捞出来在 Go 里筛：
+// 每分钟都要跑一次，用户多了以后全量加载毫无意义。
+func (s *Store) UsersDueDailyReport(ctx context.Context, hhmm string) ([]*model.User, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT `+userCols+` FROM users
+		  WHERE daily_report = 1 AND email != '' AND enabled = 1 AND report_time = ?
+		  ORDER BY created_at`, hhmm)
+	if err != nil {
+		return nil, fmt.Errorf("列出待发日报用户失败: %w", err)
 	}
 	defer rows.Close()
 	var out []*model.User

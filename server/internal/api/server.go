@@ -180,6 +180,8 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/me/logs/clear", s.handleClearMyLogs)
 			// 每日邮件日报的订阅开关（默认关闭，用户自己开）
 			r.Put("/me/daily-report", s.handleSetDailyReport)
+			// 立刻给自己发一封测试日报，用来确认 SMTP 与排版
+			r.Post("/me/daily-report/test", s.handleTestDailyReport)
 
 			r.Get("/update/check", s.handleUpdateCheck)
 
