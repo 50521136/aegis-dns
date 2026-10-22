@@ -20,7 +20,10 @@ export interface UserTrafficResponse {
   total_users: number
 }
 
-export type AdminStatsRange = '1h' | '24h' | '7d' | '30d'
+// today 是北京时间的「今天 0 点起」，不是滚动 24 小时。
+// 后端 timeRange() 一直支持，只是前端类型里漏了，导致选「今日」时
+// 只能退化成 24h。
+export type AdminStatsRange = 'today' | '1h' | '24h' | '7d' | '30d'
 
 export async function getAdminUserTraffic(
   range: AdminStatsRange = '24h',

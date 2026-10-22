@@ -75,6 +75,8 @@ type User struct {
 	// TierID 是管理员直接指定的会员种类（tiers.id）。
 	// 空串表示按 member_until 自动判定 free/vip，兼容老的会员逻辑。
 	TierID string `json:"tier_id"`
+	// DailyReport 是用户是否订阅每日邮件日报，默认关闭。
+	DailyReport bool `json:"daily_report"`
 	// LogClearedAt 是用户「清空自己的日志」的时间点。
 	// 只影响用户自己的查询视图（ts > LogClearedAt），不删数据，
 	// 所以管理员视角照旧能查到 —— 用户清的是自己的视图，不是库。
@@ -322,6 +324,13 @@ type GlobalSettings struct {
 
 	// MemberRewardDays 是邀请码的默认奖励天数（新建码时的预填值）。
 	MemberRewardDays int `json:"member_reward_days"`
+	// DailyReportEnabled 是每日邮件日报的总开关。
+	// 用户自己还要在账号页单独打开（users.daily_report），两级都开才发。
+	DailyReportEnabled bool `json:"daily_report_enabled"`
+	// DailyReportHour 是发日报的小时（北京时间 0-23）。
+	// 之所以让管理员配，是因为日报的价值在「早上看昨天的量」，
+	// 各地运维习惯不同，写死 9 点不合适。
+	DailyReportHour int `json:"daily_report_hour"`
 
 	// AllowUserInvite 允许普通用户自己生成邀请码。
 	//
@@ -448,13 +457,16 @@ func DefaultSettings() GlobalSettings {
 		MaxSubEntries: 50000,
 
 		// 免费档刻意压得比原来的统一配额更低：会员的意义就在于这两档有差别。
-		FreeMaxRules:       20,
-		FreeMaxSubs:        1,
-		FreeDailyQueries:   50000,
-		VipMaxRules:        200,
-		VipMaxSubs:         10,
-		VipDailyQueries:    0, // 会员不限请求量
-		MemberRewardDays:   30,
+		FreeMaxRules:     20,
+		FreeMaxSubs:      1,
+		FreeDailyQueries: 50000,
+		VipMaxRules:      200,
+		VipMaxSubs:       10,
+		VipDailyQueries:  0, // 会员不限请求量
+		MemberRewardDays: 30,
+		// 日报默认开、早上 9 点发；用户侧仍要自己订阅才会收到。
+		DailyReportEnabled: true,
+		DailyReportHour:    9,
 		AllowUserInvite:    true,
 		UserInviteMaxCodes: 5,
 		SignupMemberDays:   0,

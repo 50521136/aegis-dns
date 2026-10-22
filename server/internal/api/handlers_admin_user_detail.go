@@ -78,9 +78,10 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 			"max_subs":      u.CustomMaxSubs,
 			"daily_queries": u.CustomDailyQueries,
 		},
-		"tier_id": u.TierID,
-		"tiers":   tiers,
-		"usage":   usage,
+		"tier_id":      u.TierID,
+		"daily_report": u.DailyReport,
+		"tiers":        tiers,
+		"usage":        usage,
 	})
 }
 

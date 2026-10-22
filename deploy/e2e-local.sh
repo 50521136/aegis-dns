@@ -1269,7 +1269,8 @@ ABEFORE=$(curl -fsS "$API/admin/stats/querylog?page=1&page_size=5" -H "Authoriza
 [[ "${UBEFORE:-0}" -gt 0 ]] && ok "清空前用户能看到日志（$UBEFORE 条）" || bad "清空前用户日志为空"
 [[ "${ABEFORE:-0}" -gt 0 ]] && ok "清空前管理员能看到日志（$ABEFORE 条）" || bad "清空前管理员日志为空"
 
-curl -fsS -X POST "$API/logs/clear" -H "Authorization: Bearer $TOKEN" >/dev/null
+# 路径是 /me/logs/clear：这一组用户路由都显式带 /me 前缀
+curl -fsS -X POST "$API/me/logs/clear" -H "Authorization: Bearer $TOKEN" >/dev/null
 sleep 1
 UAFTER=$(curl -fsS "$API/stats/querylog?page=1&page_size=5" -H "Authorization: Bearer $TOKEN" | total_of)
 AAFTER=$(curl -fsS "$API/admin/stats/querylog?page=1&page_size=5" -H "Authorization: Bearer $ADMTOK" | total_of)
@@ -1312,6 +1313,39 @@ FREECODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/fr
 [[ "$FREECODE" == "422" ]] && ok "内置档位拒绝删除（422）" || bad "内置档位删除未拒绝：$FREECODE"
 DELCODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/svip" -H "Authorization: Bearer $ADMTOK")
 [[ "$DELCODE" == "200" ]] && ok "无人使用的自定义档位可删除" || bad "自定义档位删除失败：$DELCODE"
+
+hdr "每日邮件日报订阅"
+# 默认必须是关的：这是用户主动订阅的通知，不能替他勾上
+DR0=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | python3 -c "import json,sys;print(json.load(sys.stdin)['daily_report'])")
+[[ "$DR0" == "False" ]] && ok "日报默认关闭" || bad "日报默认不是关闭：$DR0"
+
+curl -fsS -X PUT "$API/me/daily-report" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enabled":true}' >/dev/null
+DR1=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | python3 -c "import json,sys;print(json.load(sys.stdin)['daily_report'])")
+[[ "$DR1" == "True" ]] && ok "用户可以自己开启日报" || bad "开启日报失败：$DR1"
+
+curl -fsS -X PUT "$API/me/daily-report" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enabled":false}' >/dev/null
+DR2=$(curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | python3 -c "import json,sys;print(json.load(sys.stdin)['daily_report'])")
+[[ "$DR2" == "False" ]] && ok "用户可以自己关闭日报" || bad "关闭日报失败：$DR2"
+
+# 总开关与发送时间要能持久化
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"daily_report_enabled":true,"daily_report_hour":8}' >/dev/null
+DRS=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print(int(d['daily_report_enabled']),d['daily_report_hour'])")
+[[ "$DRS" == "1 8" ]] && ok "日报总开关与发送时间已持久化" || bad "日报设置未持久化：$DRS"
+
+hdr "流量排行时间范围"
+for R in today 1h 24h 7d 30d; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' "$API/admin/stats/users?range=$R&limit=5" \
+    -H "Authorization: Bearer $ADMTOK")
+  [[ "$CODE" == "200" ]] && ok "排行支持 $R" || bad "排行不支持 $R（HTTP $CODE）"
+done
+# today 和 24h 必须是不同的窗口：today 是北京 0 点起，24h 是滚动
+TJ=$(curl -fsS "$API/admin/stats/users?range=today&limit=50" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;print(sum(i['total'] for i in json.load(sys.stdin)['items']))")
+[[ -n "$TJ" ]] && ok "today 范围有返回（合计 ${TJ} 次）" || bad "today 范围无返回"
 
 hdr "优雅关闭"
 kill -TERM "$DNSD_PID" "$APID_PID" 2>/dev/null

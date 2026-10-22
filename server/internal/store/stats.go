@@ -565,3 +565,54 @@ func (s *Store) UserTraffic(ctx context.Context, since int64, limit int) ([]User
 	}
 	return out, rows.Err()
 }
+
+// DailyReportData 是某一天某个用户的汇总，供邮件日报使用。
+type DailyReportData struct {
+	Total      int64
+	Blocked    int64
+	Cached     int64
+	LatencySum int64 // 用于算平均延迟
+	Requests   int64 // 有延迟记录的请求数
+	TopDomains []TopDomain
+}
+
+// DailyReport 汇总 [from, to) 区间的数据。
+//
+// 数据来自 query_rollup 与 top_domains，都不受查询日志保留策略影响 ——
+// 日志可能只留 10 分钟，但日报要覆盖整天。
+func (s *Store) DailyReport(ctx context.Context, uid string, from, to int64, topN int) (*DailyReportData, error) {
+	out := &DailyReportData{}
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(total),0), COALESCE(SUM(blocked),0),
+		        COALESCE(SUM(cached),0), COALESCE(SUM(latency_sum),0)
+		   FROM query_rollup WHERE user_id = ? AND ts >= ? AND ts < ?`,
+		uid, from, to).Scan(&out.Total, &out.Blocked, &out.Cached, &out.LatencySum)
+	if err != nil {
+		return nil, fmt.Errorf("汇总日报数据失败: %w", err)
+	}
+	// latency_sum 是每条请求的毫秒数之和，平均延迟要除以请求数。
+	// 这里用 total 近似：rollup 里每条请求都会累加延迟，
+	// 少部分无应答的查询延迟记 0，会让平均值略微偏低，可以接受。
+	out.Requests = out.Total
+
+	if topN <= 0 {
+		topN = 5
+	}
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT domain, COALESCE(SUM(hits),0)
+		   FROM top_domains WHERE user_id = ? AND ts >= ? AND ts < ?
+		  GROUP BY domain ORDER BY SUM(hits) DESC LIMIT ?`,
+		uid, from, to, topN)
+	if err != nil {
+		return nil, fmt.Errorf("汇总日报 TOP 域名失败: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t TopDomain
+		if err := rows.Scan(&t.Domain, &t.Hits); err != nil {
+			return nil, err
+		}
+		out.TopDomains = append(out.TopDomains, t)
+	}
+	return out, rows.Err()
+}

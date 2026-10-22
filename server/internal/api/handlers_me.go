@@ -337,3 +337,27 @@ func normalizeCIDR(in string) (string, error) {
 
 // 保留 json 导入以避免在未使用时不报错（导出结构体用了它）。
 var _ = json.Marshal
+
+// handleSetDailyReport 开关自己的每日邮件日报。
+//
+// 这是「用户主动订阅的通知」，默认关闭，只有用户自己开才会收到。
+// 管理员的总开关关掉时，用户开也发不出去 —— 但这里不做拦截：
+// 用户的选择要能记住，总开关重新打开后应该继续按他的意愿发。
+func (s *Server) handleSetDailyReport(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Enabled == nil {
+		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "缺少 enabled 字段", nil)
+		return
+	}
+	if err := s.store.SetUserDailyReport(r.Context(), u.ID, *body.Enabled); err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"daily_report": *body.Enabled})
+}

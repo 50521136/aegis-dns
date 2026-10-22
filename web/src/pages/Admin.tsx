@@ -116,6 +116,8 @@ const settingsSchema = z.object({
   // 两边都放输入框的话，管理员在一个页面改了、另一个页面还显示旧数字，
   // 保存时又会把旧值写回去，等于互相覆盖。
   member_reward_days: z.coerce.number().int().min(1),
+  daily_report_enabled: z.boolean(),
+  daily_report_hour: z.coerce.number().int().min(0).max(23),
   allow_user_invite: z.boolean(),
   user_invite_max_codes: z.coerce.number().int().min(0),
   smtp_enabled: z.boolean(),
@@ -520,6 +522,35 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
               <NumberField form={form} name="max_sub_entries" label="单订阅条目上限" />
               <p className="text-xs text-muted-foreground">
                 0 表示不限制。每日请求量按北京时间自然日归零，由 dnsd 在解析入口判定，超额直接 REFUSED。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>每日邮件日报</CardTitle>
+              <CardDescription>
+                每天把前一天的解析数据（查询量、拦截量、缓存命中、平均延迟）汇总成一封报表邮件。
+                用户还要在自己的「设置 → 安全」里单独打开，默认关闭。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <ToggleRow
+                title="开启日报推送"
+                desc="关闭后所有人都不再收到日报；用户自己的订阅选择会保留"
+                checked={Boolean(form.watch('daily_report_enabled'))}
+                onChange={(v) => form.setValue('daily_report_enabled', v)}
+              />
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NumberField
+                  form={form}
+                  name="daily_report_hour"
+                  label="发送时间（北京时间 0-23 点）"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                只统计「昨天 0 点到今天 0 点」的数据。当天没有任何查询的用户不会收到邮件 ——
+                空报表发几次，用户就会去退订。
               </p>
             </CardContent>
           </Card>

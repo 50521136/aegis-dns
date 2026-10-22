@@ -72,6 +72,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDateTime } from '@/lib/format'
 import { ChangeEmailForm } from '@/components/ChangeEmailForm'
+import { DailyReportCard } from '@/components/DailyReportCard'
 
 /* ---------- 修改密码 ---------- */
 
@@ -441,6 +442,7 @@ export default function Settings() {
 
         <TabsContent value="security" className="space-y-6">
           <PasswordCard />
+          <DailyReportCard />
           {/* API 令牌（PAT）已从界面移除：它是给脚本化调用用的，
               而这里的目标用户是手机/电脑上的终端用户，不会去写脚本 ——
               对他们来说这一屏只有「这串东西是干嘛的」这一个疑问。

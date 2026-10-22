@@ -154,6 +154,8 @@ func main() {
 	// 后台维护任务。
 	go maintenanceLoop(ctx, st, settings, log)
 	go updateCheckLoop(ctx, st, cfg, log)
+	// 每日邮件日报：每分钟自检一次，到点才发。
+	go srv.StartDailyReportLoop(ctx)
 
 	log.Info("aegis-apid 已启动",
 		"version", version.Version,

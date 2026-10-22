@@ -67,6 +67,10 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   const toast = useToast()
   const qc = useQueryClient()
   const [range, setRange] = useState<StatsRange>('today')
+  // 流量排行用自己的时间范围：它和上面的总览是不同的看法
+  // （总览看「今天的量」，排行常看「这周谁用得最多」），
+  // 共用一个下拉会互相干扰。
+  const [trafficRange, setTrafficRange] = useState<StatsRange>('today')
 
   // 清除缓存：管理员清全站，普通用户只清自己那份
   const flush = useMutation({
@@ -99,8 +103,10 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
 
   // 流量排行只对管理员有意义（租户侧只有一个用户）
   const traffic = useQuery({
-    queryKey: ['stats', 'traffic', range],
-    queryFn: () => getAdminUserTraffic(range === '1h' ? '1h' : range === '30d' ? '30d' : range === '7d' ? '7d' : '24h'),
+    queryKey: ['stats', 'traffic', trafficRange],
+    // 直接把范围透传下去：后端 timeRange() 认识 today/1h/24h/7d/30d，
+    // 之前这里把 today 硬映射成 24h，选了今日其实拿的是滚动 24 小时。
+    queryFn: () => getAdminUserTraffic(trafficRange),
     enabled: isAdmin,
     refetchInterval: 30000,
   })
@@ -350,9 +356,26 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
               <CardTitle>流量排行</CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">按租户统计请求量与拦截率</p>
             </div>
-            <Badge variant="secondary" className="tabular-nums">
-              {traffic.data?.total_users ?? 0} 个租户
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Select
+                value={trafficRange}
+                onValueChange={(v) => setTrafficRange(v as StatsRange)}
+              >
+                <SelectTrigger className="h-8 w-24 text-xs" aria-label="排行时间范围">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RANGES.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Badge variant="secondary" className="tabular-nums">
+                {traffic.data?.total_users ?? 0} 个租户
+              </Badge>
+            </div>
           </CardHeader>
           <CardContent>
             {traffic.isLoading ? (

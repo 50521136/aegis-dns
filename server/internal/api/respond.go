@@ -202,12 +202,14 @@ type userJSON struct {
 	Enabled  bool   `json:"enabled"`
 	// UseGlobalRules / IDResetCount / RulesEnabled / SubsEnabled 前端要用：
 	// 前者控制设置页的全局层开关，后三者控制后台用户列表里的显示与开关状态。
-	UseGlobalRules bool   `json:"use_global_rules"`
-	IDResetCount   int    `json:"id_reset_count"`
-	RulesEnabled   bool   `json:"rules_enabled"`
-	SubsEnabled    bool   `json:"subs_enabled"`
-	CustomIDUsed   bool   `json:"custom_id_used"`
-	CreatedAt      string `json:"created_at"`
+	UseGlobalRules bool `json:"use_global_rules"`
+	IDResetCount   int  `json:"id_reset_count"`
+	RulesEnabled   bool `json:"rules_enabled"`
+	SubsEnabled    bool `json:"subs_enabled"`
+	CustomIDUsed   bool `json:"custom_id_used"`
+	// DailyReport 是用户自己的每日邮件日报订阅开关。
+	DailyReport bool   `json:"daily_report"`
+	CreatedAt   string `json:"created_at"`
 
 	// 会员信息。档位不落库，这里按当前时间实时算出来给前端，
 	// 前端不需要自己判断 member_until 有没有过期。
@@ -228,6 +230,7 @@ func toUserJSON(u *model.User) userJSON {
 		UseGlobalRules: u.UseGlobalRules, IDResetCount: u.IDResetCount,
 		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
 		CustomIDUsed: u.CustomIDUsed,
+		DailyReport:  u.DailyReport,
 		CreatedAt:    time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
 		MemberUntil:  u.MemberUntil,
 		MemberDays:   u.MemberRemainingDays(time.Now()),

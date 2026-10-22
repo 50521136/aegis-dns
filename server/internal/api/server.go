@@ -175,7 +175,11 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/stats/querylog", s.handleQueryLog)
 			// 清空自己的日志视图：不删数据，只把起点推到当下，
 			// 管理员那边的审计记录不受影响。
-			r.Post("/logs/clear", s.handleClearMyLogs)
+			// 注意：这一组路由都显式带 /me 前缀（和上面的 /me/cache/flush 一致），
+			// 不是挂在 /me 子路由下。漏写前缀前端就会 404「接口不存在」。
+			r.Post("/me/logs/clear", s.handleClearMyLogs)
+			// 每日邮件日报的订阅开关（默认关闭，用户自己开）
+			r.Put("/me/daily-report", s.handleSetDailyReport)
 
 			r.Get("/update/check", s.handleUpdateCheck)
 

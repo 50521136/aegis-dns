@@ -13,15 +13,15 @@ import (
 )
 
 // userCols 是 users 表所有 SELECT 共用的列清单，避免各处手写列名漂移。
-const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at, tier_id`
+const userCols = `id, username, email, password_hash, role, client_id, enabled, use_global_rules, id_reset_count, rules_enabled, subs_enabled, custom_id_used, member_until, invited_by, created_at, custom_max_rules, custom_max_subs, custom_daily_queries, log_cleared_at, tier_id, daily_report`
 
 func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	var u model.User
-	var enabled, useGlobal, rulesOn, subsOn, customUsed int
+	var enabled, useGlobal, rulesOn, subsOn, customUsed, dailyReport int
 	err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.ClientID,
 		&enabled, &useGlobal, &u.IDResetCount, &rulesOn, &subsOn, &customUsed,
 		&u.MemberUntil, &u.InvitedBy, &u.CreatedAt,
-		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt, &u.TierID)
+		&u.CustomMaxRules, &u.CustomMaxSubs, &u.CustomDailyQueries, &u.LogClearedAt, &u.TierID, &dailyReport)
 	if err != nil {
 		return nil, err
 	}
@@ -30,6 +30,7 @@ func scanUser(sc interface{ Scan(...any) error }) (*model.User, error) {
 	u.RulesEnabled = rulesOn != 0
 	u.SubsEnabled = subsOn != 0
 	u.CustomIDUsed = customUsed != 0
+	u.DailyReport = dailyReport != 0
 	return &u, nil
 }
 
@@ -593,4 +594,39 @@ func (s *Store) RuleSubUsage(ctx context.Context) ([]UserUsage, error) {
 		out = append(out, *u)
 	}
 	return out, nil
+}
+
+// SetUserDailyReport 开关用户的每日邮件日报。
+func (s *Store) SetUserDailyReport(ctx context.Context, uid string, on bool) error {
+	res, err := s.write.ExecContext(ctx, `UPDATE users SET daily_report = ? WHERE id = ?`, boolInt(on), uid)
+	if err != nil {
+		return fmt.Errorf("设置日报订阅失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UsersForDailyReport 返回订阅了日报、且填了邮箱的用户。
+//
+// 没邮箱的发不出去，在这里就过滤掉，省得定时任务里每天报一次错。
+func (s *Store) UsersForDailyReport(ctx context.Context) ([]*model.User, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT `+userCols+` FROM users
+		  WHERE daily_report = 1 AND email != '' AND enabled = 1
+		  ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("列出日报订阅用户失败: %w", err)
+	}
+	defer rows.Close()
+	var out []*model.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }

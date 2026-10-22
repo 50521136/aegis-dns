@@ -114,7 +114,9 @@ func (s *Server) handleSendEmailCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subject, body := emailCodeContent(purpose, code, s.domain(r))
-	if err := mail.Send(cfg, mail.Message{To: email, Subject: subject, Body: body}); err != nil {
+	// HTML 版本单独生成：纯文本那份继续发，屏蔽 HTML 的客户端照样能看到验证码。
+	htmlBody := mail.CodeEmail(code, purpose, s.domain(r), 10)
+	if err := mail.Send(cfg, mail.Message{To: email, Subject: subject, Body: body, HTML: htmlBody}); err != nil {
 		s.log.Warn("发送验证码邮件失败", "email", email, "purpose", purpose, "err", err)
 		writeError(w, http.StatusBadGateway, CodeInternal, "邮件发送失败: "+err.Error(), nil)
 		return

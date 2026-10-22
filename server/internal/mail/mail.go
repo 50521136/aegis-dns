@@ -70,6 +70,12 @@ type Message struct {
 	To      string
 	Subject string
 	Body    string // 纯文本；多行用 \n
+	// HTML 是富文本版本。为空时只发纯文本（验证码邮件的老路径不受影响）；
+	// 非空时发 multipart/alternative，客户端自己挑能显示的版本。
+	//
+	// 一定要保留纯文本那份：有些客户端默认屏蔽 HTML，
+	// 只发 HTML 的话用户看到的是一片空白。
+	HTML string
 }
 
 // Send 发送一封邮件。
@@ -162,13 +168,38 @@ func buildMIME(cfg Config, msg Message) []byte {
 	b.WriteString("Subject: " + encodeHeader(msg.Subject) + "\r\n")
 	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
+
+	if msg.HTML == "" {
+		b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+		b.WriteString("Content-Transfer-Encoding: base64\r\n")
+		b.WriteString("\r\n")
+		// 正文按 76 列折行（base64 的规范要求）
+		b.WriteString(base64Wrap(msg.Body))
+		b.WriteString("\r\n")
+		return []byte(b.String())
+	}
+
+	// 有 HTML 就发 multipart/alternative：纯文本在前、HTML 在后，
+	// 按 RFC 2046 的约定「越靠后越优先」，客户端会自动挑 HTML。
+	boundary := "aegis-" + base64Raw([]byte(msg.Subject + time.Now().String()))[:24]
+	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n")
+	b.WriteString("\r\n")
+
+	b.WriteString("--" + boundary + "\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: base64\r\n")
 	b.WriteString("\r\n")
-	// 正文按 76 列折行（base64 的规范要求）
-	enc := base64Wrap(msg.Body)
-	b.WriteString(enc)
+	b.WriteString(base64Wrap(msg.Body))
 	b.WriteString("\r\n")
+
+	b.WriteString("--" + boundary + "\r\n")
+	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	b.WriteString("Content-Transfer-Encoding: base64\r\n")
+	b.WriteString("\r\n")
+	b.WriteString(base64Wrap(msg.HTML))
+	b.WriteString("\r\n")
+
+	b.WriteString("--" + boundary + "--\r\n")
 	return []byte(b.String())
 }
 

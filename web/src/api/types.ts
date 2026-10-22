@@ -26,6 +26,8 @@ export interface User {
   /** 档位：free | vip */
   tier?: 'free' | 'vip'
   invited_by?: string
+  /** 是否订阅每日邮件日报 */
+  daily_report?: boolean
 }
 
 export interface Tokens {

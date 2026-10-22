@@ -225,6 +225,8 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"vip_max_subs":          set.VipMaxSubs,
 		"vip_daily_queries":     set.VipDailyQueries,
 		"member_reward_days":    set.MemberRewardDays,
+		"daily_report_enabled":  set.DailyReportEnabled,
+		"daily_report_hour":     set.DailyReportHour,
 		"allow_user_invite":     set.AllowUserInvite,
 		"user_invite_max_codes": set.UserInviteMaxCodes,
 		"signup_member_days":    set.SignupMemberDays,
@@ -315,6 +317,8 @@ type settingsPatch struct {
 	VipMaxSubs         *int   `json:"vip_max_subs"`
 	VipDailyQueries    *int64 `json:"vip_daily_queries"`
 	MemberRewardDays   *int   `json:"member_reward_days"`
+	DailyReportEnabled *bool  `json:"daily_report_enabled"`
+	DailyReportHour    *int   `json:"daily_report_hour"`
 	AllowUserInvite    *bool  `json:"allow_user_invite"`
 	UserInviteMaxCodes *int   `json:"user_invite_max_codes"`
 	SignupMemberDays   *int   `json:"signup_member_days"`
@@ -388,6 +392,12 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.VipMaxSubs, p.VipMaxSubs)
 	setInt64(&dst.VipDailyQueries, p.VipDailyQueries)
 	setInt(&dst.MemberRewardDays, p.MemberRewardDays)
+	setBool(&dst.DailyReportEnabled, p.DailyReportEnabled)
+	// 小时要允许 0：0 点发日报是合法需求，
+	// 所以不能用「非零才覆盖」的 setInt，单独判断指针。
+	if p.DailyReportHour != nil && *p.DailyReportHour >= 0 && *p.DailyReportHour <= 23 {
+		dst.DailyReportHour = *p.DailyReportHour
+	}
 	setBool(&dst.AllowUserInvite, p.AllowUserInvite)
 	setInt(&dst.UserInviteMaxCodes, p.UserInviteMaxCodes)
 	setInt(&dst.SignupMemberDays, p.SignupMemberDays)
