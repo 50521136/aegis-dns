@@ -21,10 +21,14 @@ export interface User {
   custom_id_used?: boolean
   /** 会员到期时间（Unix 秒），0 表示非会员 */
   member_until?: number
-  /** 会员剩余天数（后端算好，前端直接显示） */
+  /** 会员剩余天数（后端算好，前端直接显示）；永久会员为 0，看 member_forever */
   member_days?: number
-  /** 档位：free | vip */
-  tier?: 'free' | 'vip'
+  /** 永久会员 */
+  member_forever?: boolean
+  /** 此刻生效的会员种类 id（free / vip / svip …） */
+  tier?: string
+  /** 库里记的会员种类；空串 = 会员期内走默认会员档 */
+  tier_id?: string
   invited_by?: string
   /** 是否订阅每日邮件日报 */
   daily_report?: boolean
@@ -314,6 +318,17 @@ export interface AdminSettings {
   vip_max_subs: number
   vip_daily_queries: number
   member_reward_days: number
+  /** 注册赠送的天数与会员种类（种类空串 = 默认会员档） */
+  signup_member_days: number
+  signup_member_tier: string
+  /** 每日签到 */
+  checkin_enabled: boolean
+  checkin_days: number
+  checkin_bonus_every: number
+  checkin_bonus_days: number
+  checkin_tier: string
+  /** 邀请奖励的会员种类（空串 = 默认会员档） */
+  member_reward_tier: string
   /** 邮件服务（密码只回传 smtp_pass_set，不回传明文） */
   smtp_enabled: boolean
   smtp_host: string
@@ -433,6 +448,8 @@ export interface InviteCode {
   owner_id: string
   note: string
   reward_days: number
+  /** 核销后发给邀请人的会员种类；空串 = 用全局设置 */
+  reward_tier: string
   max_uses: number
   used_count: number
   expires_at: number
@@ -443,13 +460,20 @@ export interface InviteCode {
   unusable_reason?: string
 }
 
-/** 我的会员信息 */
+/** 我的会员信息。会员状态只有一份：种类 + 有效期。 */
 export interface MyMembership {
-  tier: 'free' | 'vip'
+  /** 此刻生效的会员种类 id 与显示名 */
+  tier: string
+  tier_name: string
+  /** 库里记的种类；空串 = 会员期内走默认会员档 */
+  tier_id: string
+  is_member: boolean
+  member_forever: boolean
   member_until: number
   member_days: number
   quota: { max_rules: number; max_subs: number; daily_queries: number }
-  tiers: Record<'free' | 'vip', { max_rules: number; max_subs: number; daily_queries: number }>
+  /** 全部会员种类，用于「各会员种类说明」小弹窗 */
+  tier_list: TierDef[]
   invite: { total_uses: number; reward_days: number }
   /** 自助重置 client_id 的次数上限与已用次数 */
   max_id_resets: number
@@ -496,7 +520,11 @@ export interface AdminUserDetail {
   member_until: string
   is_member: boolean
   member_days: number
-  tier: 'free' | 'vip'
+  /** 永久会员：true 时 member_days 无意义 */
+  member_forever: boolean
+  /** 此刻生效的会员种类 id 与显示名（界面只显示这两个） */
+  tier: string
+  tier_name: string
   /** 生效配额（档位默认 + 手填覆盖） */
   quota: { max_rules: number; max_subs: number; daily_queries: number }
   /** 档位默认配额，用来显示「默认 200，你手填了 500」 */

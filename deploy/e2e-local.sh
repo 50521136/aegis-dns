@@ -848,10 +848,35 @@ sys.exit(1 if fails else 0)
 PYEOF
 if [[ $? -eq 0 ]]; then ok "日志详情字段齐全"; else bad "日志详情字段有缺失"; fi
 
-hdr "会员档位与两档配额"
-# 新注册用户必须是 free 档
+hdr "会员种类与会员期"
+# 先建一个自定义档位：后面注册赠送 / 签到 / 邀请奖励都拿它做目标，
+# 这样断言能真正证明「奖励发的是配的那个种类」，而不是永远发 vip。
+curl -fsS -X POST "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"svip","name":"高级会员","sort":20,"max_rules":500,"max_subs":30,"daily_queries":0}' >/dev/null
+
+# 新注册用户必须是默认档（free），并且带上全部档位供前端渲染
 MEM=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $TOKEN")
 echo "$MEM" | grep -q '"tier":"free"' && ok "新用户默认 free 档" || bad "默认档位不对: $(echo "$MEM" | head -c 120)"
+echo "$MEM" | grep -q '"tier_list"' && ok "会员接口返回全部档位（tier_list）" || bad "缺 tier_list"
+echo "$MEM" | grep -q '"is_member":false' && ok "非会员 is_member=false" || bad "is_member 不对"
+
+# 发放「高级会员 30 天」：种类与有效期一次提交
+MUID=$(echo "$MEM" >/dev/null; curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+SETSV=$(curl -s -X POST "$API/admin/users/$MUID/member" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"days":30,"tier_id":"svip"}')
+echo "$SETSV" | grep -q '"tier":"svip"' && ok "发放后种类是 svip" || bad "种类没生效: $SETSV"
+echo "$SETSV" | grep -q '"tier_name":"高级会员"' && ok "接口返回种类显示名" || bad "缺 tier_name: $SETSV"
+# 低档奖励不该把高档降下来
+curl -fsS -X POST "$API/admin/users/$MUID/member" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"days":1,"tier_id":"vip"}' >/dev/null
+KEEPT=$(curl -fsS "$API/admin/users/$MUID" -H "Authorization: Bearer $ADMTOK" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['tier'])")
+[[ "$KEEPT" == "svip" ]] && ok "低档奖励不会把高档降下来（仍是 svip）" || bad "被降档了：$KEEPT"
+# 清干净，后面的用例从非会员开始
+curl -fsS -X POST "$API/admin/users/$MUID/member/revoke" -H "Authorization: Bearer $ADMTOK" >/dev/null
+
+# 新注册用户必须是 free 档（下面这段沿用原来的两档配额对照）
 FREE_RULES=$(echo "$MEM" | python3 -c "import json,sys; print(json.load(sys.stdin)['quota']['max_rules'])")
 # 管理员给 +30 天
 MUID=$(echo "$MEM" >/dev/null; curl -fsS "$API/me" -H "Authorization: Bearer $TOKEN" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -878,8 +903,12 @@ echo "$MEM3" | grep -q '"tier":"free"' && ok "取消会员后立刻降级" || ba
 
 hdr "邀请码与拉新奖励"
 NEWCODE=$(curl -s -X POST "$API/admin/invite-codes" -H "Authorization: Bearer $ADMTOK" \
-  -H 'Content-Type: application/json' -d '{"note":"e2e","reward_days":10,"max_uses":1}' | grep -o '"code":"[^"]*"' | cut -d'"' -f4)
+  -H 'Content-Type: application/json' \
+  -d '{"note":"e2e","reward_days":10,"reward_tier":"svip","max_uses":1}' | grep -o '"code":"[^"]*"' | cut -d'"' -f4)
 [[ -n "$NEWCODE" ]] && ok "邀请码已创建（$NEWCODE）" || bad "创建邀请码失败"
+# 码上指定的奖励种类要落库并回传
+curl -fsS "$API/admin/invite-codes" -H "Authorization: Bearer $ADMTOK" \
+  | grep -q '"reward_tier":"svip"' && ok "邀请码记录了奖励种类" || bad "邀请码没记住奖励种类"
 # 关掉注册限制，用码注册一个新用户
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"allow_register":true,"invite_code":""}' >/dev/null
@@ -891,6 +920,11 @@ sleep 2
 ADMMEM=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $ADMTOK")
 ADMDAYS=$(echo "$ADMMEM" | python3 -c "import json,sys; print(json.load(sys.stdin)['member_days'])")
 [[ "$ADMDAYS" -ge 10 ]] && ok "邀请人获得 10 天奖励（当前 $ADMDAYS 天）" || bad "奖励没发: $ADMDAYS"
+# 奖励要按码上指定的种类发，而不是永远发默认会员档。
+# 这里断言 tier_id（库里记的种类）而不是 tier（生效种类）：
+# 邀请人是管理员，而管理员在 EffectiveTierID 里恒为会员档，看不出种类。
+echo "$ADMMEM" | grep -q '"tier_id":"svip"' \
+  && ok "邀请奖励按码上的种类发放（tier_id=svip）" || bad "邀请奖励种类不对: $(echo "$ADMMEM" | head -c 200)"
 # 次数用完后再用应被拒
 INV2=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
   -d "{\"username\":\"invited2$$\",\"email\":\"invited2$$@e2e.local\",\"password\":\"Passw0rd!23\",\"invite_code\":\"$NEWCODE\"}")
@@ -1024,25 +1058,34 @@ done
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"free_daily_queries":50000}' >/dev/null
 
-hdr "注册赠送会员天数"
+hdr "注册赠送会员天数与种类"
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
-  -d '{"signup_member_days":5,"allow_register":true,"invite_code":""}' >/dev/null
+  -d '{"signup_member_days":5,"signup_member_tier":"svip","allow_register":true,"invite_code":""}' >/dev/null
 GIFT=$(curl -s -X POST "$API/auth/register" -H 'Content-Type: application/json' \
   -d "{\"username\":\"gift$$\",\"email\":\"gift$$@e2e.local\",\"password\":\"Passw0rd!23\"}")
 GTOK=$(echo "$GIFT" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 GDAYS=$(echo "$GIFT" | python3 -c "import json,sys; print(json.load(sys.stdin)['user']['member_days'])" 2>/dev/null)
 [[ "${GDAYS:-0}" == "5" ]] && ok "注册即送 5 天会员" || bad "注册赠送没生效: member_days=$GDAYS"
-echo "$GIFT" | grep -q '"tier":"vip"' && ok "赠送后档位是 vip" || bad "档位没跟着变"
+# 种类也要跟着配置走：只发天数的话这里会永远是内置 vip
+echo "$GIFT" | grep -q '"tier":"svip"' && ok "赠送按配置的种类发放（svip）" || bad "赠送种类不对: $(echo "$GIFT" | head -c 160)"
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
-  -d '{"signup_member_days":0}' >/dev/null
+  -d '{"signup_member_days":0,"signup_member_tier":""}' >/dev/null
 
 hdr "每日签到"
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
-  -d '{"checkin_enabled":true,"checkin_days":2,"checkin_bonus_every":3,"checkin_bonus_days":5}' >/dev/null
+  -d '{"checkin_enabled":true,"checkin_days":2,"checkin_bonus_every":3,"checkin_bonus_days":5,"checkin_tier":"svip"}' >/dev/null
+# 签到发放的会员种类也要跟配置走。先把赠送给这位用户的会员撤掉：
+# 他本来就是 svip，不撤的话下面那条种类断言恒真、什么都证明不了。
+GUID=$(echo "$GIFT" | python3 -c "import json,sys;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+curl -fsS -X POST "$API/admin/users/$GUID/member/revoke" -H "Authorization: Bearer $ADMTOK" >/dev/null
+G0=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $GTOK")
+echo "$G0" | grep -q '"tier":"free"' && ok "撤销赠送后回到默认档" || bad "撤销没生效: $(echo "$G0" | head -c 140)"
 CK0=$(curl -fsS "$API/me/checkin" -H "Authorization: Bearer $GTOK")
 echo "$CK0" | grep -q '"checked_today":false' && ok "签到状态初始为未签到" || bad "初始状态不对: $CK0"
 CK1=$(curl -s -X POST "$API/me/checkin" -H "Authorization: Bearer $GTOK")
 echo "$CK1" | grep -q '"granted":2' && ok "首次签到得 2 天" || bad "签到没发天数: $CK1"
+UMEM=$(curl -fsS "$API/me/membership" -H "Authorization: Bearer $GTOK")
+echo "$UMEM" | grep -q '"tier":"svip"' && ok "签到按配置的种类发放（svip）" || bad "签到种类不对: $(echo "$UMEM" | head -c 160)"
 echo "$CK1" | grep -q '"streak":1' && ok "连续天数从 1 开始" || bad "连签计数不对"
 # 累计口径：累计天数要单独统计，奖励按累计算而不是连续
 echo "$CK1" | grep -q '"total_days":1' && ok "累计签到天数为 1" || bad "累计天数不对: $CK1"
@@ -1290,29 +1333,48 @@ curl -fsS -X POST "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" \
 curl -fsS "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" | grep -q '"id":"svip"' \
   && ok "自定义档位已创建" || bad "自定义档位创建失败"
 
-# 指定给用户后，配额必须按该档位算
-curl -fsS -X PUT "$API/admin/users/$U1/tier" -H "Authorization: Bearer $ADMTOK" \
-  -H 'Content-Type: application/json' -d '{"tier_id":"svip"}' >/dev/null
+# 发放「高级会员 30 天」：种类与有效期一起给，配额按该种类算。
+# 之前这里只发「指定档位」、不动有效期，两个字段各管一套，
+# 界面才会同时出现「会员档」和「高级会员」。
+curl -fsS -X POST "$API/admin/users/$U1/member" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"days":30,"tier_id":"svip"}' >/dev/null
 TQ=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['quota']['max_rules'],d['quota']['max_subs'])")
-[[ "$TQ" == "500 30" ]] && ok "档位配额生效（规则 500 / 订阅 30）" || bad "档位配额不对：$TQ"
+[[ "$TQ" == "500 30" ]] && ok "种类配额生效（规则 500 / 订阅 30）" || bad "种类配额不对：$TQ"
+DET=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK")
+echo "$DET" | grep -q '"tier":"svip"' && ok "详情接口的种类一致" || bad "详情种类不对"
+echo "$DET" | grep -q '"tier_name":"高级会员"' && ok "详情接口给出种类显示名" || bad "详情缺 tier_name"
 
-# 改回自动：应当回到会员档 200/10
-curl -fsS -X PUT "$API/admin/users/$U1/tier" -H "Authorization: Bearer $ADMTOK" \
-  -H 'Content-Type: application/json' -d '{"tier_id":""}' >/dev/null
-# 期望值取「这个用户当前档位」对应的那条 tier 记录，不要写死数字：
-# 用户在 e2e 里可能已经不是会员了，硬按 vip 比会误报。
+# 取消会员后自动回落到默认档 —— 种类只在有效期内生效，这是这次统一的语义
+curl -fsS -X POST "$API/admin/users/$U1/member/revoke" -H "Authorization: Bearer $ADMTOK" >/dev/null
 EXPQ=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
-  | python3 -c "import json,sys;d=json.load(sys.stdin);t=d['tiers'][d['tier']];print(t['max_rules'],t['max_subs'])")
+  | python3 -c "import json,sys;d=json.load(sys.stdin);t=[v for v in d['tiers'].values() if v['is_default']][0];print(t['max_rules'],t['max_subs'])")
 AQ=$(curl -fsS "$API/admin/users/$U1" -H "Authorization: Bearer $ADMTOK" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['quota']['max_rules'],d['quota']['max_subs'])")
-[[ "$AQ" == "$EXPQ" ]] && ok "改回自动后按档位算（$EXPQ）" || bad "改回自动后配额不对：$AQ，期望 $EXPQ"
+[[ "$AQ" == "$EXPQ" ]] && ok "取消会员后回落到默认档（$EXPQ）" || bad "回落不对：$AQ，期望 $EXPQ"
+
+# 永久会员：member_until 记成 9999-12-31，前端靠 member_forever 显示「永久」
+PM=$(curl -s -X POST "$API/admin/users/$U1/member" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"permanent":true,"tier_id":"svip"}')
+echo "$PM" | grep -q '"member_forever":true' && ok "可设为永久会员" || bad "永久会员没生效: $PM"
+echo "$PM" | grep -q '"tier":"svip"' && ok "永久会员的种类正确" || bad "永久会员种类不对: $PM"
+# 永久会员还挂着这个种类时档位删不掉（后端会拒绝），先撤掉
+curl -fsS -X POST "$API/admin/users/$U1/member/revoke" -H "Authorization: Bearer $ADMTOK" >/dev/null
 
 # 内置档位不能删；没人用的自定义档位可以删
 FREECODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/free" -H "Authorization: Bearer $ADMTOK")
 [[ "$FREECODE" == "422" ]] && ok "内置档位拒绝删除（422）" || bad "内置档位删除未拒绝：$FREECODE"
-DELCODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/svip" -H "Authorization: Bearer $ADMTOK")
+# 用一个专门的一次性档位测删除：svip 前面已经被发放给好几个用户，
+# 后端会（正确地）因为「还有用户在用」拒绝删除。
+curl -fsS -X POST "$API/admin/tiers" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"tmptier","name":"临时档","sort":90,"max_rules":10,"max_subs":1,"daily_queries":0}' >/dev/null
+DELCODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/tiers/tmptier" -H "Authorization: Bearer $ADMTOK")
 [[ "$DELCODE" == "200" ]] && ok "无人使用的自定义档位可删除" || bad "自定义档位删除失败：$DELCODE"
+# 还有用户在用的档位必须拒绝删除，并给出原因
+INUSE=$(curl -s -o /tmp/e2e_tier_inuse.json -w '%{http_code}' -X DELETE "$API/admin/tiers/svip" -H "Authorization: Bearer $ADMTOK")
+[[ "$INUSE" == "422" ]] && ok "还有用户在用的档位拒绝删除（422）" || bad "在用档位删除未拒绝：$INUSE"
+grep -q '还有' /tmp/e2e_tier_inuse.json && ok "拒绝原因可读" || bad "拒绝原因缺失"
 
 hdr "每日邮件日报订阅"
 # 默认必须是关的：这是用户主动订阅的通知，不能替他勾上

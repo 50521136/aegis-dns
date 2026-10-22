@@ -70,7 +70,8 @@ export function TierPanel() {
         <div>
           <h2 className="text-base font-semibold">会员种类</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            每个档位一套配额，配额填 0 表示不限。用户可以单独指定档位。
+            每个种类一套配额，配额填 0 表示不限。会员种类只在会员有效期内生效，
+            到期自动回到默认档；发放时由「调整会员」同时指定种类和天数。
           </p>
         </div>
         <Button size="sm" variant="secondary" onClick={() => setDraft({ ...EMPTY })}>

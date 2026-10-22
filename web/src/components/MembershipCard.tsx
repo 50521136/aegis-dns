@@ -1,121 +1,141 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Crown, Gift, Zap } from 'lucide-react'
+import { Crown, Gift, Info, Zap } from 'lucide-react'
 
 import { getMyMembership } from '@/api/member'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { formatNumber } from '@/lib/format'
+import { formatDateTime, formatNumber } from '@/lib/format'
 
 /**
- * MembershipCard 展示当前档位与两档配额差异。
+ * MembershipCard 是「我的账户」里的会员卡片。
  *
- * 刻意把「免费档 vs 会员档」并排列出来：只显示自己那一档的话，
- * 用户永远不知道自己错过了什么，会员体系也就失去了引导作用。
+ * 这里**只显示用户自己的状态和套餐**。之前把「配额项 / 普通用户 / 会员」三列
+ * 全档位对比表摆在首页，用户一进来先看到一堆与自己无关的数字，真正要看的
+ * 「我现在是什么、还剩多久」反而要去找。
+ *
+ * 各档位的差异没有消失，收进右侧那个小图标后面的说明弹窗里 —— 想知道细节
+ * 点一下就有，不想知道也不占版面。
  */
 export function MembershipCard() {
   const q = useQuery({ queryKey: ['membership'], queryFn: getMyMembership })
+  const [helpOpen, setHelpOpen] = useState(false)
 
-  if (q.isLoading) return <Skeleton className="h-44 rounded-2xl" />
+  if (q.isLoading) return <Skeleton className="h-32 rounded-2xl" />
   if (q.isError || !q.data) return null
 
   const m = q.data
-  const isVip = m.tier === 'vip'
-  const rows = [
-    { label: '自定义规则', free: m.tiers.free.max_rules, vip: m.tiers.vip.max_rules, mine: m.quota.max_rules },
-    { label: '自定义订阅', free: m.tiers.free.max_subs, vip: m.tiers.vip.max_subs, mine: m.quota.max_subs },
-    {
-      label: '每日请求量',
-      free: m.tiers.free.daily_queries,
-      vip: m.tiers.vip.daily_queries,
-      mine: m.quota.daily_queries,
-    },
-  ]
+  const isMember = m.is_member
 
   return (
-    <Card className={cn(isVip && 'border-primary/40')}>
-      <CardHeader>
+    <Card className={cn(isMember && 'border-primary/40')}>
+      <CardHeader className="pb-3">
         <CardTitle className="flex flex-wrap items-center gap-2">
-          {isVip ? <Crown className="size-5 text-primary" /> : <Zap className="size-5 text-muted-foreground" />}
-          我的账户
-          {isVip ? (
-            <Badge variant="success">会员 · 剩余 {m.member_days} 天</Badge>
+          {isMember ? (
+            <Crown className="size-5 text-primary" />
           ) : (
-            <Badge variant="secondary">普通用户</Badge>
+            <Zap className="size-5 text-muted-foreground" />
+          )}
+          我的账户
+          {isMember ? (
+            <Badge variant="success">
+              {m.member_forever ? '永久会员' : `剩 ${m.member_days} 天`}
+            </Badge>
+          ) : (
+            <Badge variant="secondary">未开通</Badge>
           )}
         </CardTitle>
-        <CardDescription>
-          {isVip
-            ? '会员配额已生效，到期后自动降为普通用户，无需手动操作。'
-            : '邀请好友注册可获得会员天数，会员享受更高的规则、订阅与请求量上限。'}
-        </CardDescription>
       </CardHeader>
+
       <CardContent className="space-y-3">
-        {/* 三列表格在 390px 上会把「自定义规则」和「当前 200」都挤成两行。
-            窄屏改成「标题 + 当前值」一行，下面并排两个配额胶囊；
-            宽屏才用真正的三列表格。 */}
-        <div className="space-y-2 sm:hidden">
-          {rows.map((r) => (
-            <div key={r.label} className="rounded-xl border border-border px-3 py-2">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm">{r.label}</span>
-                <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                  当前 {r.mine === 0 ? '不限' : formatNumber(r.mine)}
-                </span>
-              </div>
-              <div className="mt-1.5 grid grid-cols-2 gap-2">
-                <Pill label="普通用户" value={r.free === 0 ? '不限' : formatNumber(r.free)} />
-                <Pill label="会员" value={r.vip === 0 ? '不限' : formatNumber(r.vip)} highlight />
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-[11px] text-muted-foreground">当前套餐</p>
+            <p className="truncate text-sm font-medium">{m.tier_name}</p>
+          </div>
+          <button
+            type="button"
+            aria-label="各会员种类说明"
+            onClick={() => setHelpOpen(true)}
+            className="shrink-0 rounded-full p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Info className="size-4" />
+          </button>
         </div>
 
-        <div className="hidden overflow-hidden rounded-xl border border-border sm:block">
-          <div className="grid grid-cols-3 gap-px bg-border text-xs">
-            <div className="bg-muted/40 px-3 py-1.5 font-medium">配额项</div>
-            <div className="bg-muted/40 px-3 py-1.5 font-medium">普通用户</div>
-            <div className="bg-primary/10 px-3 py-1.5 font-medium text-primary">会员</div>
-          </div>
-          {rows.map((r) => (
-            <div key={r.label} className="grid grid-cols-3 gap-px border-t border-border bg-border text-sm">
-              <div className="flex items-center justify-between gap-2 bg-background px-3 py-1.5">
-                <span className="whitespace-nowrap">{r.label}</span>
-                <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                  当前 {r.mine === 0 ? '不限' : formatNumber(r.mine)}
-                </span>
-              </div>
-              <div className="bg-background px-3 py-1.5 font-mono text-sm">
-                {r.free === 0 ? '不限' : formatNumber(r.free)}
-              </div>
-              <div className="bg-background px-3 py-1.5 font-mono text-sm text-primary">
-                {r.vip === 0 ? '不限' : formatNumber(r.vip)}
-              </div>
-            </div>
-          ))}
+        <div className="flex items-baseline justify-between gap-2 px-1">
+          <span className="text-[11px] text-muted-foreground">到期时间</span>
+          <span className="font-mono text-xs">
+            {m.member_forever
+              ? '永久有效'
+              : isMember
+                ? formatDateTime(m.member_until)
+                : '—'}
+          </span>
         </div>
 
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Gift className="size-3.5" />
+          <Gift className="size-3.5 shrink-0" />
           已通过邀请带来 {m.invite.total_uses} 位用户，累计获得 {m.invite.reward_days} 天会员
         </p>
       </CardContent>
-    </Card>
-  )
-}
 
-/** Pill 是窄屏下的单档配额小方块 */
-function Pill({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
-  return (
-    <div
-      className={cn(
-        'rounded-lg px-2 py-1 text-center',
-        highlight ? 'bg-primary/10' : 'bg-muted/40',
-      )}
-    >
-      <p className="text-[10px] text-muted-foreground">{label}</p>
-      <p className={cn('font-mono text-sm', highlight && 'text-primary')}>{value}</p>
-    </div>
+      {/* 各会员种类说明：小弹窗、小字号，只解释差异，不做任何操作 */}
+      <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
+        <DialogContent className="max-w-[19rem] gap-2 p-4 md:max-w-[19rem]">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">会员种类</DialogTitle>
+            <DialogDescription className="text-[11px] leading-relaxed">
+              每种会员一套配额，数值越大越宽松，「不限」表示不做限制。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-1.5">
+            {m.tier_list.map((t) => {
+              const mine = t.id === m.tier
+              return (
+                <div
+                  key={t.id}
+                  className={cn(
+                    'rounded-lg border px-2.5 py-1.5',
+                    mine ? 'border-primary/40 bg-primary/5' : 'border-border/60',
+                  )}
+                >
+                  <p className="flex items-center gap-1.5 text-[12px] font-medium">
+                    {t.name}
+                    {mine && (
+                      <span className="rounded bg-primary/15 px-1 py-px text-[10px] text-primary">
+                        当前
+                      </span>
+                    )}
+                    {t.is_default && (
+                      <span className="text-[10px] font-normal text-muted-foreground">默认档</span>
+                    )}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                    规则 {t.max_rules ? formatNumber(t.max_rules) : '不限'} · 订阅{' '}
+                    {t.max_subs ? formatNumber(t.max_subs) : '不限'} · 每日请求{' '}
+                    {t.daily_queries ? formatNumber(t.daily_queries) : '不限'}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            会员种类只在有效期内生效，到期自动回到默认档，无需手动操作。
+          </p>
+        </DialogContent>
+      </Dialog>
+    </Card>
   )
 }

@@ -131,8 +131,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// 首次注册赠送会员天数。
 	// 放在邀请码核销之前：新人先拿到自己的见面礼，邀请奖励再叠加，
 	// 顺序反过来也能加，但日志里「新人得到多少」会算不清。
+	// 会员种类与天数一起发；tiers 后面还要用来算 userJSON 的生效种类，
+	// 一次取好，别在两个地方各查一次。
+	tiers, _ := s.store.TierMap(r.Context())
 	if settings.SignupMemberDays > 0 {
-		if _, err := s.store.AddMemberDays(r.Context(), user.ID, settings.SignupMemberDays); err != nil {
+		// 种类也要发：只加天数的话，管理员在「注册赠送」里选的
+		// 「超级会员」不生效，新用户永远落在内置 vip 档上。
+		if _, err := s.store.GrantMembership(r.Context(), user.ID, settings.SignupMemberTier, settings.SignupMemberDays); err != nil {
 			s.log.Warn("注册赠送会员失败", "user", user.ID, "err", err)
 		} else if fresh, err := s.store.GetUserByID(r.Context(), user.ID); err == nil && fresh != nil {
 			user = fresh
@@ -143,7 +148,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// 失败不阻塞注册：账号已经建好了，为了「奖励没发出去」把人挡在门外
 	// 是本末倒置；失败会记日志，由管理员补偿。
 	if codeInTable {
-		if days, err := s.store.RedeemInvite(r.Context(), code, user.ID); err != nil {
+		if days, err := s.store.RedeemInvite(r.Context(), code, user.ID, settings.MemberRewardTier); err != nil {
 			s.log.Warn("核销邀请码失败", "code", code, "user", user.ID, "err", err)
 		} else if days > 0 {
 			// 邀请人的会员期变了，快照要跟着更新，否则他的配额还是旧的
@@ -170,7 +175,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, authResponse{
-		User:      toUserJSON(user),
+		User:      toUserJSON(user, tiers),
 		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context())),
 		Tokens:    pair,
 	})
@@ -216,8 +221,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("保存 refresh token 失败", "err", err)
 	}
 
+	loginTiers, _ := s.store.TierMap(r.Context())
 	writeJSON(w, http.StatusOK, authResponse{
-		User:      toUserJSON(user),
+		User:      toUserJSON(user, loginTiers),
 		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context())),
 		Tokens:    pair,
 	})

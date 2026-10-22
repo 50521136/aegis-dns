@@ -213,32 +213,44 @@ type userJSON struct {
 	ReportTime string `json:"report_time"`
 	CreatedAt  string `json:"created_at"`
 
-	// 会员信息。档位不落库，这里按当前时间实时算出来给前端，
+	// 会员信息。种类与有效期在库里，但「此刻是什么档」按当前时间实时算，
 	// 前端不需要自己判断 member_until 有没有过期。
-	MemberUntil int64  `json:"member_until"`
-	MemberDays  int    `json:"member_days"`
-	Tier        string `json:"tier"`
-	InvitedBy   string `json:"invited_by,omitempty"`
+	MemberUntil   int64  `json:"member_until"`
+	MemberDays    int    `json:"member_days"`
+	MemberForever bool   `json:"member_forever"`
+	Tier          string `json:"tier"`
+	// TierID 是库里记的会员种类（空串 = 会员期内走默认会员档）。
+	// 界面上要显示具体种类时用它，别拿 Tier 猜。
+	TierID    string `json:"tier_id"`
+	InvitedBy string `json:"invited_by,omitempty"`
 }
 
 // toUserJSON 直接吃 *model.User。
 //
 // 之前是七个人参的位置参数，加字段就得改所有调用点，而且漏改一个就会出现
 // 「某个接口返回的用户少了字段」这种只在特定页面暴露的问题。
-func toUserJSON(u *model.User) userJSON {
+// toUserJSON 需要档位表才能给出「生效的会员种类」。
+//
+// 之前这里调 model.TierOf（只知道 free/vip），于是 /me 和登录响应里的
+// tier 永远是 vip，而用户实际是「超级会员」—— 前端拿它显示就会串档。
+func toUserJSON(u *model.User, tiers map[string]model.TierDef) userJSON {
+	now := time.Now()
+	mem := model.MemberStateOf(u, tiers, now)
 	return userJSON{
 		ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
 		ClientID: u.ClientID, Enabled: u.Enabled,
 		UseGlobalRules: u.UseGlobalRules, IDResetCount: u.IDResetCount,
 		RulesEnabled: u.RulesEnabled, SubsEnabled: u.SubsEnabled,
-		CustomIDUsed: u.CustomIDUsed,
-		DailyReport:  u.DailyReport,
-		ReportTime:   u.ReportTime,
-		CreatedAt:    time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
-		MemberUntil:  u.MemberUntil,
-		MemberDays:   u.MemberRemainingDays(time.Now()),
-		Tier:         string(model.TierOf(u, time.Now())),
-		InvitedBy:    u.InvitedBy,
+		CustomIDUsed:  u.CustomIDUsed,
+		DailyReport:   u.DailyReport,
+		ReportTime:    u.ReportTime,
+		CreatedAt:     time.Unix(u.CreatedAt, 0).UTC().Format(time.RFC3339),
+		MemberUntil:   mem.Until,
+		MemberDays:    mem.Days,
+		MemberForever: mem.Forever,
+		Tier:          mem.Tier,
+		TierID:        mem.AssignedTier,
+		InvitedBy:     u.InvitedBy,
 	}
 }
 

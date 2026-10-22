@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"net/http"
@@ -51,6 +52,7 @@ func inviteCodeJSON(c model.InviteCode, now int64) map[string]any {
 		"owner_id":    c.OwnerID,
 		"note":        c.Note,
 		"reward_days": c.RewardDays,
+		"reward_tier": c.RewardTier,
 		"max_uses":    c.MaxUses,
 		"used_count":  c.UsedCount,
 		"expires_at":  c.ExpiresAt,
@@ -68,9 +70,11 @@ type inviteCodeReq struct {
 	Code       string `json:"code"`
 	Note       string `json:"note"`
 	RewardDays *int   `json:"reward_days"`
-	MaxUses    *int   `json:"max_uses"`
-	ExpiresAt  *int64 `json:"expires_at"`
-	Enabled    *bool  `json:"enabled"`
+	// RewardTier 是核销后发给邀请人的会员种类；不传 = 用全局设置。
+	RewardTier *string `json:"reward_tier"`
+	MaxUses    *int    `json:"max_uses"`
+	ExpiresAt  *int64  `json:"expires_at"`
+	Enabled    *bool   `json:"enabled"`
 }
 
 // handleCreateInviteCode 新建邀请码。不填 code 时自动生成。
@@ -106,6 +110,17 @@ func (s *Server) handleCreateInviteCode(w http.ResponseWriter, r *http.Request) 
 	if req.RewardDays != nil {
 		reward = *req.RewardDays
 	}
+	// 奖励种类：码上指定的优先，否则用全局的「邀请奖励会员种类」。
+	rewardTier := set.MemberRewardTier
+	if req.RewardTier != nil {
+		rewardTier = strings.TrimSpace(*req.RewardTier)
+	}
+	if rewardTier != "" {
+		if _, err := s.store.GetTier(r.Context(), rewardTier); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "会员种类不存在", nil)
+			return
+		}
+	}
 	if reward < 0 || reward > 3650 {
 		writeError(w, http.StatusBadRequest, CodeValidationFailed, "奖励天数需在 0 到 3650 之间", nil)
 		return
@@ -134,7 +149,7 @@ func (s *Server) handleCreateInviteCode(w http.ResponseWriter, r *http.Request) 
 	}
 	c := &model.InviteCode{
 		Code: code, OwnerID: ownerID, Note: strings.TrimSpace(req.Note),
-		RewardDays: reward, MaxUses: maxUses, ExpiresAt: expires,
+		RewardDays: reward, RewardTier: rewardTier, MaxUses: maxUses, ExpiresAt: expires,
 		Enabled: enabled,
 	}
 	if err := s.store.CreateInviteCode(r.Context(), c); err != nil {
@@ -160,8 +175,16 @@ func (s *Server) handleUpdateInviteCode(w http.ResponseWriter, r *http.Request) 
 	if req.ExpiresAt != nil {
 		expires = req.ExpiresAt
 	}
+	if req.RewardTier != nil {
+		if t := strings.TrimSpace(*req.RewardTier); t != "" {
+			if _, err := s.store.GetTier(r.Context(), t); err != nil {
+				writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "会员种类不存在", nil)
+				return
+			}
+		}
+	}
 	if err := s.store.UpdateInviteCode(r.Context(), strings.ToUpper(code), note,
-		req.RewardDays, req.MaxUses, expires, req.Enabled); err != nil {
+		req.RewardDays, req.RewardTier, req.MaxUses, expires, req.Enabled); err != nil {
 		writeStoreError(w, err, "邀请码不存在")
 		return
 	}
@@ -186,46 +209,82 @@ func (s *Server) handleDeleteInviteCode(w http.ResponseWriter, r *http.Request) 
 // === 会员（管理员）===
 
 type memberReq struct {
-	// Days 是要增减的天数；负数表示扣减，0 配合 revoke 使用。
+	// Days 是要增减的天数；负数表示扣减。
 	Days int `json:"days"`
+	// TierID 是这次发放的会员种类；空串 = 保持用户现有种类
+	// （从来没有过种类时落到默认会员档）。
+	TierID string `json:"tier_id"`
+	// Permanent 为真时直接给永久会员（member_until 置成 9999-12-31），
+	// 此时 Days 被忽略。用时间戳而不是额外字段表示永久，
+	// 免得每处判断会员的地方都要多看一眼布尔值。
+	Permanent bool `json:"permanent"`
 }
 
-// handleSetMember 调整某个用户的会员期。
+// handleSetMember 调整某个用户的会员期（可同时指定会员种类）。
 //
 // 正数是加、负数是扣，都从「现在与原到期时间中较晚者」起算，
 // 这样连续加不会冲掉剩余时间，扣减也不会把已过期的用户扣成负数。
+//
+// 这是**唯一**的管理员改会员入口：种类和有效期一起改。
+// 之前还有一个独立的「指定档位」接口，两个入口能分别改同一个用户的
+// 两个字段，界面上就出现了「会员档」和「超级会员」并存的状态。
 func (s *Server) handleSetMember(w http.ResponseWriter, r *http.Request) {
 	uid := chi.URLParam(r, "id")
 	var req memberReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Days == 0 {
-		writeError(w, http.StatusBadRequest, CodeValidationFailed, "days 不能为 0", nil)
-		return
+	tierID := strings.TrimSpace(req.TierID)
+	if tierID != "" {
+		if _, err := s.store.GetTier(r.Context(), tierID); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "会员种类不存在", nil)
+			return
+		}
 	}
-	if req.Days > 36500 || req.Days < -36500 {
-		writeError(w, http.StatusBadRequest, CodeValidationFailed, "天数超出合理范围", nil)
-		return
+
+	var until int64
+	var err error
+	switch {
+	case req.Permanent:
+		// 永久会员：种类必须给定（否则「永久」会落在哪个档上说不清）。
+		if tierID == "" {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, "设为永久会员时必须选择会员种类", nil)
+			return
+		}
+		err = s.store.SetMembership(r.Context(), uid, tierID, model.MemberForever)
+		until = model.MemberForever
+	default:
+		if req.Days == 0 {
+			writeError(w, http.StatusBadRequest, CodeValidationFailed, "days 不能为 0", nil)
+			return
+		}
+		if req.Days > 36500 || req.Days < -36500 {
+			writeError(w, http.StatusBadRequest, CodeValidationFailed, "天数超出合理范围", nil)
+			return
+		}
+		until, err = s.store.GrantMembership(r.Context(), uid, tierID, req.Days)
 	}
-	until, err := s.store.AddMemberDays(r.Context(), uid, req.Days)
 	if err != nil {
 		writeStoreError(w, err, "用户不存在")
 		return
 	}
 	s.coord.Changed(r.Context())
 	u, _ := s.store.GetUserByID(r.Context(), uid)
+	tiers, _ := s.store.TierMap(r.Context())
+	st := model.MemberStateOf(u, tiers, time.Now())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"member_until": until,
-		"tier":         string(model.TierOf(u, time.Now())),
-		"member_days":  u.MemberRemainingDays(time.Now()),
+		"member_until":   until,
+		"tier":           st.Tier,
+		"tier_name":      st.TierName,
+		"member_forever": st.Forever,
+		"member_days":    st.Days,
 	})
 }
 
-// handleRevokeMember 直接取消会员（到期时间置 0）。
+// handleRevokeMember 直接取消会员（到期时间置 0，会员种类一并清掉）。
 func (s *Server) handleRevokeMember(w http.ResponseWriter, r *http.Request) {
 	uid := chi.URLParam(r, "id")
-	if err := s.store.SetMemberUntil(r.Context(), uid, 0); err != nil {
+	if err := s.store.RevokeMembership(r.Context(), uid); err != nil {
 		writeStoreError(w, err, "用户不存在")
 		return
 	}
@@ -251,28 +310,29 @@ func (s *Server) handleMyMembership(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "")
 		return
 	}
+	// 会员状态只给一份（种类 + 有效期），前端不再自己拼。
+	// tiers 给全部档位：用户页那个「各会员种类说明」的小弹窗要用，
+	// 前端自己拼列表的话，管理员新加一档就得到处补映射。
+	st := model.MemberStateOf(u, tiers, now)
+	allTiers, _ := s.store.ListTiers(r.Context())
+	if allTiers == nil {
+		allTiers = []model.TierDef{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tier":         string(q.Tier),
-		"member_until": u.MemberUntil,
-		"member_days":  u.MemberRemainingDays(now),
+		"tier":           st.Tier,
+		"tier_name":      st.TierName,
+		"tier_id":        st.AssignedTier,
+		"is_member":      st.IsMember,
+		"member_forever": st.Forever,
+		"member_until":   st.Until,
+		"member_days":    st.Days,
 		"quota": map[string]any{
 			"max_rules":     q.MaxRules,
 			"max_subs":      q.MaxSubs,
 			"daily_queries": q.DailyQueries,
 		},
-		// 两档都给出，前端可以展示「开会员能多得到什么」的对比
-		"tiers": map[string]any{
-			"free": map[string]any{
-				"max_rules":     set.FreeMaxRules,
-				"max_subs":      set.FreeMaxSubs,
-				"daily_queries": set.FreeDailyQueries,
-			},
-			"vip": map[string]any{
-				"max_rules":     set.VipMaxRules,
-				"max_subs":      set.VipMaxSubs,
-				"daily_queries": set.VipDailyQueries,
-			},
-		},
+		// 全部会员种类（含配额），用于「我的账户」里的小弹窗说明
+		"tier_list": allTiers,
 		"invite": map[string]any{
 			"total_uses":  stats.TotalUses,
 			"reward_days": stats.RewardDays,
@@ -334,15 +394,29 @@ func (s *Server) handleMyInviteCodes(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"total": len(items),
 		// 还能建几个：前端据此决定按钮是否可点，避免点了才报错
-		"can_create":   set.AllowUserInvite && set.UserInviteMaxCodes > len(codes),
-		"enabled":      set.AllowUserInvite,
-		"max_codes":    set.UserInviteMaxCodes,
-		"reward_days":  set.MemberRewardDays,
-		"invited":      stats.TotalUses,
-		"earned_days":  stats.RewardDays,
-		"member_until": u.MemberUntil,
-		"member_days":  u.MemberRemainingDays(time.Now()),
+		"can_create":  set.AllowUserInvite && set.UserInviteMaxCodes > len(codes),
+		"enabled":     set.AllowUserInvite,
+		"max_codes":   set.UserInviteMaxCodes,
+		"reward_days": set.MemberRewardDays,
+		// 奖励会员种类的显示名：邀请卡上要写清「+30 天高级会员」，
+		// 否则多档位之后用户不知道奖励发的是哪一种。
+		"reward_tier_name": tierDisplayName(r.Context(), s, set.MemberRewardTier),
+		"invited":          stats.TotalUses,
+		"earned_days":      stats.RewardDays,
+		"member_until":     u.MemberUntil,
+		"member_days":      u.MemberRemainingDays(time.Now()),
 	})
+}
+
+// tierDisplayName 把会员种类 id 翻成显示名，查不到时给出可读兜底。
+func tierDisplayName(ctx context.Context, s *Server, tierID string) string {
+	if strings.TrimSpace(tierID) == "" {
+		return ""
+	}
+	if t, err := s.store.GetTier(ctx, tierID); err == nil && t != nil {
+		return t.Name
+	}
+	return tierID
 }
 
 // inviteLink 拼出可直接分享的注册链接。

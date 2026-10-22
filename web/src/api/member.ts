@@ -9,10 +9,24 @@ export async function getMyMembership(): Promise<MyMembership> {
   return data
 }
 
-/** 管理员调整某个用户的会员天数（负数表示扣减） */
-export async function setUserMember(userId: string, days: number) {
-  const { data } = await api.post(`/admin/users/${userId}/member`, { days })
-  return data as { member_until: number; tier: string; member_days: number }
+/** 管理员调整某个用户的会员（天数可负 = 扣减；可同时指定会员种类） */
+export async function setUserMember(
+  userId: string,
+  days: number,
+  opts?: { tier_id?: string; permanent?: boolean },
+) {
+  const { data } = await api.post(`/admin/users/${userId}/member`, {
+    days,
+    tier_id: opts?.tier_id ?? '',
+    permanent: opts?.permanent ?? false,
+  })
+  return data as {
+    member_until: number
+    tier: string
+    tier_name: string
+    member_forever: boolean
+    member_days: number
+  }
 }
 
 /** 管理员直接取消会员 */
@@ -32,6 +46,8 @@ export interface InviteCodeInput {
   code?: string
   note?: string
   reward_days?: number
+  /** 核销后发给邀请人的会员种类；不传 = 用全局设置 */
+  reward_tier?: string
   max_uses?: number
   expires_at?: number
   enabled?: boolean
@@ -153,6 +169,8 @@ export interface MyInviteCodes {
   enabled: boolean
   max_codes: number
   reward_days: number
+  /** 邀请奖励的会员种类显示名（空串 = 默认会员档） */
+  reward_tier_name?: string
   invited: number
   earned_days: number
   member_until: number
@@ -178,6 +196,8 @@ export async function deleteMyInviteCode(code: string): Promise<void> {
 export interface CheckinState {
   enabled: boolean
   daily_days: number
+  /** 签到发放的会员种类 id（默认会员档） */
+  daily_tier?: string
   streak_days: number
   streak_bonus: number
   checked_today: boolean
@@ -186,6 +206,11 @@ export interface CheckinState {
   granted_today: number
   member_until: number
   member_days: number
+  /** 会员状态（后端算好，前端不自己判断到期） */
+  member_forever?: boolean
+  is_member?: boolean
+  tier?: string
+  tier_name?: string
 }
 
 export async function getCheckin(): Promise<CheckinState> {

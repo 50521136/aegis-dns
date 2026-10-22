@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { TierPanel } from '@/components/TierPanel'
+import { listTiers } from '@/api/tiers'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, type UseFormReturn } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -136,6 +137,10 @@ const settingsSchema = z.object({
   enable_dot: z.boolean(),
   enable_plain_dns: z.boolean(),
   signup_member_days: z.coerce.number().int().min(0),
+  // 奖励发放的会员种类。空串是合法值 = 默认会员档，所以不能用 min(1)。
+  signup_member_tier: z.string(),
+  checkin_tier: z.string(),
+  member_reward_tier: z.string(),
   checkin_enabled: z.boolean(),
   checkin_days: z.coerce.number().int().min(0),
   checkin_bonus_every: z.coerce.number().int().min(0),
@@ -556,6 +561,7 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField form={form} name="signup_member_days" label="注册赠送天数（0=不送）" />
+                <TierSelect form={form} name="signup_member_tier" label="注册赠送的会员种类" />
               </div>
               <ToggleRow
                 title="开启每日签到"
@@ -565,12 +571,14 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
               />
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField form={form} name="checkin_days" label="单次签到赠送天数" />
+                <TierSelect form={form} name="checkin_tier" label="签到赠送的会员种类" />
                 <NumberField form={form} name="checkin_bonus_every" label="累计签到门槛（天，0=不设）" />
                 <NumberField form={form} name="checkin_bonus_days" label="累计额外奖励天数" />
               </div>
               <p className="text-xs text-muted-foreground">
                 按累计签到天数发放，不要求连续：门槛 7 天时，累计第 7、14、21 天各触发一次。
-                中间漏签不影响，累计够天数就给。
+                中间漏签不影响，累计够天数就给。赠送的会员种类只在有效期内生效，
+                到期自动回到默认档；用户已经在更高档位时不会被降下来。
               </p>
             </CardContent>
           </Card>
@@ -583,6 +591,7 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField form={form} name="member_reward_days" label="邀请奖励默认天数" />
+                <TierSelect form={form} name="member_reward_tier" label="邀请奖励的会员种类" />
                 <NumberField form={form} name="user_invite_max_codes" label="每用户最多邀请码数" />
               </div>
               <ToggleRow
@@ -727,6 +736,45 @@ function NumberField({
       <Label htmlFor={name}>{label}</Label>
       <Input id={name} type="number" className="font-mono" {...form.register(name as never)} />
       {e && <p className="text-xs text-danger">{String(e.message ?? '')}</p>}
+    </div>
+  )
+}
+
+/**
+ * TierSelect 是「赠送的会员种类」下拉。
+ *
+ * 选项来自 /admin/tiers，第一项是空串 = 默认会员档（内置 vip）。
+ * 不让管理员填 id 字符串：填错了发放时会静默回落到默认档，
+ * 而界面上看起来一切正常。
+ */
+function TierSelect({
+  form,
+  name,
+  label,
+}: {
+  form: UseFormReturn<SettingsForm>
+  name: keyof SettingsForm & string
+  label: string
+}) {
+  const { data } = useQuery({ queryKey: ['tiers'], queryFn: listTiers })
+  const items = [...(data ?? [])].sort((a, b) => a.sort - b.sort)
+  const fallback = items.find((t) => t.id === 'vip') ?? items.find((t) => !t.is_default)
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={name}>{label}</Label>
+      <select
+        id={name}
+        className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
+        {...form.register(name as never)}
+      >
+        <option value="">默认会员档{fallback ? `（${fallback.name}）` : ''}</option>
+        {items.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+            {t.is_default ? '（默认档）' : ''}
+          </option>
+        ))}
+      </select>
     </div>
   )
 }

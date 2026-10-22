@@ -124,7 +124,8 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "用户不存在")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserJSON(u))
+	tiers, _ := s.store.TierMap(r.Context())
+	writeJSON(w, http.StatusOK, toUserJSON(u, tiers))
 }
 
 // ensureAnotherAdmin 确认除了 uid 之外还有别的启用管理员。
@@ -230,12 +231,17 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"allow_user_invite":     set.AllowUserInvite,
 		"user_invite_max_codes": set.UserInviteMaxCodes,
 		"signup_member_days":    set.SignupMemberDays,
-		"checkin_enabled":       set.CheckinEnabled,
-		"checkin_days":          set.CheckinDays,
-		"checkin_bonus_every":   set.CheckinBonusEvery,
-		"checkin_bonus_days":    set.CheckinBonusDays,
-		"enable_ecs":            set.EnableECS,
-		"enable_dnssec":         set.EnableDNSSEC,
+		// 奖励发放的会员种类（空串 = 默认会员档）。三处奖励各一个，
+		// 前端据此渲染「赠送会员种类」下拉。
+		"signup_member_tier":  set.SignupMemberTier,
+		"checkin_tier":        set.CheckinTier,
+		"member_reward_tier":  set.MemberRewardTier,
+		"checkin_enabled":     set.CheckinEnabled,
+		"checkin_days":        set.CheckinDays,
+		"checkin_bonus_every": set.CheckinBonusEvery,
+		"checkin_bonus_days":  set.CheckinBonusDays,
+		"enable_ecs":          set.EnableECS,
+		"enable_dnssec":       set.EnableDNSSEC,
 
 		// 邮件服务。密码不回传：后台表单只需要知道「有没有配」，
 		// 把明文密码发到浏览器等于把它暴露在任何一次截图/日志里。
@@ -322,10 +328,14 @@ type settingsPatch struct {
 	AllowUserInvite    *bool  `json:"allow_user_invite"`
 	UserInviteMaxCodes *int   `json:"user_invite_max_codes"`
 	SignupMemberDays   *int   `json:"signup_member_days"`
-	CheckinEnabled     *bool  `json:"checkin_enabled"`
-	CheckinDays        *int   `json:"checkin_days"`
-	CheckinBonusEvery  *int   `json:"checkin_bonus_every"`
-	CheckinBonusDays   *int   `json:"checkin_bonus_days"`
+	// 奖励发放的会员种类。用指针区分「没传」和「显式清空成默认档」。
+	SignupMemberTier  *string `json:"signup_member_tier"`
+	CheckinTier       *string `json:"checkin_tier"`
+	MemberRewardTier  *string `json:"member_reward_tier"`
+	CheckinEnabled    *bool   `json:"checkin_enabled"`
+	CheckinDays       *int    `json:"checkin_days"`
+	CheckinBonusEvery *int    `json:"checkin_bonus_every"`
+	CheckinBonusDays  *int    `json:"checkin_bonus_days"`
 	// 旧字段：老客户端/老脚本仍可能发这两个，收下来搬到新字段
 	CheckinStreakDays    *int    `json:"checkin_streak_days"`
 	CheckinStreakBonus   *int    `json:"checkin_streak_bonus"`
@@ -401,6 +411,11 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setBool(&dst.AllowUserInvite, p.AllowUserInvite)
 	setInt(&dst.UserInviteMaxCodes, p.UserInviteMaxCodes)
 	setInt(&dst.SignupMemberDays, p.SignupMemberDays)
+	// 会员种类允许空串（= 默认会员档），所以不能用 setStr 之外的判断：
+	// setStr 只在指针非 nil 时覆盖，正好符合「没传就不动」。
+	setStr(&dst.SignupMemberTier, p.SignupMemberTier)
+	setStr(&dst.CheckinTier, p.CheckinTier)
+	setStr(&dst.MemberRewardTier, p.MemberRewardTier)
 	setBool(&dst.CheckinEnabled, p.CheckinEnabled)
 	setInt(&dst.CheckinDays, p.CheckinDays)
 	setInt(&dst.CheckinBonusEvery, p.CheckinBonusEvery)
@@ -495,6 +510,19 @@ func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	applySettingsPatch(cur, &req)
+
+	// 奖励发放的会员种类必须指向真实存在的档位。放行的话发放时会静默
+	// 回落到默认会员档 —— 管理员以为配了「签到送超级会员」，实际发的是 vip。
+	for _, tid := range []string{cur.SignupMemberTier, cur.CheckinTier, cur.MemberRewardTier} {
+		if strings.TrimSpace(tid) == "" {
+			continue
+		}
+		if _, err := s.store.GetTier(r.Context(), tid); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed,
+				"会员种类 "+tid+" 不存在，请先在「会员种类」里创建", nil)
+			return
+		}
+	}
 
 	if err := validateSettings(cur); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)

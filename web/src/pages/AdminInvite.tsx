@@ -8,6 +8,7 @@ import {
   listInviteCodes,
   updateInviteCode,
 } from '@/api/member'
+import { listTiers } from '@/api/tiers'
 import { errorMessage } from '@/api/client'
 import type { InviteCode } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
@@ -38,9 +39,21 @@ export function InvitePanel() {
   const qc = useQueryClient()
   const toast = useToast()
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ code: '', note: '', reward_days: 30, max_uses: 0, expires: '' })
+  // reward_tier 是「核销后发给邀请人的会员种类」，空串 = 用全局设置
+  const [form, setForm] = useState({
+    code: '',
+    note: '',
+    reward_days: 30,
+    reward_tier: '',
+    max_uses: 0,
+    expires: '',
+  })
 
   const q = useQuery({ queryKey: ['admin', 'invite-codes'], queryFn: listInviteCodes })
+  const tiersQuery = useQuery({ queryKey: ['tiers'], queryFn: listTiers })
+  const tierList = [...(tiersQuery.data ?? [])].sort((a, b) => a.sort - b.sort)
+  const tierName = (id: string) =>
+    tierList.find((t) => t.id === id)?.name ?? (id || '默认会员档')
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin', 'invite-codes'] })
 
@@ -50,13 +63,14 @@ export function InvitePanel() {
         code: form.code.trim() || undefined,
         note: form.note.trim(),
         reward_days: Number(form.reward_days) || 0,
+        reward_tier: form.reward_tier,
         max_uses: Number(form.max_uses) || 0,
         expires_at: form.expires ? Math.floor(new Date(form.expires).getTime() / 1000) : 0,
       }),
     onSuccess: (c) => {
       invalidate()
       setOpen(false)
-      setForm({ code: '', note: '', reward_days: 30, max_uses: 0, expires: '' })
+      setForm({ code: '', note: '', reward_days: 30, reward_tier: '', max_uses: 0, expires: '' })
       toast.success('邀请码已创建', c.code)
     },
     onError: (err) => toast.error('创建失败', errorMessage(err)),
@@ -142,7 +156,12 @@ export function InvitePanel() {
                     <TableCell className="max-w-[12rem] truncate text-sm text-muted-foreground">
                       {c.note || '—'}
                     </TableCell>
-                    <TableCell className="font-mono text-sm">{c.reward_days} 天</TableCell>
+                    <TableCell className="whitespace-nowrap text-sm">
+                      <span className="font-mono">{c.reward_days} 天</span>
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        {tierName(c.reward_tier)}
+                      </span>
+                    </TableCell>
                     <TableCell className="font-mono text-sm">
                       {c.used_count}
                       {c.max_uses > 0 ? ` / ${c.max_uses}` : ' / 不限'}
@@ -231,6 +250,26 @@ export function InvitePanel() {
                   onChange={(e) => setForm({ ...form, max_uses: Number(e.target.value) })}
                 />
               </div>
+            </div>
+            <div>
+              <Label htmlFor="iv-tier">奖励会员种类</Label>
+              <select
+                id="iv-tier"
+                className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
+                value={form.reward_tier}
+                onChange={(e) => setForm({ ...form, reward_tier: e.target.value })}
+              >
+                <option value="">跟随「邀请奖励的会员种类」设置</option>
+                {tierList.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                    {t.is_default ? '（默认档）' : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                好友用这个码注册后，你获得的奖励按这里选定的种类发放。
+              </p>
             </div>
             <div>
               <Label htmlFor="iv-exp">有效期至</Label>

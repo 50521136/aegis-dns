@@ -75,7 +75,9 @@ export function InviteCard() {
         <CardTitle className="flex items-center gap-2">
           <Gift className="size-5 text-primary" />
           邀请好友
-          <Badge variant="success">每人 +{d.reward_days} 天会员</Badge>
+          <Badge variant="success">
+            每人 +{d.reward_days} 天{d.reward_tier_name ? ` ${d.reward_tier_name}` : '会员'}
+          </Badge>
         </CardTitle>
         <CardDescription>
           把邀请链接发给好友，对方用它注册后，你立即获得 {d.reward_days} 天会员，可叠加。

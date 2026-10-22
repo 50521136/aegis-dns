@@ -20,17 +20,26 @@ func (s *Server) handleGetCheckin(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "")
 		return
 	}
+	// 会员状态顺带给出：总览页头部要显示「当前是什么种类、还剩多久」，
+	// 只为这个再打一次 /me/membership 不值当。
+	tiers, _ := s.store.TierMap(r.Context())
+	mem := model.MemberStateOf(u, tiers, time.Now())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":       set.CheckinEnabled,
-		"daily_days":    set.CheckinDays,
-		"streak_days":   set.CheckinBonusEvery,
-		"streak_bonus":  set.CheckinBonusDays,
-		"checked_today": st.CheckedToday,
-		"streak":        st.Streak,
-		"total_days":    st.TotalDays,
-		"granted_today": st.GrantedToday,
-		"member_until":  u.MemberUntil,
-		"member_days":   u.MemberRemainingDays(time.Now()),
+		"enabled":        set.CheckinEnabled,
+		"daily_days":     set.CheckinDays,
+		"daily_tier":     model.GrantableTierID(tiers, set.CheckinTier),
+		"streak_days":    set.CheckinBonusEvery,
+		"streak_bonus":   set.CheckinBonusDays,
+		"checked_today":  st.CheckedToday,
+		"streak":         st.Streak,
+		"total_days":     st.TotalDays,
+		"granted_today":  st.GrantedToday,
+		"member_until":   mem.Until,
+		"member_days":    mem.Days,
+		"member_forever": mem.Forever,
+		"is_member":      mem.IsMember,
+		"tier":           mem.Tier,
+		"tier_name":      mem.TierName,
 	})
 }
 
@@ -46,7 +55,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, CodeFeatureDisabled, "本站未开启签到", nil)
 		return
 	}
-	res, err := s.store.Checkin(r.Context(), u.ID, set.CheckinDays, set.CheckinBonusEvery, set.CheckinBonusDays)
+	res, err := s.store.Checkin(r.Context(), u.ID, set.CheckinDays, set.CheckinBonusEvery, set.CheckinBonusDays, set.CheckinTier)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return

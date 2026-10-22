@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Ban, CheckCircle2, Loader2, RotateCcw } from 'lucide-react'
 
 import { getAdminUser, setAdminUserQuota, updateUser } from '@/api/admin'
-import { setUserTier } from '@/api/tiers'
+import { revokeUserMember, setUserMember } from '@/api/member'
 import type { AdminUserDetail } from '@/api/types'
 import { formatDateTime } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
@@ -57,6 +57,14 @@ export function AdminUserDetailDialog({
     max_subs: '0',
     daily_queries: '0',
   })
+  // 会员草稿：种类 + 天数/永久。种类与有效期是一个概念的两个维度，
+  // 所以放在同一组控件里一次提交 —— 分成两个入口就会出现
+  // 「会员档」和「超级会员」并存的状态（这次要消灭的就是它）。
+  const [memberDraft, setMemberDraft] = useState({
+    tierId: '',
+    days: '30',
+    permanent: false,
+  })
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin-user', userId],
@@ -73,6 +81,13 @@ export function AdminUserDetailDialog({
       max_rules: String(data.custom.max_rules),
       max_subs: String(data.custom.max_subs),
       daily_queries: String(data.custom.daily_queries),
+    })
+    // 默认选中「此刻生效的种类」：界面上下拉框里永远是一个具体种类，
+    // 不再有「自动」这种要用户自己理解的选项。
+    setMemberDraft({
+      tierId: data.tier_id || data.tier,
+      days: '30',
+      permanent: data.member_forever,
     })
   }, [data])
 
@@ -91,15 +106,32 @@ export function AdminUserDetailDialog({
     onError: () => toast.error('保存失败'),
   })
 
-  // 档位：显式指定优先于「按会员状态自动判定」
-  const assignTier = useMutation({
-    mutationFn: (tierId: string) => setUserTier(userId as string, tierId),
-    onSuccess: () => {
-      toast.success('档位已更新')
+  // 发放 / 调整会员：种类与有效期一次提交
+  const applyMember = useMutation({
+    mutationFn: () =>
+      setUserMember(userId as string, Number(memberDraft.days) || 0, {
+        tier_id: memberDraft.tierId,
+        permanent: memberDraft.permanent,
+      }),
+    onSuccess: (r) => {
+      toast.success(
+        '会员已更新',
+        r.member_forever ? `永久 ${r.tier_name}` : `${r.tier_name} · 剩 ${r.member_days} 天`,
+      )
       qc.invalidateQueries({ queryKey: ['admin-user', userId] })
       qc.invalidateQueries({ queryKey: ['admin-users'] })
     },
-    onError: () => toast.error('设置档位失败'),
+    onError: () => toast.error('调整会员失败'),
+  })
+
+  const revokeMember = useMutation({
+    mutationFn: () => revokeUserMember(userId as string),
+    onSuccess: () => {
+      toast.success('会员已取消')
+      qc.invalidateQueries({ queryKey: ['admin-user', userId] })
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+    },
+    onError: () => toast.error('取消失败'),
   })
 
   const toggle = useMutation({
@@ -118,6 +150,11 @@ export function AdminUserDetailDialog({
   })
 
   const u: AdminUserDetail | undefined = data
+  // 档位下拉的选项：全部会员种类，按 sort 排序
+  const tierOptions = Object.values(u?.tiers ?? {}).sort((a, b) => a.sort - b.sort)
+  // 默认档显示名：非会员到期后回落到的那一档
+  const defaultTierName =
+    tierOptions.find((t) => t.is_default)?.name ?? tierOptions[0]?.name ?? '普通用户'
   const quotaChanged =
     !!u &&
     (Number(draft.max_rules) !== u.custom.max_rules ||
@@ -163,40 +200,100 @@ export function AdminUserDetailDialog({
               <Row label="注册时间">{formatDateTime(u.created_at) || '—'}</Row>
             </section>
 
-            {/* 会员状态 */}
+            {/* 会员：种类 + 有效期，一个概念一套控件 */}
             <section className="rounded-xl border border-border/50 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-medium">会员状态</span>
-                <Badge variant={u.is_member ? 'success' : 'default'}>
-                  {u.is_member ? `会员 · 剩 ${u.member_days} 天` : '普通用户'}
-                </Badge>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">会员</span>
+                {u.role === 'admin' ? (
+                  <Badge variant="warning">管理员 · 不受配额限制</Badge>
+                ) : u.is_member ? (
+                  <Badge variant="success">
+                    {u.tier_name} · {u.member_forever ? '永久' : `剩 ${u.member_days} 天`}
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary">{u.tier_name}</Badge>
+                )}
               </div>
-              <Row label="档位">{u.tier === 'vip' ? '会员档' : '普通档'}</Row>
-              <Row label="到期时间">{formatDateTime(u.member_until) || '—'}</Row>
+              <Row label="到期时间">
+                {u.member_forever ? '永久有效' : formatDateTime(u.member_until) || '—'}
+              </Row>
 
-              <div className="mt-2 space-y-1 border-t border-border/40 pt-2">
-                <Label htmlFor="tier-select" className="text-xs text-muted-foreground">
-                  会员种类（决定配额）
-                </Label>
-                <select
-                  id="tier-select"
-                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
-                  value={u.tier_id}
-                  disabled={assignTier.isPending}
-                  onChange={(e) => assignTier.mutate(e.target.value)}
-                >
-                  <option value="">自动（按会员状态：会员档 / 普通档）</option>
-                  {Object.values(u.tiers ?? {})
-                    .sort((a, b) => a.sort - b.sort)
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                        {t.is_default ? '（默认）' : ''}
-                      </option>
-                    ))}
-                </select>
+              <div className="mt-2 space-y-2 border-t border-border/40 pt-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="member-tier" className="text-xs text-muted-foreground">
+                      会员种类
+                    </Label>
+                    <select
+                      id="member-tier"
+                      className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
+                      value={memberDraft.tierId}
+                      disabled={applyMember.isPending}
+                      onChange={(e) =>
+                        setMemberDraft((d) => ({ ...d, tierId: e.target.value }))
+                      }
+                    >
+                      {tierOptions.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                          {t.is_default ? '（默认档）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="member-days" className="text-xs text-muted-foreground">
+                      发放天数（负数 = 扣减）
+                    </Label>
+                    <Input
+                      id="member-days"
+                      inputMode="numeric"
+                      disabled={memberDraft.permanent}
+                      value={memberDraft.days}
+                      onChange={(e) =>
+                        setMemberDraft((d) => ({
+                          ...d,
+                          days: e.target.value.replace(/[^\d-]/g, ''),
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 accent-[rgb(var(--primary))]"
+                    checked={memberDraft.permanent}
+                    onChange={(e) =>
+                      setMemberDraft((d) => ({ ...d, permanent: e.target.checked }))
+                    }
+                  />
+                  设为永久会员（忽略天数）
+                </label>
+
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={revokeMember.isPending || (!u.is_member && !u.tier_id)}
+                    onClick={() => revokeMember.mutate()}
+                  >
+                    取消会员
+                  </Button>
+                  <Button
+                    size="sm"
+                    loading={applyMember.isPending}
+                    disabled={memberDraft.permanent ? !memberDraft.tierId : !Number(memberDraft.days)}
+                    onClick={() => applyMember.mutate()}
+                  >
+                    发放 / 调整
+                  </Button>
+                </div>
+
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  选了具体档位后，这个用户的配额就按该档位算，与会员到期时间无关。
+                  会员种类只在有效期内生效，到期自动回到默认档「{defaultTierName}」。
+                  发放不会把用户从更高的种类降下来 —— 要降档请先「取消会员」再按新种类发放。
                 </p>
               </div>
             </section>

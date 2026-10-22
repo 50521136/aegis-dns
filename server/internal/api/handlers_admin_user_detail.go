@@ -28,8 +28,14 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	// 档位默认与生效配额都给：前端要能显示「会员档 200，你手填了 500」，
 	// 只给生效值的话管理员看不出这个数是他自己改过的。
 	tiers, _ := s.store.TierMap(r.Context())
-	def := model.QuotaFor(model.TierOf(u, now), mustSettings(s, r))
+	// 档位默认值按「用户此刻生效的种类」算，别按 free/vip 两档猜：
+	// 多档位之后 TierOf 只知道 free/vip，会把这个数算成另一档的。
+	def := model.QuotaFor(model.Tier(model.EffectiveTierID(u, tiers, now)), mustSettings(s, r))
+	if t, ok := tiers[model.EffectiveTierID(u, tiers, now)]; ok {
+		def = model.QuotaForTierDef(t)
+	}
 	eff := model.QuotaForUser(u, mustSettings(s, r), tiers, now)
+	mem := model.MemberStateOf(u, tiers, now)
 
 	usage := map[string]any{}
 	if ruleCount, err := s.store.CountRules(r.Context(), u.ID, false); err == nil {
@@ -59,9 +65,13 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"custom_id_used":   u.CustomIDUsed,
 		"created_at":       rfc3339OrEmpty(u.CreatedAt),
 		"member_until":     rfc3339OrEmpty(u.MemberUntil),
-		"is_member":        u.IsMember(now),
-		"member_days":      u.MemberRemainingDays(now),
-		"tier":             string(model.TierOf(u, now)),
+		"is_member":        mem.IsMember,
+		"member_days":      mem.Days,
+		"member_forever":   mem.Forever,
+		// tier 是此刻生效的会员种类 id，tier_name 是它的显示名。
+		// 界面只显示这两个，不再有「档位 / 会员种类」两套说法。
+		"tier":      mem.Tier,
+		"tier_name": mem.TierName,
 		"quota": map[string]any{
 			"max_rules":     eff.MaxRules,
 			"max_subs":      eff.MaxSubs,
@@ -78,7 +88,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 			"max_subs":      u.CustomMaxSubs,
 			"daily_queries": u.CustomDailyQueries,
 		},
-		"tier_id":      u.TierID,
+		"tier_id":      mem.AssignedTier,
 		"daily_report": u.DailyReport,
 		"tiers":        tiers,
 		"usage":        usage,

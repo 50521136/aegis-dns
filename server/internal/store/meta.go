@@ -178,6 +178,17 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.VipMaxSubs = intOr(kv["vip_max_subs"], set.VipMaxSubs)
 	set.VipDailyQueries = int64Or(kv["vip_daily_queries"], set.VipDailyQueries)
 	set.MemberRewardDays = intOr(kv["member_reward_days"], set.MemberRewardDays)
+	// 奖励发放的会员种类：注册赠送 / 签到 / 邀请各一个。
+	// 空串是合法值（= 默认会员档），所以不能只在非空时覆盖。
+	if v, ok := kv["signup_member_tier"]; ok {
+		set.SignupMemberTier = v
+	}
+	if v, ok := kv["checkin_tier"]; ok {
+		set.CheckinTier = v
+	}
+	if v, ok := kv["member_reward_tier"]; ok {
+		set.MemberRewardTier = v
+	}
 	// 日报的两个设置要单独读：intOr/boolOr 在键不存在时保留默认值，
 	// 而默认是「开 + 9 点」，所以老库升级上来不用迁移也不会失效。
 	// 键不存在时保留默认（开 + 9 点），老库升级上来不迁移也能用。
@@ -284,6 +295,9 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"vip_max_subs":         strconv.Itoa(set.VipMaxSubs),
 		"vip_daily_queries":    strconv.FormatInt(set.VipDailyQueries, 10),
 		"member_reward_days":   strconv.Itoa(set.MemberRewardDays),
+		"signup_member_tier":   set.SignupMemberTier,
+		"checkin_tier":         set.CheckinTier,
+		"member_reward_tier":   set.MemberRewardTier,
 		"daily_report_enabled": boolStr(set.DailyReportEnabled),
 		"daily_report_hour":    strconv.Itoa(set.DailyReportHour),
 		"signup_member_days":   strconv.Itoa(set.SignupMemberDays),

@@ -72,8 +72,9 @@ type User struct {
 	CustomMaxRules     int `json:"custom_max_rules"`
 	CustomMaxSubs      int `json:"custom_max_subs"`
 	CustomDailyQueries int `json:"custom_daily_queries"`
-	// TierID 是管理员直接指定的会员种类（tiers.id）。
-	// 空串表示按 member_until 自动判定 free/vip，兼容老的会员逻辑。
+	// TierID 是这个用户的会员种类（tiers.id），**只在会员期内生效**。
+	// 空串 = 会员期内走默认会员档（内置 vip）；到期后无论这里是什么，
+	// 都会回落到默认档 —— 判定入口只有 model.EffectiveTierID 一处。
 	TierID string `json:"tier_id"`
 	// DailyReport 是用户是否订阅每日邮件日报，默认关闭。
 	DailyReport bool `json:"daily_report"`
@@ -328,6 +329,18 @@ type GlobalSettings struct {
 
 	// MemberRewardDays 是邀请码的默认奖励天数（新建码时的预填值）。
 	MemberRewardDays int `json:"member_reward_days"`
+
+	// --- 奖励发放的会员种类 ---
+	//
+	// 注册赠送 / 每日签到 / 邀请奖励这三处都发「一段会员期」，而会员期总要
+	// 落在某个会员种类上。之前只能配天数、种类一律走内置 vip，管理员加了
+	// 「超级会员」也没法拿它做奖励。
+	//
+	// 空串 = 默认会员档（内置 vip，没有 vip 时取等级最高的非默认档）。
+	// 用户已经处在更高档位时不会被低档奖励覆盖 —— 见 model.GrantableTierID。
+	SignupMemberTier string `json:"signup_member_tier"`
+	CheckinTier      string `json:"checkin_tier"`
+	MemberRewardTier string `json:"member_reward_tier"`
 	// DailyReportEnabled 是每日邮件日报的总开关。
 	// 用户自己还要在账号页单独打开（users.daily_report），两级都开才发。
 	DailyReportEnabled bool `json:"daily_report_enabled"`
@@ -550,12 +563,15 @@ type QueryLogRow struct {
 // InviteCode 是一个邀请码。
 //
 // 码本身是分发出去的凭据，创建后不可修改（改了等于把已发出去的码作废）；
-// 可改的只有备注、奖励天数、次数上限、有效期与开关。
+// 可改的只有备注、奖励天数、奖励会员种类、次数上限、有效期与开关。
 type InviteCode struct {
 	Code       string `json:"code"`
 	OwnerID    string `json:"owner_id"`
 	Note       string `json:"note"`
 	RewardDays int    `json:"reward_days"`
+	// RewardTier 是核销后发给邀请人的会员种类。空串 = 用全局的
+	// 「邀请奖励会员种类」（member_reward_tier），再空则走默认会员档。
+	RewardTier string `json:"reward_tier"`
 	MaxUses    int    `json:"max_uses"` // 0 = 不限
 	UsedCount  int    `json:"used_count"`
 	ExpiresAt  int64  `json:"expires_at"` // 0 = 永不过期

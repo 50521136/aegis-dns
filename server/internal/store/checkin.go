@@ -85,12 +85,17 @@ type CheckinResult struct {
 //
 // 原来按「连续签到」算奖励，断一天就归零，对偶尔漏签的用户惩罚过重；
 // 改成累计口径后，签满 7 天就一定有奖励，只是不再要求连续。
-func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, bonusEvery, bonusDays int) (*CheckinResult, error) {
+// tierID 是签到发放的会员种类（全局设置 checkin_tier）；空串 = 默认会员档。
+func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, bonusEvery, bonusDays int, tierID string) (*CheckinResult, error) {
 	now := time.Now()
 	today := bjtime.Today()
 	res := &CheckinResult{}
+	tiers, err := s.TierMap(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
 		// 锁内再查一次当天记录：并发连点两次不能都成功。
 		var exists int
 		if err := tx.QueryRowContext(ctx,
@@ -133,17 +138,10 @@ func (s *Store) Checkin(ctx context.Context, uid string, dailyDays, bonusEvery, 
 			return err
 		}
 		if granted > 0 {
-			var cur int64
-			if err := tx.QueryRowContext(ctx, `SELECT member_until FROM users WHERE id = ?`, uid).Scan(&cur); err != nil {
-				return err
-			}
-			base := now.Unix()
-			if cur > base {
-				base = cur
-			}
-			next := base + int64(granted)*86400
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE users SET member_until = ? WHERE id = ?`, next, uid); err != nil {
+			// 天数和会员种类一起发：只加天数的话，管理员配了
+			// 「签到送超级会员」也不会生效，签到永远落在内置 vip 档上。
+			next, err := grantMember(ctx, tx, uid, tierID, granted, tiers)
+			if err != nil {
 				return err
 			}
 			res.MemberUntil = next

@@ -100,7 +100,11 @@ func (s *Server) handleDeleteTier(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleSetUserTier 给用户指定档位。tier_id 传空串 = 按会员状态自动判定。
+// handleSetUserTier 设置用户的会员种类（tier_id 传空串 = 会员期内走默认会员档）。
+//
+// 注意它**只改种类、不动有效期**：种类只在会员期内生效，用户不是会员时
+// 设了也看不出效果。要让改动立刻可见，请用 POST /admin/users/{id}/member
+// 同时给天数 —— 面板上的「调整会员」走的就是那条。
 func (s *Server) handleSetUserTier(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {

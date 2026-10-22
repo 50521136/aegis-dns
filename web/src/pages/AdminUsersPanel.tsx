@@ -57,6 +57,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { revokeUserMember, setUserMember } from '@/api/member'
+import { listTiers } from '@/api/tiers'
 
 /**
  * 用户管理面板。
@@ -86,6 +87,10 @@ export function UsersPanel() {
   // 详情弹窗：会员状态、开关、使用量、配额覆盖都在这里改
   const [detailUser, setDetailUser] = useState<string | null>(null)
   const [memberDays, setMemberDays] = useState(30)
+  // 会员种类与「永久」和天数一起提交：种类和有效期是同一个概念的两个维度，
+  // 分成两个入口就会出现「会员档」和「超级会员」并存（这次统一掉的正是它）。
+  const [memberTier, setMemberTier] = useState('')
+  const [memberPermanent, setMemberPermanent] = useState(false)
   const [cidValue, setCidValue] = useState('')
 
   const usersQuery = useQuery({
@@ -101,6 +106,15 @@ export function UsersPanel() {
     return m
   }, [usageQuery.data])
   const limits = usageQuery.data?.limits
+
+  // 档位表：列表里的 badge 和调整弹窗都要用它把 tier id 翻成显示名
+  const tiersQuery = useQuery({ queryKey: ['tiers'], queryFn: listTiers })
+  const tierList = useMemo(
+    () => [...(tiersQuery.data ?? [])].sort((a, b) => a.sort - b.sort),
+    [tiersQuery.data],
+  )
+  const tierNameOf = (u: User) =>
+    tierList.find((t) => t.id === (u.tier_id || u.tier))?.name ?? u.tier ?? '—'
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['admin', 'users'] })
@@ -207,13 +221,14 @@ export function UsersPanel() {
   })
 
   const memberMut = useMutation({
-    mutationFn: ({ id, days }: { id: string; days: number }) => setUserMember(id, days),
+    mutationFn: ({ id }: { id: string }) =>
+      setUserMember(id, memberDays, { tier_id: memberTier, permanent: memberPermanent }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['admin', 'users'] })
       setMemberUser(null)
       toast.success(
-        r.tier === 'vip' ? '会员已生效' : '会员已取消',
-        r.tier === 'vip' ? `剩余 ${r.member_days} 天` : '已降为普通用户',
+        '会员已更新',
+        r.member_forever ? `永久 ${r.tier_name}` : `${r.tier_name} · 剩 ${r.member_days} 天`,
       )
     },
     onError: (err) => toast.error('调整失败', errorMessage(err)),
@@ -354,10 +369,17 @@ export function UsersPanel() {
                           <div className="flex items-center gap-1.5">
                             {u.username}
                             {isSelf && <Badge variant="secondary">自己</Badge>}
-                            {/* 档位由后端按到期时间算好，前端不自己判断 */}
-                            {u.role !== 'admin' && u.tier === 'vip' && (
-                              <Badge variant="success" title={`剩余 ${u.member_days} 天`}>
-                                会员 {u.member_days}天
+                            {/* 会员种类由后端算好（tier + tier_id），前端不自己判断。
+                                badge 直接写种类名，不再写「会员」两个字：
+                                多档位之后「会员」既可能是会员也可能是超级会员。 */}
+                            {u.role !== 'admin' && (u.member_days || u.member_forever) && (
+                              <Badge
+                                variant="success"
+                                title={
+                                  u.member_forever ? '永久会员' : `剩余 ${u.member_days} 天`
+                                }
+                              >
+                                {tierNameOf(u)} {u.member_forever ? '永久' : `${u.member_days}天`}
                               </Badge>
                             )}
                           </div>
@@ -493,9 +515,11 @@ export function UsersPanel() {
                               onClick={() => {
                                 setMemberUser(u)
                                 setMemberDays(30)
+                                setMemberTier(u.tier_id || u.tier || '')
+                                setMemberPermanent(Boolean(u.member_forever))
                               }}
                               aria-label="调整会员"
-                              title="调整会员天数"
+                              title="调整会员"
                             >
                               <Gift />
                             </Button>
@@ -683,28 +707,62 @@ export function UsersPanel() {
           <DialogHeader>
             <DialogTitle>调整会员</DialogTitle>
             <DialogDescription>
-              {memberUser?.tier === 'vip'
-                ? `「${memberUser.username}」当前是会员，剩余 ${memberUser.member_days} 天。`
-                : `「${memberUser?.username}」当前是普通用户。`}
+              {memberUser && (memberUser.member_days || memberUser.member_forever)
+                ? `「${memberUser.username}」当前是 ${tierNameOf(memberUser)}，${
+                    memberUser.member_forever ? '永久有效' : `剩余 ${memberUser.member_days} 天`
+                  }。`
+                : `「${memberUser?.username ?? ''}」当前未开通会员。`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
+            <div>
+              <Label htmlFor="member-tier">会员种类</Label>
+              <select
+                id="member-tier"
+                className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
+                value={memberTier}
+                onChange={(e) => setMemberTier(e.target.value)}
+              >
+                {tierList.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                    {t.is_default ? '（默认档）' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div>
               <Label htmlFor="member-days">增减天数</Label>
               <Input
                 id="member-days"
                 type="number"
                 value={memberDays}
+                disabled={memberPermanent}
                 onChange={(e) => setMemberDays(Number(e.target.value))}
               />
               <p className="mt-1 text-xs text-muted-foreground">
                 正数延长，负数扣减（扣到过去即立即到期）。从「现在与原到期时间中较晚者」起算，
-                连续调整不会冲掉剩余时间。
+                连续调整不会冲掉剩余时间。发放不会把用户从更高的种类降下来。
               </p>
             </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-[rgb(var(--primary))]"
+                checked={memberPermanent}
+                onChange={(e) => setMemberPermanent(e.target.checked)}
+              />
+              设为永久会员（忽略天数）
+            </label>
             <div className="flex flex-wrap gap-2">
               {[7, 30, 90, 365].map((d) => (
-                <Button key={d} size="sm" variant="secondary" onClick={() => setMemberDays(d)}>
+                <Button
+                  key={d}
+                  size="sm"
+                  variant="secondary"
+                  disabled={memberPermanent}
+                  onClick={() => setMemberDays(d)}
+                >
                   +{d} 天
                 </Button>
               ))}
@@ -721,10 +779,8 @@ export function UsersPanel() {
             </Button>
             <Button
               loading={memberMut.isPending}
-              disabled={!memberDays}
-              onClick={() =>
-                memberUser && memberMut.mutate({ id: memberUser.id, days: memberDays })
-              }
+              disabled={memberPermanent ? !memberTier : !memberDays}
+              onClick={() => memberUser && memberMut.mutate({ id: memberUser.id })}
             >
               <Check />
               应用
