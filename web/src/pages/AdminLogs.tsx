@@ -220,7 +220,7 @@ export default function AdminLogs() {
                         {formatDateTimeSec(row.ts)}
                       </TableCell>
                       <TableCell>
-                        <span className="text-sm">{row.username || '已删除用户'}</span>
+                        <span className="text-sm">{ownerLabel(row)}</span>
                       </TableCell>
                       <TableCell>
                         <span className="font-mono text-[13px]">{row.domain}</span>
@@ -281,7 +281,7 @@ export default function AdminLogs() {
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1">
                       <ShieldAlert className="size-3" />
-                      {row.username || '已删除用户'}
+                      {ownerLabel(row)}
                     </span>
                     <span>{formatDateTimeSec(row.ts)}</span>
                     <Badge variant="secondary">{row.qtype || '—'}</Badge>
@@ -306,4 +306,18 @@ export default function AdminLogs() {
       <QueryLogDetail row={selected} onClose={() => setSelected(null)} />
     </div>
   )
+}
+
+/**
+ * 日志归属显示。
+ *
+ * 三种情况必须分开：
+ *   - 没有 user_id：这条查询没被识别到任何租户（来源 IP 未登记、也没带 client_id），
+ *     显示「未识别」。之前一律显示「已删除用户」，等于把人往「数据丢了」上带。
+ *   - 有 user_id 但查不到用户名：用户确实被删了。
+ *   - 正常：显示用户名。
+ */
+function ownerLabel(row: { user_id?: string; username?: string }): string {
+  if (!row.user_id) return '未识别'
+  return row.username || '已删除用户'
 }

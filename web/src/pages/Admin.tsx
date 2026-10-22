@@ -844,7 +844,7 @@ function SystemPanel() {
  * 拆开的理由：设置项已经从十几个涨到四十多个，全塞在一个页面里
  * 「改个缓存 TTL 要滚过整屏配额和 SMTP」，而且没有地址能直接发给别人。
  */
-function AdminPage({
+export function AdminPage({
   title,
   description,
   icon,

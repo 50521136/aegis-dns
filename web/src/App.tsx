@@ -31,6 +31,7 @@ import {
   AdminSystemPage,
 } from '@/pages/Admin'
 import AdminLogs from '@/pages/AdminLogs'
+import { AdminRulesPage, AdminSubsPage } from '@/pages/AdminAssetsPages'
 import AdminFeedback from '@/pages/AdminFeedback'
 import AdminTls from '@/pages/AdminTls'
 import Feedback from '@/pages/Feedback'
@@ -137,8 +138,8 @@ export default function App() {
                       <Route path="/admin/email" element={<AdminEmailPage />} />
                       <Route path="/admin/system" element={<AdminSystemPage />} />
                       {/* 全局层与个人层共用同一份页面组件，只换 scope */}
-                      <Route path="/admin/rules" element={<Rules scope="global" />} />
-                      <Route path="/admin/subscriptions" element={<Subscriptions scope="global" />} />
+                      <Route path="/admin/rules" element={<AdminRulesPage />} />
+                      <Route path="/admin/subscriptions" element={<AdminSubsPage />} />
                       <Route path="/admin/tls" element={<AdminTls />} />
                       <Route path="/admin/feedback" element={<AdminFeedback />} />
                       <Route path="/admin/logs" element={<AdminLogs />} />

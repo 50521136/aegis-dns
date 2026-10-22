@@ -1400,6 +1400,36 @@ else
   echo "  （该域名在 e2e 里可能被拦截，跳过记录断言）"
 fi
 
+hdr "管理员跨租户查看用户规则与订阅"
+# 管理员的 /admin/rules 一直是全局层，用户自己加的规则在后台完全不可见。
+# 这条断言守住「必须能看到」，否则后台又变成只能看全局。
+curl -fsS -X POST "$API/rules" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"block","pattern":"admin-visible.example","value":"","qtypes":[],"enabled":true}' >/dev/null
+
+UR=$(curl -fsS "$API/admin/user-rules?page=1&page_size=50" -H "Authorization: Bearer $ADMTOK")
+echo "$UR" | grep -q 'admin-visible.example' && ok "管理员能看到用户规则" || bad "管理员看不到用户规则"
+# 必须带归属：否则管理员看到一堆规则却不知道是谁的
+echo "$UR" | grep -q '"username":"' && ok "用户规则带用户名归属" || bad "用户规则缺用户名"
+echo "$UR" | grep -q '"created_at":"20' && ok "用户规则带创建时间" || bad "用户规则缺创建时间"
+
+# 按用户名搜索也要能命中（排障时最常见的就是「搜某个人」）
+UQ=$(curl -fsS "$API/admin/user-rules?user_id=&q=e2etest" -H "Authorization: Bearer $ADMTOK")
+echo "$UQ" | grep -q 'admin-visible.example' && ok "用户规则支持按用户名搜索" || bad "按用户名搜索无结果"
+
+# 全局规则不能走这条删除路径（两条路由各管各的，避免手误清掉全局拦截）
+GB=$(curl -fsS -X POST "$API/admin/rules" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"block","pattern":"global-guard.example","value":"","qtypes":[],"enabled":true}')
+GID=$(echo "$GB" | grep -o '"id":"rul_[^"]*"' | head -1 | cut -d'"' -f4)
+GC=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/user-rules/$GID" \
+  -H "Authorization: Bearer $ADMTOK")
+[[ "$GC" == "422" ]] && ok "全局规则不能用用户规则接口删除（422）" || bad "全局规则被误删路径放行（$GC）"
+
+# 用户订阅同样要能看到
+US=$(curl -fsS "$API/admin/user-subs?page=1&page_size=50" -H "Authorization: Bearer $ADMTOK")
+echo "$US" | grep -q '"items"' && ok "管理员能看到用户订阅" || bad "管理员看不到用户订阅"
+
 hdr "优雅关闭"
 kill -TERM "$DNSD_PID" "$APID_PID" 2>/dev/null
 wait "$DNSD_PID" 2>/dev/null

@@ -520,3 +520,32 @@ export interface TierDef {
   daily_queries: number
   is_default: boolean
 }
+
+/** 管理员视角：用户自己加的规则（带归属） */
+export interface AdminOwnedRule {
+  id: string
+  user_id: string
+  username: string
+  kind: string
+  pattern: string
+  value: string
+  qtypes: string[]
+  enabled: boolean
+  created_at?: string
+}
+
+/** 管理员视角：用户自己加的订阅（带归属） */
+export interface AdminOwnedSub {
+  id: string
+  user_id: string
+  username: string
+  name: string
+  url: string
+  list_type: string
+  format: string
+  enabled: boolean
+  last_count: number
+  last_status: string
+  fail_count: number
+  entry_count: number
+}

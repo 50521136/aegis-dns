@@ -290,3 +290,20 @@ func (s *Store) CountRules(ctx context.Context, uid string, global bool) (int, e
 		`SELECT COUNT(*) FROM rules WHERE user_id = ? AND is_global = ?`, uid, boolInt(global)).Scan(&n)
 	return n, err
 }
+
+// GetRuleByID 按 id 取规则，不限定 user_id —— 只给管理员跨租户操作用。
+//
+// 普通路径一定要带 uid：`/rules/{id}` 如果不校验归属，任何用户都能删别人的
+// 规则。管理员这里必须能跨租户定位，所以单独开一个不带 uid 的方法，
+// 由调用方（admin 路由）保证权限。
+func (s *Store) GetRuleByID(ctx context.Context, rid string) (*model.Rule, error) {
+	row := s.read.QueryRowContext(ctx, `SELECT `+ruleCols+` FROM rules WHERE id = ?`, rid)
+	r, err := scanRule(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return r, nil
+}

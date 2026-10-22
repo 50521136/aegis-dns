@@ -250,6 +250,12 @@ func (s *Server) Handler() http.Handler {
 				r.Patch("/announcements/{id}", s.handleUpdateAnnouncement)
 				r.Delete("/announcements/{id}", s.handleDeleteAnnouncement)
 				r.Get("/users/usage", s.handleAdminUsersQuota)
+				// 跨租户只读视图：用户自己加的规则与订阅。
+				// /admin/rules 与 /admin/subscriptions 一直只覆盖全局层，
+				// 用户侧的东西在后台完全看不到，出了事只能让用户自己截图。
+				r.Get("/user-rules", s.handleAdminUserRules)
+				r.Delete("/user-rules/{id}", s.handleAdminDeleteUserRule)
+				r.Get("/user-subs", s.handleAdminUserSubs)
 				r.Post("/maintenance/cleanup", s.handleAdminCleanup)
 				r.Get("/settings", s.handleAdminGetSettings)
 				r.Put("/settings", s.handleAdminUpdateSettings)
