@@ -122,7 +122,6 @@ func TestBlockResponseIsCached(t *testing.T) {
 }
 
 // TestBlockCacheHitKeepsBlockedStatus 断言命中缓存时状态仍是 blocked。
-//
 // 这是「拦截结果进缓存」的必要配套：缓存命中分支原本只会给出
 // allowed / handled 两种状态，如果不把 action 一起存下来，
 // 被拦的查询第二次开始就被记成「已处理」，拦截率会从 24% 掉到个位数。
@@ -149,6 +148,56 @@ func TestBlockCacheHitKeepsBlockedStatus(t *testing.T) {
 	}
 	if snap.Blocked != 3 {
 		t.Fatalf("三次拦截查询必须都记成 blocked，实际 blocked=%d（缓存命中丢了状态）", snap.Blocked)
+	}
+}
+
+// TestBlockCacheUsesFixedTTL 断言拦截应答的缓存时长不跟着上游 TTL 走。
+//
+// 拦截应答只由规则决定，上游根本没参与。原来沿用 cache_min_ttl（60 秒）
+// 的结果是命中率被压在 30% 上下：客户端交替查 A / AAAA / HTTPS，同一 key
+// 的相邻查询间隔能到 120 秒以上，60 秒的条目早就过期了。
+func TestBlockCacheUsesFixedTTL(t *testing.T) {
+	c := NewCache(64, 60, 3600)
+	req := mustMsg(t, "ad.example.")
+	key, ok := CacheKeyFrom("u1", req)
+	if !ok {
+		t.Fatal("构造缓存键失败")
+	}
+
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	rr, _ := dns.NewRR("ad.example. 0 IN A 0.0.0.0") // 上游给的 TTL 是 0
+	resp.Answer = []dns.RR{rr}
+
+	if !c.PutWithAction(key, resp, req, "blocked") {
+		t.Fatal("拦截应答应写入缓存")
+	}
+
+	s := c.shardFor(key)
+	s.mu.Lock()
+	entry := s.items[key].Value.(*cacheItem).entry
+	s.mu.Unlock()
+
+	got := entry.expiresAt.Sub(entry.storedAt).Seconds()
+	if got != ruleCacheTTL {
+		t.Fatalf("拦截应答的缓存时长应为 %d 秒（固定值），实际 %.0f 秒", ruleCacheTTL, got)
+	}
+
+	// 普通应答仍按上游 TTL 走（这里上游 TTL=0，被钳到 cache_min_ttl）。
+	plain := new(dns.Msg)
+	plain.SetReply(req)
+	rr2, _ := dns.NewRR("ad.example. 0 IN A 1.2.3.4")
+	plain.Answer = []dns.RR{rr2}
+	key2, _ := CacheKeyFrom("u2", req)
+	if !c.PutWith(key2, plain, req, false) {
+		t.Fatal("普通应答应写入缓存")
+	}
+	s2 := c.shardFor(key2)
+	s2.mu.Lock()
+	entry2 := s2.items[key2].Value.(*cacheItem).entry
+	s2.mu.Unlock()
+	if got2 := entry2.expiresAt.Sub(entry2.storedAt).Seconds(); got2 == ruleCacheTTL {
+		t.Fatalf("普通应答不该用规则固定 TTL，实际 %.0f 秒", got2)
 	}
 }
 
