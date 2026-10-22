@@ -33,6 +33,13 @@ type CacheEntry struct {
 	// 已经走不到规则匹配了，不记下来就永远只能显示「已处理（缓存）」，
 	// 明明是因为放行规则才通的域名，看起来跟普通解析一样。
 	allowRule bool
+	// action 记录这条应答当初是哪个分支产生的，供缓存命中时还原状态。
+	//
+	// 取值："" 正常解析（含放行规则外的默认路径）、"blocked" 被规则拦截、
+	// "handled" 被规则改写。存它的原因和 allowRule 一样 —— 拦截结果也进
+	// 缓存之后，命中时如果不还原状态，拦截的查询会被记成「已处理」，
+	// 拦截率会凭空掉下去，统计直接失真。
+	action string
 }
 
 // cacheItem 是 LRU 链表节点载荷。
@@ -116,18 +123,21 @@ func (c *Cache) shardFor(k CacheKey) *cacheShard {
 // 是因为缓存层拿不到本次请求；把契约写在文档注释里并配了回归测试。
 // Get 返回缓存应答与是否命中。
 func (c *Cache) Get(k CacheKey, req *dns.Msg) (*dns.Msg, bool) {
-	msg, hit, _ := c.GetWithAllow(k, req)
+	msg, hit, _, _ := c.GetWithAllow(k, req)
 	return msg, hit
 }
 
-// GetWithAllow 额外返回「这条应答是否来自命中放行规则」。
+// GetWithAllow 额外返回「这条应答是否来自命中放行规则」和它当初的状态。
 //
 // 放行规则命中的应答也会缓存，命中缓存时已经走不到规则匹配了；
 // 不把标记带出来，查询日志里就只能显示「已处理（缓存）」，
 // 明明是靠放行规则才通的域名，看起来和普通解析一样。
-func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool) {
+//
+// action 同理：拦截/改写结果进缓存之后，命中时必须还原成 blocked / handled，
+// 否则拦截率会凭空掉一截。
+func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, string) {
 	if c == nil {
-		return nil, false, false
+		return nil, false, false, ""
 	}
 	now := time.Now()
 	s := c.shardFor(k)
@@ -136,7 +146,7 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool) {
 	el, ok := s.items[k]
 	if !ok {
 		s.mu.Unlock()
-		return nil, false, false
+		return nil, false, false, ""
 	}
 	item := el.Value.(*cacheItem)
 	entry := item.entry
@@ -145,7 +155,7 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool) {
 		s.lru.Remove(el)
 		delete(s.items, k)
 		s.mu.Unlock()
-		return nil, false, false
+		return nil, false, false, ""
 	}
 	s.lru.MoveToFront(el)
 	msg := entry.msg.Copy()
@@ -171,7 +181,7 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool) {
 	for _, rr := range msg.Extra {
 		decTTL(rr, elapsed)
 	}
-	return msg, true, entry.allowRule
+	return msg, true, entry.allowRule, entry.action
 }
 
 // alignOPT 把应答里的 OPT 调整成与本次请求一致。
@@ -223,11 +233,26 @@ func (c *Cache) Put(k CacheKey, msg *dns.Msg, req *dns.Msg) bool {
 
 // PutWith 缓存一条应答，并记下它是否来自「命中放行规则」。
 func (c *Cache) PutWith(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool) bool {
+	return c.put(k, msg, req, allowRule, "")
+}
+
+// PutWithAction 缓存一条由规则直接产生的应答（拦截 / 改写），并记下状态。
+//
+// action 会被存进缓存条目，命中时还原成查询日志里的状态 —— 否则被拦的
+// 查询走缓存后会被记成「已处理」，拦截率凭空掉一截。
+func (c *Cache) PutWithAction(k CacheKey, msg *dns.Msg, req *dns.Msg, action string) bool {
+	return c.put(k, msg, req, false, action)
+}
+
+func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, action string) bool {
 	if c == nil || msg == nil {
 		return false
 	}
 	if msg.Rcode != dns.RcodeSuccess && msg.Rcode != dns.RcodeNameError {
 		// 只缓存正常应答与 NXDOMAIN；SERVFAIL/REFUSED 缓存下来会放大故障。
+		//
+		// 这条规则顺带决定了「refused 拦截模式」的应答不会被缓存 ——
+		// 那种模式下拦截结果每条都要重新判定，属于可接受的保守取舍。
 		return false
 	}
 	if hasECS(req) {
@@ -244,6 +269,8 @@ func (c *Cache) PutWith(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool) 
 		msg:       msg.Copy(),
 		storedAt:  now,
 		expiresAt: now.Add(time.Duration(ttl) * time.Second),
+		allowRule: allowRule,
+		action:    action,
 	}
 
 	s := c.shardFor(k)

@@ -317,7 +317,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// Stage 3 缓存查询。
 	cache := h.cache.Load()
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-		if msg, hit, allowRule := cache.GetWithAllow(key, req); hit {
+		if msg, hit, allowRule, cachedAction := cache.GetWithAllow(key, req); hit {
 			// 必须把报文 ID 改回本次请求的 ID。
 			//
 			// 缓存里存的是首次应答的副本，它带着「当时那个请求」的随机 ID。
@@ -326,11 +326,15 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			// 这个 bug 只在第二次查同一域名时才出现，所以极易漏测。
 			msg.Id = req.Id
 			det.Answer = h.detail(msg)
-			// 缓存命中不是一种状态：状态看这条应答当初是不是放行规则给的，
-			// 「缓存」由 det.CacheHit 这个标记表达（列表显示成「已处理（缓存）」）。
+			// 缓存命中不是一种状态：状态看这条应答当初是怎么产生的，
+			// 「缓存」由 det.CacheHit 这个标记表达（列表显示成「已拦截（缓存）」）。
 			det.CacheHit = true
 			status := actionHandled
-			if allowRule {
+			switch {
+			case cachedAction != "":
+				// 拦截/改写的应答：还原当初的状态，否则拦截率会失真。
+				status = cachedAction
+			case allowRule:
 				status = actionAllowed
 			}
 			h.record(user.UserID, q, status, dns.RcodeToString[msg.Rcode], time.Since(start), w, det)
@@ -352,12 +356,29 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			allowRule = true
 		case rules.ActionBlock:
 			resp := buildBlockResponse(req, d.BlockingMode, d.CustomIP)
+			// 拦截结果必须进缓存。
+			//
+			// 被拦的域名恰恰是重复率最高的那一类（遥测/广告端点每秒都在
+			// 重试）：线上实测 aeventlog.beacon.qq.com 一天 3277 次、全部
+			// 被拦，平均 26 秒一次。不缓存的话每一条都要重跑「识别用户 +
+			// 几十万条后缀规则匹配 + 构造拦截响应」，而这些结果只取决于
+			// 规则本身，与时间无关。
+			//
+			// 规则变更时缓存会被定向失效（FlushUsers），所以不会出现
+			// 「规则删了但还被拦」的残留。
+			if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
+				cache.PutWithAction(key, resp, req, "blocked")
+			}
 			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, "blocked", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 			writeMsg(w, req, resp)
 			return
 		case rules.ActionRewrite:
 			resp := rewriteResponse(req, decision.Rewrite)
+			// 改写结果同理：只由规则决定，可以缓存。
+			if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
+				cache.PutWithAction(key, resp, req, actionHandled)
+			}
 			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, actionHandled, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 			writeMsg(w, req, resp)

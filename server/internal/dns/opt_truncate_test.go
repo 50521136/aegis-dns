@@ -38,7 +38,7 @@ func TestCacheHitAlignsOPTToCurrentRequest(t *testing.T) {
 	reqB := new(dns.Msg)
 	reqB.SetQuestion("opt.example.com.", dns.TypeA)
 
-	got, hit, _ := c.GetWithAllow(key, reqB)
+	got, hit, _, _ := c.GetWithAllow(key, reqB)
 	if !hit {
 		t.Fatal("应当命中")
 	}
@@ -54,7 +54,7 @@ func TestCacheHitAlignsOPTToCurrentRequest(t *testing.T) {
 	reqC.SetQuestion("opt.example.com.", dns.TypeA)
 	reqC.SetEdns0(1232, false)
 
-	got2, hit2, _ := c.GetWithAllow(key, reqC)
+	got2, hit2, _, _ := c.GetWithAllow(key, reqC)
 	if !hit2 {
 		t.Fatal("第二次也应命中")
 	}
