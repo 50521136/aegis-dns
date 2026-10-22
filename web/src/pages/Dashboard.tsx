@@ -373,8 +373,12 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                   <span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={d.domain}>
                     {d.domain}
                   </span>
+                  {/* 这张卡按「拦截次数」排序（type=blocked），数字也必须显示
+                      拦截次数。之前显示的是 hits（总查询量），于是会出现
+                      「单个域名的拦截数比全站总拦截量还大」的假象 ——
+                      用户一眼就看出数字不对。 */}
                   <Badge variant="danger" className="tabular-nums">
-                    {formatCompact(d.hits)}
+                    {formatCompact(d.blocked ?? 0)}
                   </Badge>
                 </motion.div>
               ))
@@ -525,8 +529,12 @@ function UserGreeting({
     staleTime: 60_000,
   })
 
-  const isMember = (checkin.data?.member_days ?? 0) > 0
+  // 用后端算好的 is_member，不要拿 member_days > 0 判断：
+  // 永久会员的剩余天数是 0（用 member_forever 表示），那样会被显示成普通用户。
+  const isMember = checkin.data?.is_member ?? false
+  const forever = checkin.data?.member_forever ?? false
   const days = checkin.data?.member_days ?? 0
+  const tierName = checkin.data?.tier_name ?? '会员'
   const checkedToday = checkin.data?.checked_today ?? false
   const checkinOn = checkin.data?.enabled ?? false
 
@@ -551,8 +559,10 @@ function UserGreeting({
             {isMember ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-xs text-warning">
                 <Crown className="size-3" />
-                会员<span className="hidden sm:inline"> · </span>
-                <span className="sm:hidden"> </span>剩 {days} 天
+                {tierName}
+                <span className="hidden sm:inline"> · </span>
+                <span className="sm:hidden"> </span>
+                {forever ? '永久' : `剩 ${days} 天`}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs">
