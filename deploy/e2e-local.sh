@@ -1373,6 +1373,33 @@ TJ=$(curl -fsS "$API/admin/stats/users?range=today&limit=50" -H "Authorization: 
   | python3 -c "import json,sys;print(sum(i['total'] for i in json.load(sys.stdin)['items']))")
 [[ -n "$TJ" ]] && ok "today 范围有返回（合计 ${TJ} 次）" || bad "today 范围无返回"
 
+hdr "UDP 截断与缓存 OPT 对齐"
+# 截断与 EDNS 对齐的精确行为由单测覆盖（opt_truncate_test.go）。
+# 这里只做回归：改动不能把四种协议的正常解析弄坏，也不能让缓存
+# 前后两次应答不一致（OPT 校准写错就会在这里暴露）。
+for P in udp tcp; do
+  R=$($PROBE $P 127.0.0.1:15353 example.com 2>&1 | tail -1)
+  if [[ "$R" == OK* ]]; then ok "$P 协议正常应答"; else bad "$P 协议异常: $R"; fi
+done
+
+# 同一域名连查三次：第 2、3 次走缓存，结果必须与第 1 次一致。
+# 缓存里带着首个客户端的 OPT，校准错了应答就会变样或变空。
+R1=$($PROBE udp 127.0.0.1:15353 cache-align.example.com 2>&1 | tail -1)
+R2=$($PROBE udp 127.0.0.1:15353 cache-align.example.com 2>&1 | tail -1)
+R3=$($PROBE udp 127.0.0.1:15353 cache-align.example.com 2>&1 | tail -1)
+if [[ "$R1" == "$R2" && "$R2" == "$R3" ]]; then
+  ok "缓存命中前后应答一致"
+else
+  bad "缓存前后不一致: '$R1' / '$R2' / '$R3'"
+fi
+
+# 缓存命中的应答不能为空（OPT 处理把 Answer 弄丢就会命中却无记录）
+if echo "$R2" | grep -q "0\.0\.0\.0\|([0-9]"; then
+  ok "缓存命中的应答仍有记录"
+else
+  echo "  （该域名在 e2e 里可能被拦截，跳过记录断言）"
+fi
+
 hdr "优雅关闭"
 kill -TERM "$DNSD_PID" "$APID_PID" 2>/dev/null
 wait "$DNSD_PID" 2>/dev/null

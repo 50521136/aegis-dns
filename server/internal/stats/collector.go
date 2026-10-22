@@ -105,6 +105,12 @@ func New(ringSize int, enabled bool) *Collector {
 // SetQueryLogEnabled 动态开关查询日志记录。
 func (c *Collector) SetQueryLogEnabled(on bool) { c.enabled.Store(on) }
 
+// QueryLogEnabled 供查询路径判断「要不要花力气组装日志详情」。
+//
+// 组装应答文本（answerFrom）一次要 ~4.9µs、30 次分配，而它只服务于
+// 查询日志的详情面板。日志关掉时这些工作全是白做 —— 调用方必须先问这里。
+func (c *Collector) QueryLogEnabled() bool { return c != nil && c.enabled.Load() }
+
 // Record 记录一次查询。
 //
 // 这个方法在查询热路径上被调用，因此只做「加计数 + 写 map」，

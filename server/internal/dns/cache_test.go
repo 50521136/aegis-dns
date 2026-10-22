@@ -34,10 +34,10 @@ func TestCacheIsolationByUser(t *testing.T) {
 	if !c.Put(keyA, resp, req) {
 		t.Fatal("写入缓存失败")
 	}
-	if _, hit := c.Get(keyA); !hit {
+	if _, hit := c.Get(keyA, nil); !hit {
 		t.Fatal("同一用户应命中缓存")
 	}
-	if _, hit := c.Get(keyB); hit {
+	if _, hit := c.Get(keyB, nil); hit {
 		t.Fatal("另一用户不应命中该用户的缓存")
 	}
 }
@@ -71,7 +71,7 @@ func TestCacheHitMustResetID(t *testing.T) {
 	// 第二次请求用不同的 ID，缓存返回的副本必须带着旧 ID。
 	req2 := mkReq(2222)
 	key2, _ := CacheKeyFrom("u1", req2)
-	got, hit := c.Get(key2)
+	got, hit := c.Get(key2, nil)
 	if !hit {
 		t.Fatal("应命中缓存")
 	}
@@ -107,7 +107,7 @@ func TestCacheTTLDecrement(t *testing.T) {
 	item.entry.storedAt = time.Now().Add(-100 * time.Second)
 	c.shardFor(key).mu.Unlock()
 
-	got, hit := c.Get(key)
+	got, hit := c.Get(key, nil)
 	if !hit {
 		t.Fatal("应命中缓存")
 	}

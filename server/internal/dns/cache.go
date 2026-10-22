@@ -115,8 +115,8 @@ func (c *Cache) shardFor(k CacheKey) *cacheShard {
 // 请求的 ID 再写回，否则客户端会丢弃应答（表现为超时）。这里不做替换，
 // 是因为缓存层拿不到本次请求；把契约写在文档注释里并配了回归测试。
 // Get 返回缓存应答与是否命中。
-func (c *Cache) Get(k CacheKey) (*dns.Msg, bool) {
-	msg, hit, _ := c.GetWithAllow(k)
+func (c *Cache) Get(k CacheKey, req *dns.Msg) (*dns.Msg, bool) {
+	msg, hit, _ := c.GetWithAllow(k, req)
 	return msg, hit
 }
 
@@ -125,7 +125,7 @@ func (c *Cache) Get(k CacheKey) (*dns.Msg, bool) {
 // 放行规则命中的应答也会缓存，命中缓存时已经走不到规则匹配了；
 // 不把标记带出来，查询日志里就只能显示「已处理（缓存）」，
 // 明明是靠放行规则才通的域名，看起来和普通解析一样。
-func (c *Cache) GetWithAllow(k CacheKey) (*dns.Msg, bool, bool) {
+func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool) {
 	if c == nil {
 		return nil, false, false
 	}
@@ -152,6 +152,15 @@ func (c *Cache) GetWithAllow(k CacheKey) (*dns.Msg, bool, bool) {
 	elapsed := uint32(now.Sub(entry.storedAt).Seconds())
 	s.mu.Unlock()
 
+	// OPT 必须按「本次请求」重新校准，不能沿用缓存里那个客户端的。
+	//
+	// RFC 6891 §6.1.1：请求里没有 OPT，应答里就不能有。缓存存的是首次
+	// 应答的完整副本，它带着首个客户端的 OPT（含那个客户端声明的
+	// UDP 缓冲大小）。原样返回会出现两种错：
+	//   - 不带 EDNS 的客户端收到一个 OPT —— 严格实现会判协议错误；
+	//   - 512 缓冲的客户端收到一个标着 4096 的应答 —— 路径 MTU 一卡就丢包。
+	msg.Extra = alignOPT(msg.Extra, req)
+
 	// 递减 TTL，且不低于 1（客户端拿到 0 会立刻重新查询，失去缓存意义）。
 	for _, rr := range msg.Answer {
 		decTTL(rr, elapsed)
@@ -163,6 +172,35 @@ func (c *Cache) GetWithAllow(k CacheKey) (*dns.Msg, bool, bool) {
 		decTTL(rr, elapsed)
 	}
 	return msg, true, entry.allowRule
+}
+
+// alignOPT 把应答里的 OPT 调整成与本次请求一致。
+//
+// 请求没带 EDNS → 整段丢掉；带了 → 把 UDP 大小改成客户端声明的值
+// （缓冲大小是链路属性，不是答案本身的一部分，跟着缓存走没有意义）。
+func alignOPT(extra []dns.RR, req *dns.Msg) []dns.RR {
+	var wantUDP uint16
+	hasReqOPT := false
+	if req != nil {
+		if o := req.IsEdns0(); o != nil {
+			hasReqOPT = true
+			wantUDP = o.UDPSize()
+		}
+	}
+	out := extra[:0]
+	for _, rr := range extra {
+		opt, ok := rr.(*dns.OPT)
+		if !ok {
+			out = append(out, rr)
+			continue
+		}
+		if !hasReqOPT {
+			continue // 客户端没要 EDNS，不能凭空给它一段 OPT
+		}
+		opt.SetUDPSize(wantUDP)
+		out = append(out, opt)
+	}
+	return out
 }
 
 func decTTL(rr dns.RR, elapsed uint32) {

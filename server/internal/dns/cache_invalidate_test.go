@@ -51,13 +51,13 @@ func TestFlushUsersOnlyDropsListedTenants(t *testing.T) {
 
 	c.FlushUsers([]string{"usr_t1", ""})
 
-	if _, hit := c.Get(k1); hit {
+	if _, hit := c.Get(k1, nil); hit {
 		t.Error("usr_t1 的缓存应被清掉")
 	}
-	if _, hit := c.Get(kf); hit {
+	if _, hit := c.Get(kf, nil); hit {
 		t.Error("fallback（UserID 为空）的缓存应被清掉")
 	}
-	if _, hit := c.Get(k2); !hit {
+	if _, hit := c.Get(k2, nil); !hit {
 		t.Error("usr_t2 没改规则，它的缓存不该被牵连清掉（否则规则改动会打光整机命中率）")
 	}
 }
@@ -89,10 +89,10 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 			{UserID: "usr_t2", Fingerprint: "u2"},
 		},
 	})
-	if _, hit := c.Get(k1); !hit {
+	if _, hit := c.Get(k1, nil); !hit {
 		t.Error("规则没变的全量重建不该清缓存")
 	}
-	if _, hit := c.Get(k2); !hit {
+	if _, hit := c.Get(k2, nil); !hit {
 		t.Error("规则没变的全量重建不该清缓存")
 	}
 
@@ -106,10 +106,10 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 			{UserID: "usr_t2", Fingerprint: "u2"},
 		},
 	})
-	if _, hit := c.Get(k1); hit {
+	if _, hit := c.Get(k1, nil); hit {
 		t.Error("改了规则的 usr_t1 的缓存必须被清掉，否则新规则在 TTL 内不生效")
 	}
-	if _, hit := c.Get(k2); !hit {
+	if _, hit := c.Get(k2, nil); !hit {
 		t.Error("usr_t2 没改规则，它的缓存不该被牵连")
 	}
 
@@ -125,10 +125,10 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 			{UserID: "usr_t2", Fingerprint: "u2"},
 		},
 	})
-	if _, hit := c.Get(k1b); hit {
+	if _, hit := c.Get(k1b, nil); hit {
 		t.Error("全局层变更后 usr_t1 的缓存应清掉")
 	}
-	if _, hit := c.Get(k2b); hit {
+	if _, hit := c.Get(k2b, nil); hit {
 		t.Error("全局层变更后 usr_t2 的缓存也应清掉（拦截模式/上游变了影响所有人）")
 	}
 
@@ -140,7 +140,7 @@ func TestLoaderInvalidatesCacheByFingerprint(t *testing.T) {
 		Version: 6, GlobalFingerprint: "g2",
 		Users: []model.UserSnap{{UserID: "usr_t1", Fingerprint: "u1-changed"}},
 	})
-	if _, hit := c.Get(k3); hit {
+	if _, hit := c.Get(k3, nil); hit {
 		t.Error("被删除用户的缓存应清掉")
 	}
 }
@@ -169,7 +169,7 @@ func TestLoaderSkipsCacheFlushWhenVersionUnchanged(t *testing.T) {
 	if reg.Version() != verBefore {
 		t.Fatal("版本未前进，LoadOnce 不该触发 invalidateCache")
 	}
-	if _, hit := c.Get(k); !hit {
+	if _, hit := c.Get(k, nil); !hit {
 		t.Error("空转重载不该清缓存")
 	}
 }

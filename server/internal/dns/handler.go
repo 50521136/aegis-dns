@@ -165,7 +165,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	if !h.protoEnabled(det.Proto) {
 		h.protosRejected.Add(1)
 		if w != nil {
-			_ = w.WriteMsg(refusedResponse(req))
+			writeMsg(w, req, refusedResponse(req))
 		}
 		// 协议被关掉的查询也要记一条：否则用户在日志里完全看不到
 		// 「我的明文请求去哪了」，只会以为程序漏记。
@@ -185,7 +185,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			h.panics.Add(1)
 			h.log.Error("查询处理 panic", "panic", r, "qname", firstQuestion(req))
 			if w != nil {
-				_ = w.WriteMsg(servfailResponse(req))
+				writeMsg(w, req, servfailResponse(req))
 			}
 		}
 	}()
@@ -206,14 +206,14 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		// 并发已满：立刻回 SERVFAIL 而不是排队。
 		// 排队会让延迟雪崩，客户端更可能超时后重试，形成正反馈。
 		h.rejected.Add(1)
-		_ = w.WriteMsg(servfailResponse(req))
+		writeMsg(w, req, servfailResponse(req))
 		return
 	}
 	h.inflight.Add(1)
 	defer h.inflight.Add(-1)
 
 	if len(req.Question) == 0 {
-		_ = w.WriteMsg(servfailResponse(req))
+		writeMsg(w, req, servfailResponse(req))
 		return
 	}
 	q := req.Question[0]
@@ -229,7 +229,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// Stage 2 前置校验：租户是否启用。
 	if !isFallback && !user.Enabled {
 		h.record(user.UserID, q, "blocked", "REFUSED", time.Since(start), w)
-		_ = w.WriteMsg(refusedResponse(req))
+		writeMsg(w, req, refusedResponse(req))
 		return
 	}
 
@@ -245,7 +245,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			h.record(user.UserID, q, "blocked", "REFUSED", time.Since(start), w, qdetail{
 				Proto: det.Proto, ECS: det.ECS,
 			})
-			_ = w.WriteMsg(refusedResponse(req))
+			writeMsg(w, req, refusedResponse(req))
 			return
 		}
 	}
@@ -263,7 +263,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		strings.EqualFold(hint.Host, d.Domain) &&
 		hint.ClientID == "" && hint.AltClientID == "" && !d.AllowRootDomain {
 		h.record("", q, "blocked", "REFUSED", time.Since(start), w)
-		_ = w.WriteMsg(refusedResponse(req))
+		writeMsg(w, req, refusedResponse(req))
 		return
 	}
 
@@ -285,7 +285,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		}
 		if !matched {
 			h.record("", q, "blocked", "REFUSED", time.Since(start), w)
-			_ = w.WriteMsg(refusedResponse(req))
+			writeMsg(w, req, refusedResponse(req))
 			return
 		}
 	}
@@ -293,7 +293,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// 未识别请求的 refused 策略。
 	if isFallback && d.FallbackPolicy == model.FallbackRefused {
 		h.record("", q, "blocked", "REFUSED", time.Since(start), w)
-		_ = w.WriteMsg(refusedResponse(req))
+		writeMsg(w, req, refusedResponse(req))
 		return
 	}
 
@@ -301,23 +301,23 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	if d.RateLimitQPS > 0 {
 		if !h.allow(user.UserID, d.RateLimitQPS) {
 			h.record(user.UserID, q, "blocked", "REFUSED", time.Since(start), w)
-			_ = w.WriteMsg(refusedResponse(req))
+			writeMsg(w, req, refusedResponse(req))
 			return
 		}
 	}
 
 	// 特殊域名：本地回环、DoH 探针。
 	if resp, handled := h.specialDomain(req); handled {
-		det.Answer = answerFrom(resp)
+		det.Answer = h.detail(resp)
 		h.record(user.UserID, q, "allowed", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
-		_ = w.WriteMsg(resp)
+		writeMsg(w, req, resp)
 		return
 	}
 
 	// Stage 3 缓存查询。
 	cache := h.cache.Load()
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
-		if msg, hit, allowRule := cache.GetWithAllow(key); hit {
+		if msg, hit, allowRule := cache.GetWithAllow(key, req); hit {
 			// 必须把报文 ID 改回本次请求的 ID。
 			//
 			// 缓存里存的是首次应答的副本，它带着「当时那个请求」的随机 ID。
@@ -325,7 +325,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			// 表现就是查询超时（dig 会明确提示 "ID mismatch"）。
 			// 这个 bug 只在第二次查同一域名时才出现，所以极易漏测。
 			msg.Id = req.Id
-			det.Answer = answerFrom(msg)
+			det.Answer = h.detail(msg)
 			// 缓存命中不是一种状态：状态看这条应答当初是不是放行规则给的，
 			// 「缓存」由 det.CacheHit 这个标记表达（列表显示成「已处理（缓存）」）。
 			det.CacheHit = true
@@ -334,7 +334,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 				status = actionAllowed
 			}
 			h.record(user.UserID, q, status, dns.RcodeToString[msg.Rcode], time.Since(start), w, det)
-			_ = w.WriteMsg(msg)
+			writeMsg(w, req, msg)
 			return
 		}
 	}
@@ -352,15 +352,15 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			allowRule = true
 		case rules.ActionBlock:
 			resp := buildBlockResponse(req, d.BlockingMode, d.CustomIP)
-			det.Answer = answerFrom(resp)
+			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, "blocked", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
-			_ = w.WriteMsg(resp)
+			writeMsg(w, req, resp)
 			return
 		case rules.ActionRewrite:
 			resp := rewriteResponse(req, decision.Rewrite)
-			det.Answer = answerFrom(resp)
+			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, actionHandled, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
-			_ = w.WriteMsg(resp)
+			writeMsg(w, req, resp)
 			return
 		}
 	}
@@ -372,7 +372,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 	if pool == nil {
 		h.upstreamErrs.Add(1)
-		_ = w.WriteMsg(servfailResponse(req))
+		writeMsg(w, req, servfailResponse(req))
 		return
 	}
 
@@ -407,7 +407,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		h.upstreamErrs.Add(1)
 		h.log.Warn("上游解析失败", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype], "err", err)
 		h.record(user.UserID, q, "upstream", "SERVFAIL", time.Since(start), w, det)
-		_ = w.WriteMsg(servfailResponse(req))
+		writeMsg(w, req, servfailResponse(req))
 		return
 	}
 
@@ -428,13 +428,13 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	if key, ok := CacheKeyFrom(user.UserID, req); ok && cache != nil {
 		cache.PutWith(key, resp, req, allowRule)
 	}
-	det.Answer = answerFrom(resp)
+	det.Answer = h.detail(resp)
 	status := actionHandled
 	if allowRule {
 		status = actionAllowed
 	}
 	h.record(user.UserID, q, status, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
-	_ = w.WriteMsg(resp)
+	writeMsg(w, req, resp)
 }
 
 // identify 按文档 3.2 的优先级识别租户。
@@ -806,4 +806,49 @@ func (h *Handler) protoEnabled(proto string) bool {
 	default:
 		return true
 	}
+}
+
+// writeMsg 是写应答的唯一出口。
+//
+// 只有 UDP 需要截断：TCP/DoT/DoH 走的是流，长度不受 512 字节限制。
+// 不截断的后果是大应答（DNSSEC 带 RRSIG、长 TXT、多个 A 记录）整包塞进
+// UDP 发出去，客户端缓冲装不下就直接丢 —— 表现为「偶尔查不到」，
+// 而服务端这边看起来一切正常，极难排查。
+//
+// RFC 1035/6891：无 EDNS 时上限 512，有 EDNS 时按客户端声明的值。
+func writeMsg(w dns.ResponseWriter, req, resp *dns.Msg) {
+	if w == nil || resp == nil {
+		return
+	}
+	if ra := w.RemoteAddr(); ra != nil && ra.Network() == "udp" {
+		resp.Truncate(udpPayloadSize(req))
+	}
+	_ = w.WriteMsg(resp)
+}
+
+// udpPayloadSize 返回本次请求允许的 UDP 应答上限。
+//
+// 客户端声明的值小于 512 一律按 512 处理（RFC 6891 的要求），
+// 不带 EDNS 时就是 512。
+func udpPayloadSize(req *dns.Msg) int {
+	if req != nil {
+		if opt := req.IsEdns0(); opt != nil {
+			if s := int(opt.UDPSize()); s > dns.MinMsgSize {
+				return s
+			}
+		}
+	}
+	return dns.MinMsgSize
+}
+
+// detail 按需组装应答文本。
+//
+// 关了查询日志就返回空串：answerFrom 一次要 ~4.9µs、30 次分配，
+// 而这些只服务于日志详情面板。之前无条件调用，等于给每个查询
+// 白加了一次字符串拼接的成本。
+func (h *Handler) detail(resp *dns.Msg) string {
+	if h.collector == nil || !h.collector.QueryLogEnabled() {
+		return ""
+	}
+	return answerFrom(resp)
 }
