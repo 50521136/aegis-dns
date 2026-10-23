@@ -63,6 +63,9 @@ func NewPoolForTest(addrs []string, bootstrap []string) (*Pool, error) {
 func newPool(addrs []string, bootstrap []string, timeout time.Duration) (*Pool, error) {
 	opts := &upstream.Options{
 		Timeout: timeout,
+		// 过滤「客户端主动取消」类日志（详情见 logger.go）。
+		// 不设的话 dnsproxy 用 slog.Default，会把 context canceled 记成 ERROR。
+		Logger: upstreamLogger(nil),
 	}
 	// 引导解析器：DoH/DoT 上游要先解析主机名才能连。
 	// 不给的话 dnsproxy 会走系统解析器，容器/最小化系统里常常没有可用解析器，
