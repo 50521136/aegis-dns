@@ -46,7 +46,7 @@ import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
-import { downloadBackup, testUpstream, type UpstreamTestResult } from '@/api/admin'
+import { downloadBackup, testUpstream, testProxy, type ProxyTestResult, type UpstreamTestResult } from '@/api/admin'
 import { PasswordCard, UpdateCard } from './Settings'
 import { useAuth } from '@/hooks/useAuth'
 import { UsersPanel } from './AdminUsersPanel'
@@ -506,6 +506,10 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                 </div>
                 <Input className="font-mono" placeholder="socks5://127.0.0.1:1080 或 http://user:pass@1.2.3.4:7890" {...form.register('proxy_url')} />
                 <p className="text-xs text-muted-foreground">支持 http / https / socks5，必须带协议前缀。</p>
+                <ProxyTester
+                  proxyURL={form.watch('proxy_url') ?? ''}
+                  proxyEnabled={Boolean(form.watch('proxy_enabled'))}
+                />
               </div>
             </CardContent>
           </Card>
@@ -1178,6 +1182,122 @@ function UpstreamTester({ upstream, bootstrap }: { upstream: string; bootstrap: 
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ---------- 出口代理实测 ---------- */
+
+/**
+ * ProxyTester 实测代理与直连两条链路，并把结论翻成一句可执行的话。
+ *
+ * 为什么两条都要测：订阅失败时管理员只知道「失败了」，无法区分是代理地址写错、
+ * 代理本身不通、代理通了但源站挡它，还是压根该走直连。「代理不通但直连能通」
+ * 和「两条都不通」的处置方式完全不同，只测代理等于只拿到一半结论。
+ *
+ * 测的是输入框里的值（未保存也能测），这样改完地址可以先验再存。
+ */
+function ProxyTester({ proxyURL, proxyEnabled }: { proxyURL: string; proxyEnabled: boolean }) {
+  const toast = useToast()
+  const [result, setResult] = useState<ProxyTestResult | null>(null)
+  const [testing, setTesting] = useState(false)
+
+  const run = async () => {
+    setTesting(true)
+    setResult(null)
+    try {
+      const res = await testProxy(proxyURL.trim(), proxyEnabled)
+      setResult(res)
+      if (!res.ok) {
+        toast.error('代理配置有问题', res.reason ?? '未知原因')
+        return
+      }
+      // 结论本身走 toast：它是「下一步做什么」，不该埋在卡片里被忽略。
+      if (res.advice) {
+        if (res.proxy_ok || res.direct_ok) toast.success('链路可用', res.advice)
+        else toast.error('两条链路都不通', res.advice)
+      }
+    } catch (err) {
+      toast.error('测试失败', errorMessage(err))
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  // 探针结果摊平成固定顺序，避免每行位置随对象键序跳动。
+  const rows: { label: string; key: string }[] = [
+    { label: '代理 · 出网', key: 'proxy:connectivity' },
+    { label: '代理 · 订阅源', key: 'proxy:subscribe' },
+    { label: '直连 · 出网', key: 'direct:connectivity' },
+    { label: '直连 · 订阅源', key: 'direct:subscribe' },
+  ]
+
+  return (
+    <div className="space-y-2 border-t border-border/60 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          同时测代理与直连，用来判断订阅失败到底是代理问题还是源站问题
+        </p>
+        <Button type="button" variant="secondary" size="sm" onClick={run} loading={testing}>
+          <PlugZap />
+          测试代理
+        </Button>
+      </div>
+
+      {result && !result.ok && (
+        <div className="flex items-start gap-2 rounded-lg bg-danger/10 px-2.5 py-2 text-xs text-danger">
+          <X className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0">{result.reason}</span>
+        </div>
+      )}
+
+      {result?.ok && (
+        <div className="space-y-1.5">
+          {result.advice && (
+            <div
+              className={cn(
+                'flex items-start gap-2 rounded-lg px-2.5 py-2 text-xs',
+                result.proxy_ok || result.direct_ok ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger',
+              )}
+            >
+              {result.proxy_ok || result.direct_ok ? (
+                <Check className="mt-0.5 size-3.5 shrink-0" />
+              ) : (
+                <X className="mt-0.5 size-3.5 shrink-0" />
+              )}
+              <span className="min-w-0">{result.advice}</span>
+            </div>
+          )}
+          {rows.map(({ label, key }) => {
+            const p = result.probes?.[key]
+            // 未填代理时后端不跑代理探针，这一行直接不显示，避免一堆「未测试」。
+            if (!p) return null
+            return (
+              <div
+                key={key}
+                className={cn(
+                  'flex flex-wrap items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs',
+                  p.ok ? 'bg-success/10' : 'bg-danger/10',
+                )}
+              >
+                {p.ok ? (
+                  <Check className="size-3.5 shrink-0 text-success" />
+                ) : (
+                  <X className="size-3.5 shrink-0 text-danger" />
+                )}
+                <span className="w-24 shrink-0 text-muted-foreground">{label}</span>
+                {p.ok ? (
+                  <span className="tabular-nums text-muted-foreground">
+                    {p.latency_ms}ms · HTTP {p.status}
+                  </span>
+                ) : (
+                  <span className="min-w-0 flex-1 break-words text-danger">{p.error}</span>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

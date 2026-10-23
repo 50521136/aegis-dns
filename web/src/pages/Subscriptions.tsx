@@ -8,6 +8,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Info,
   ListPlus,
   Loader2,
   Pencil,
@@ -81,7 +82,30 @@ const FORMAT_LABEL: Record<SubFormat, string> = {
   domain: '域名列表',
 }
 
+/**
+ * 解析 last_status 里的「短码 | 详情」。
+ *
+ * 后端约定格式为 `error: <短码> | <详情>`：短码给徽章（必须短，否则会把列表
+ * 挤变形），详情给 toast。老数据只有 `error: <很长的一段>`，没有竖线 ——
+ * 那种情况把整段当详情、短码统一显示「失败」，仍然可用。
+ */
+function splitStatus(status: string): { code: string; detail: string } {
+  const body = status.replace(/^error:\s*/, '')
+  const idx = body.indexOf(' | ')
+  if (idx < 0) return { code: '失败', detail: body }
+  return { code: body.slice(0, idx), detail: body.slice(idx + 3) }
+}
+
+/**
+ * StatusBadge 只显示短码，完整原因点击后在 toast 里展开。
+ *
+ * 为什么不再把错误原文塞进徽章：真实报错动辄上百字（还带代理/直连两段原因），
+ * 徽章被撑到几百像素，把整行布局挤出去，结果「想看的信息看不见、其它列也被
+ * 挤没了」。短码保证布局稳定，详情按需展开。
+ */
 function StatusBadge({ status }: { status: string }) {
+  const toast = useToast()
+
   if (!status) return <Badge variant="secondary">未同步</Badge>
   // 后台拉取中：公共规则源在慢线路上要 60~90 秒，必须让用户看到「在下载」，
   // 否则会以为是坏了、反复点刷新。
@@ -99,11 +123,21 @@ function StatusBadge({ status }: { status: string }) {
         正常
       </Badge>
     )
+
+  const { code, detail } = splitStatus(status)
   return (
-    <Badge variant="danger">
-      <AlertTriangle className="size-3" />
-      {status.replace(/^error:\s*/, '')}
-    </Badge>
+    <button
+      type="button"
+      className="inline-flex max-w-full items-center"
+      title="点击查看失败原因"
+      onClick={() => toast.error(`同步失败：${code}`, detail)}
+    >
+      <Badge variant="danger" className="cursor-pointer">
+        <AlertTriangle className="size-3 shrink-0" />
+        <span className="max-w-[12rem] truncate">{code}</span>
+        <Info className="size-3 shrink-0 opacity-70" />
+      </Badge>
+    </button>
   )
 }
 

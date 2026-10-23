@@ -155,17 +155,55 @@ func TestSplitByKind(t *testing.T) {
 	}
 }
 
-// TestDescribeStatus 验证状态文本不会过长。
+// TestDescribeStatus 验证状态文本的契约。
+//
+// 列表徽章只显示「error: 之后、第一个竖线之前」的短码，所以真正必须短的是
+// 短码本身；竖线后面的详情走 toast 展开，允许较长（但仍要有上限，避免把
+// 无界的错误串塞进库）。
 func TestDescribeStatus(t *testing.T) {
 	if got := DescribeStatus(nil); got != "ok" {
 		t.Fatalf("nil 应为 ok，实际 %q", got)
 	}
-	long := DescribeStatus(errStr(strings.Repeat("x", 500)))
-	if len(long) > 210 {
-		t.Fatalf("状态文本应被截断，实际长度 %d", len(long))
+
+	cases := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"普通网络错误", errStr(strings.Repeat("x", 500)), "失败"},
+		{"超时", errStr("请求订阅失败(proxy): dial tcp 1.2.3.4:443: i/o timeout"), "超时"},
+		{"端口没开", errStr("请求订阅失败(proxy): dial tcp 127.0.0.1:7890: connect: connection refused"), "连接被拒"},
+		{"代理与直连均失败", errStr("代理与直连均失败（代理: 超时；直连: 拒绝）"), "代理/直连均失败"},
+		{"HTTP 状态码", &statusError{Code: 403}, "HTTP 403"},
 	}
-	if !strings.HasPrefix(long, "error: ") {
-		t.Fatalf("应以 error: 开头，实际 %q", long)
+
+	for _, c := range cases {
+		got := DescribeStatus(c.err)
+		if !strings.HasPrefix(got, "error: ") {
+			t.Errorf("%s：应以 error: 开头，实际 %q", c.name, got)
+		}
+		body := strings.TrimPrefix(got, "error: ")
+		code, detail, ok := strings.Cut(body, " | ")
+		if !ok {
+			t.Errorf("%s：缺少「短码 | 详情」分隔符，实际 %q", c.name, got)
+			continue
+		}
+		if code != c.wantCode {
+			t.Errorf("%s：短码期望 %q，实际 %q", c.name, c.wantCode, code)
+		}
+		// 徽章宽度约束：短码必须在 20 个字符以内，否则列表还是会被挤变形。
+		if n := len([]rune(code)); n > 20 {
+			t.Errorf("%s：短码过长（%d 字符），会挤变形列表：%q", c.name, n, code)
+		}
+		if detail == "" {
+			t.Errorf("%s：详情不能为空，否则 toast 里没有可用信息", c.name)
+		}
+	}
+
+	// 详情要有上限，不能把无界错误串整条塞进库。
+	long := DescribeStatus(errStr(strings.Repeat("x", 2000)))
+	if n := len([]rune(long)); n > 400 {
+		t.Fatalf("详情应被截断，实际长度 %d 字符", n)
 	}
 }
 

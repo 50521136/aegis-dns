@@ -581,6 +581,25 @@ curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Co
 curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | grep -q '"bootstrap_dns":\["223.5.5.5","119.29.29.29"\]' \
   && ok "bootstrap_dns 可持久化" || bad "bootstrap_dns 没存住"
 
+hdr "出口代理自测与回退"
+# 地址写错要立刻给可读原因，而不是等超时
+TP0=$(curl -s -X POST "$API/admin/settings/test-proxy" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"proxy_url":"1.2.3.4:7890","proxy_enabled":true}')
+echo "$TP0" | grep -q '协议前缀' && ok "漏写协议前缀给出可读提示" || bad "漏写前缀未提示: $(echo "$TP0" | head -c 160)"
+# 不可用代理：代理不通但直连可用，必须如实区分两条链路
+TP1=$(curl -s -X POST "$API/admin/settings/test-proxy" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"proxy_url":"http://127.0.0.1:1","proxy_enabled":true}')
+echo "$TP1" | grep -q '"proxy_ok":false' && ok "坏代理如实报不通" || bad "坏代理未报错: $(echo "$TP1" | head -c 160)"
+echo "$TP1" | grep -q '"advice"' && ok "返回可执行结论（advice）" || bad "缺少 advice"
+echo "$TP1" | grep -q '"direct:' && ok "同时测了直连（有对照才能判断是谁的问题）" || bad "没测直连"
+# 订阅状态短码/详情分离：格式必须是 "error: <短码> | <详情>"
+SL=$(curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" | grep -o '"last_status":"error:[^"]*"' | head -1)
+if [[ -n "$SL" ]]; then
+  echo "$SL" | grep -q ' | ' && ok "失败状态带「短码 | 详情」分隔符" || bad "失败状态缺分隔符: $SL"
+else
+  ok "当前无失败订阅，跳过状态格式断言"
+fi
+
 hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')

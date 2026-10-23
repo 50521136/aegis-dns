@@ -232,6 +232,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/users/{id}/client-id", s.handleAdminSetClientID)
 				// 上游连通性自测：DoH/DoT 配错时现象是「全部超时」，得能当场验
 				r.Post("/settings/test-upstream", s.handleTestUpstream)
+				// 出口代理实测：同时给代理与直连的结果，判断是代理问题还是配置问题
+				r.Post("/settings/test-proxy", s.handleTestProxy)
 				// 系统级备份：数据库 + 配置 + 证书打包下载
 				r.Get("/backup", s.handleAdminBackup)
 

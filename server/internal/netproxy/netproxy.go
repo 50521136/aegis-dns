@@ -22,6 +22,14 @@ func Parse(raw string) (*url.URL, error) {
 	if raw == "" {
 		return nil, nil
 	}
+	// 先看有没有 scheme 再交给 url.Parse。
+	//
+	// 顺序很重要：`1.2.3.4:7890`（最常见的漏写协议前缀写法）在 url.Parse 里
+	// 会报 "first path segment in URL cannot contain colon" —— 那句话对填表的人
+	// 毫无指导意义。这里提前拦下来，直接告诉他该写成什么样。
+	if !strings.Contains(raw, "://") {
+		return nil, fmt.Errorf("代理地址缺少协议前缀，请写成 http://主机:端口 或 socks5://主机:端口")
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("代理地址格式不正确: %w", err)

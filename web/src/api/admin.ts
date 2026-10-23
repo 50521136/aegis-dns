@@ -147,6 +147,27 @@ export interface UpstreamTestResult {
   error?: string
 }
 
+export interface ProxyProbe {
+  ok: boolean
+  status: number
+  latency_ms: number
+  error?: string
+  via: string
+}
+
+export interface ProxyTestResult {
+  ok: boolean
+  reason?: string
+  proxy_url?: string
+  enabled?: boolean
+  proxy_ok?: boolean
+  direct_ok?: boolean
+  probes?: Record<string, ProxyProbe>
+  advice?: string
+  tested_at?: string
+  proxy_used?: boolean
+}
+
 /**
  * 试解析一次，验证上游（含引导 DNS）能不能用。
  *
@@ -162,6 +183,24 @@ export async function testUpstream(
     upstream,
     bootstrap_dns: bootstrapDNS,
     domain,
+  })
+  return data
+}
+
+/**
+ * 实测出口代理，同时返回直连的对照结果。
+ *
+ * 订阅失败时管理员无法判断是代理写错、代理不通、还是源站的事 —— 单独测代理
+ * 只能得到一半结论。两条路一起测，「代理不通但直连能通」和「两条都不通」
+ * 的处置方式完全不同。
+ */
+export async function testProxy(
+  proxyURL: string,
+  proxyEnabled: boolean,
+): Promise<ProxyTestResult> {
+  const { data } = await api.post<ProxyTestResult>('/admin/settings/test-proxy', {
+    proxy_url: proxyURL,
+    proxy_enabled: proxyEnabled,
   })
   return data
 }

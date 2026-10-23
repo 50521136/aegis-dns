@@ -54,7 +54,13 @@ const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, li
 
 // Fetcher 拉取订阅内容。
 type Fetcher struct {
-	client *http.Client
+	// client 是直连客户端；proxyClient 走代理（未启用时为 nil）。
+	//
+	// 两个都留着是为了实现「代理优先、直连兜底」：只保留一个 Transport 的话，
+	// 代理一挂订阅就彻底拉不动，而很多源其实直连也能通 —— 反过来，只走直连
+	// 时 GitHub 这类源在国内机房又完全不通。两条路都握着才能逐次尝试。
+	client      *http.Client
+	proxyClient *http.Client
 	// proxy 是当前出口代理（http/https/socks5），空表示直连。
 	// 用 atomic 是因为设置页改完要立刻生效，而拉取跑在后台 goroutine 里 ——
 	// 重建 Fetcher 会丢掉正在进行的下载。
@@ -63,11 +69,22 @@ type Fetcher struct {
 
 // SetProxy 设置出口代理；空字符串表示直连。返回错误表示地址不合法（此时不改动）。
 func (f *Fetcher) SetProxy(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		f.proxyClient = nil
+		empty := ""
+		f.proxy.Store(&empty)
+		return nil
+	}
 	tr, err := netproxy.Transport(raw, nil)
 	if err != nil {
 		return err
 	}
-	f.client.Transport = tr
+	f.proxyClient = &http.Client{
+		Timeout:       f.client.Timeout,
+		Transport:     tr,
+		CheckRedirect: f.client.CheckRedirect,
+	}
 	f.proxy.Store(&raw)
 	return nil
 }
@@ -279,8 +296,40 @@ type statusError struct {
 
 func (e *statusError) Error() string { return fmt.Sprintf("订阅返回 HTTP %d", e.Code) }
 
-// fetchOnce 是一次完整的拉取尝试。
+// fetchOnce 是一次完整的拉取尝试：代理优先，直连兜底。
+//
+// 回退策略说明（这是本次改动的核心）：
+//
+// 代理和直连各自能通一部分源。只走代理的话，代理挂了或代理被目标站拒绝时
+// 订阅彻底拉不动；只走直连的话，GitHub 这类源在国内机房完全不通。所以先走
+// 代理（管理员明确开了它），失败再走直连兜底。
+//
+// 只在「网络层失败」时兜底：拿到 HTTP 4xx/5xx 说明链路是通的，换条路也不会
+// 变好，反而会让真实原因（源站 404/403）被后一条路的错误盖掉。
 func (f *Fetcher) fetchOnce(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
+	if pc := f.proxyClient; pc != nil {
+		res, err := f.fetchWith(ctx, pc, "proxy", url, etag, lastModified)
+		if err == nil {
+			return res, nil
+		}
+		var se *statusError
+		if errors.As(err, &se) {
+			// 代理通了，但目标返回 4xx/5xx：换直连没有意义。
+			return nil, err
+		}
+		// 代理这条路网络层失败 → 直连兜底。
+		res2, err2 := f.fetchWith(ctx, f.client, "direct", url, etag, lastModified)
+		if err2 == nil {
+			return res2, nil
+		}
+		// 两条都不通：把两边的原因都写出来，否则管理员只能看到一半信息。
+		return nil, fmt.Errorf("代理与直连均失败（代理: %v；直连: %v）", err, err2)
+	}
+	return f.fetchWith(ctx, f.client, "direct", url, etag, lastModified)
+}
+
+// fetchWith 用指定客户端拉一次；via 只用于错误信息里标明走的哪条路。
+func (f *Fetcher) fetchWith(ctx context.Context, client *http.Client, via, url, etag, lastModified string) (*FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("构造请求失败: %w", err)
@@ -296,9 +345,9 @@ func (f *Fetcher) fetchOnce(ctx context.Context, url, etag, lastModified string)
 		req.Header.Set("If-Modified-Since", lastModified)
 	}
 
-	resp, err := f.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求订阅失败: %w", err)
+		return nil, fmt.Errorf("请求订阅失败(%s): %w", via, err)
 	}
 	defer resp.Body.Close()
 
@@ -344,29 +393,84 @@ func (f *Fetcher) fetchOnce(ctx context.Context, url, etag, lastModified string)
 }
 
 // DescribeStatus 把拉取结果转成入库用的 last_status 文本。
+//
+// 格式固定为「error: <短码> | <详情>」：短码给列表徽章显示（必须短，否则会把
+// 表格挤变形），详情给 toast 展开。两段都用竖线分隔，前端按第一个竖线切。
+//
+// 之所以把短码和详情都塞进同一个字段而不是拆成两列：last_status 已经落库并且
+// 有历史数据，加列要做迁移；而这里只要约定一个分隔符就能同时满足「列表短」
+// 和「详情全」两个需求。
 func DescribeStatus(err error) string {
 	if err == nil {
 		return "ok"
 	}
+	code, detail := classifyError(err)
+	detail = truncateRunes(detail, 300)
+	return "error: " + code + " | " + detail
+}
+
+// classifyError 把错误拆成「短码」与「可读详情」。
+func classifyError(err error) (code, detail string) {
 	msg := err.Error()
 	// 去掉可能很长的包装前缀，只留核心信息。
 	msg = strings.TrimPrefix(msg, "请求订阅失败: ")
+	msg = strings.TrimPrefix(msg, "请求订阅失败(proxy): ")
+	msg = strings.TrimPrefix(msg, "请求订阅失败(direct): ")
 
-	// 超时/连接类错误换成人话：管理员看到 "context deadline exceeded"
-	// 根本判断不出是源站被墙、DNS 有问题还是自己网络抖动。
+	var se *statusError
+	if errors.As(err, &se) {
+		return fmt.Sprintf("HTTP %d", se.Code), httpStatusHint(se.Code)
+	}
+
 	switch {
+	case strings.Contains(msg, "代理与直连均失败"):
+		// 两条路都挂了：短码点明这点，详情保留两边原因。
+		return "代理/直连均失败", msg
 	case strings.Contains(msg, "context deadline exceeded"),
-		strings.Contains(msg, "i/o timeout"),
-		strings.Contains(msg, "connection reset"),
-		strings.Contains(msg, "connection refused"),
-		strings.Contains(msg, "no such host"):
-		msg = "拉取超时或连接失败，订阅源可能不可达（境外地址建议换成国内可达的镜像源）"
+		strings.Contains(msg, "i/o timeout"):
+		return "超时", "拉取超时，订阅源可能不可达。境外地址建议换成国内可达的镜像源。原始错误：" + msg
+	case strings.Contains(msg, "connection refused"):
+		return "连接被拒", "连接被拒绝：代理端口没在监听，或地址/端口写错。原始错误：" + msg
+	case strings.Contains(msg, "no such host"):
+		return "解析失败", "域名解析失败：代理主机名写错，或本机 DNS 有问题。原始错误：" + msg
+	case strings.Contains(msg, "connection reset"):
+		return "连接重置", "连接被重置：链路被中间设备中断。原始错误：" + msg
+	case strings.Contains(msg, "tls"), strings.Contains(msg, "x509"):
+		return "证书错误", "TLS 握手失败：证书校验不过，或代理做了 TLS 拦截。原始错误：" + msg
+	case strings.Contains(msg, "订阅内容为空"):
+		return "内容为空", "订阅源返回了 200 但内容为空。原始错误：" + msg
+	case strings.Contains(msg, "解压订阅内容失败"):
+		return "解压失败", "订阅内容声明 gzip 但无法解压，可能是被中间设备改写。原始错误：" + msg
 	}
+	return "失败", msg
+}
 
-	if len(msg) > 200 {
-		msg = msg[:200]
+// httpStatusHint 给常见状态码补一句人话。
+func httpStatusHint(code int) string {
+	switch code {
+	case 401, 403:
+		return fmt.Sprintf("订阅源返回 HTTP %d：被源站拒绝。多为需要鉴权、UA 被拦或触发了限流，也可能是代理出口 IP 被该源拉黑。", code)
+	case 404:
+		return fmt.Sprintf("订阅源返回 HTTP %d：地址不存在，检查链接是否失效或仓库改名。", code)
+	case 429:
+		return fmt.Sprintf("订阅源返回 HTTP %d：请求过于频繁，被限流。建议把拉取间隔调大。", code)
 	}
-	return "error: " + msg
+	if code >= 500 {
+		return fmt.Sprintf("订阅源返回 HTTP %d：源站自身故障，稍后重试即可。", code)
+	}
+	return fmt.Sprintf("订阅源返回 HTTP %d。", code)
+}
+
+// truncateRunes 按字符（不是字节）截断，避免把中文截成乱码。
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // ParseRetryAfter 解析 Retry-After 头（秒）。
