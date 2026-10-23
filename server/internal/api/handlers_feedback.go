@@ -16,7 +16,7 @@ const (
 )
 
 func feedbackJSON(f *model.Feedback) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"id":          f.ID,
 		"user_id":     f.UserID,
 		"username":    f.Username,
@@ -28,6 +28,25 @@ func feedbackJSON(f *model.Feedback) map[string]any {
 		"created_at":  rfc3339OrEmpty(f.CreatedAt),
 		"updated_at":  rfc3339OrEmpty(f.UpdatedAt),
 	}
+	// AI 诊断字段必须一起输出。
+	//
+	// 漏掉它们的后果不是「少显示一块」，而是**整个功能看起来坏了**：
+	// 前端按 ai_status 决定渲染「AI 诊断」按钮还是结论卡片，
+	// 字段缺失时永远读到空值，于是点完按钮界面纹丝不动 ——
+	// 而模型其实已经跑完、结论就在库里。
+	// （这个坑真实发生过：诊断成功 3 次，界面上一次都没反应。）
+	m["ai_status"] = f.AIStatus
+	m["ai_verdict"] = f.AIVerdict
+	m["ai_reason"] = f.AIReason
+	m["ai_action"] = f.AIAction
+	m["ai_reply"] = f.AIReply
+	m["ai_domains"] = f.AIDomains
+	m["ai_guard_notes"] = f.AIGuardNotes
+	m["ai_model"] = f.AIModel
+	m["ai_ran_at"] = f.AIRanAt
+	// ai_evidence 是给审计看的原始证据，体积可能几百字节到几 KB，
+	// 列表里不需要，只在需要时通过诊断详情获取，避免把列表撑大。
+	return m
 }
 
 // handleCreateFeedback 提交一条反馈（普通用户）。

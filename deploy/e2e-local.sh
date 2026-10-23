@@ -632,6 +632,28 @@ else
 fi
 
 hdr "AI 诊断"
+# 反馈列表必须带 ai_* 字段，否则前端点了诊断界面不会变（真实踩过）
+# 先自己建一条，不能指望库里恰好有反馈 —— 空列表时 items 为空数组，
+# 断言会拿到"没有字段"从而假失败（不是功能坏）。
+FBTOK=$(curl -fsS -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"e2etest","password":"NewStr0ngPass1"}' 2>/dev/null \
+  | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)
+if [[ -z "$FBTOK" ]]; then
+  FBTOK=$(curl -fsS -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+    -d '{"username":"e2etest","password":"Str0ngPass123"}' 2>/dev/null \
+    | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)
+fi
+if [[ -n "$FBTOK" ]]; then
+  curl -fsS -X POST "$API/feedback" -H "Authorization: Bearer $FBTOK" -H 'Content-Type: application/json' \
+    -d '{"domain":"ai-e2e.example.com","kind":"wrong_block","message":"AI 诊断断言用"}' >/dev/null \
+    && ok "建临时反馈成功" || bad "建临时反馈失败"
+  FBROW=$(curl -fsS "$API/admin/feedback?page_size=1" -H "Authorization: Bearer $ADMTOK")
+  for k in ai_status ai_verdict ai_action ai_domains ai_model ai_ran_at; do
+    echo "$FBROW" | grep -q "\"$k\"" && ok "反馈列表带 $k" || bad "反馈列表缺 $k（前端会点不动）"
+  done
+else
+  bad "拿不到用户令牌，无法验证反馈列表的 ai_* 字段"
+fi
 # 默认关闭：未启用时诊断接口必须明确报错，而不是静默成功
 ADIAG=$(curl -s -o /tmp/ai1.json -w "%{http_code}" -X POST "$API/admin/feedback/fb_not_exist/diagnose" \
   -H "Authorization: Bearer $ADMTOK")
