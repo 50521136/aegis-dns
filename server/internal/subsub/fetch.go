@@ -224,6 +224,13 @@ func retryBackoff(n int) time.Duration {
 //
 // etag / lastModified 非空时会带上条件请求头，服务端返回 304 就跳过解析
 // （文档 6.2 的增量更新前置条件）。
+//
+// 代理与直连的兜底在**这一层**做：先让当前客户端（可能带代理）完整跑完一轮
+// 候选地址与重试，整轮都失败再换另一个客户端重跑一轮。
+//
+// 为什么不在 fetchOnce 里逐次兜底：那会让每次网络尝试都翻倍，而这里本身还有
+// 「两个镜像 × 两个分支 × 3 次重试」的嵌套，最坏情况会从 12 次尝试膨胀到 24 次，
+// 直接把 300 秒的 FetchTimeout 耗尽 —— 表现出来就是订阅永远卡在「同步中」。
 func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return nil, fmt.Errorf("订阅地址必须以 http:// 或 https:// 开头")
@@ -234,10 +241,50 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 	ctx, cancel := context.WithTimeout(ctx, f.timeout())
 	defer cancel()
 
+	// 第一轮用当前客户端；开了代理时它是代理客户端。
+	primary, primaryName := f.client, "direct"
+	if pc := f.proxyClient; pc != nil {
+		primary, primaryName = pc, "proxy"
+	}
+
+	// 开代理时把预算对半分：代理卡死不能把整个超时吃光，否则直连兜底永远
+	// 轮不上（实测一条代理不响应时，代理轮会把 300 秒耗尽，订阅一直显示
+	// 「同步中」直到超时）。对半分的代价是「大文件下载时间减半」，但这比
+	// 「兜底形同虚设」好得多 —— 正常代理拉公共规则集只要几秒。
+	proxyCtx := ctx
+	if f.proxyClient != nil {
+		var cancelProxy context.CancelFunc
+		proxyCtx, cancelProxy = context.WithTimeout(ctx, f.timeout()/2)
+		defer cancelProxy()
+	}
+
+	res, err := f.fetchRound(proxyCtx, primary, primaryName, url, etag, lastModified)
+	if err == nil {
+		return res, nil
+	}
+	// 拿到 HTTP 状态码说明链路是通的，换条路不会变好，还会盖掉真实原因。
+	var se *statusError
+	if errors.As(err, &se) {
+		return nil, err
+	}
+	if f.proxyClient == nil {
+		return nil, err
+	}
+
+	// 代理这一轮整轮失败 → 直连再跑一轮（用父 ctx 剩余的时间）。
+	res2, err2 := f.fetchRound(ctx, f.client, "direct", url, etag, lastModified)
+	if err2 == nil {
+		return res2, nil
+	}
+	return nil, fmt.Errorf("代理与直连均失败（%s: %v；直连: %v）", primaryName, err, err2)
+}
+
+// fetchRound 用一个固定客户端跑完一整轮候选地址（镜像、Pages 映射、原地址）。
+func (f *Fetcher) fetchRound(ctx context.Context, client *http.Client, via, url, etag, lastModified string) (*FetchResult, error) {
 	// GitHub raw 先走镜像：直连在这类机房上是确定不通的，先试直连只会白等几分钟。
 	if isGitHubRaw(url) {
 		for _, m := range githubMirrors {
-			res, err := f.tryWithRetry(ctx, m+url, etag, lastModified)
+			res, err := f.tryWithRetry(ctx, client, via, m+url, etag, lastModified)
 			if err == nil {
 				return res, nil
 			}
@@ -249,27 +296,27 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 	// 这类地址在公共规则源里极常见，而现有镜像都不支持 github.io 本身。
 	for _, cand := range githubPagesCandidates(url) {
 		for _, m := range githubMirrors {
-			if res, err := f.tryWithRetry(ctx, m+cand, etag, lastModified); err == nil {
+			if res, err := f.tryWithRetry(ctx, client, via, m+cand, etag, lastModified); err == nil {
 				return res, nil
 			}
 		}
 		// 镜像全挂再试一次 raw 直连（少数机房 raw 反而通）
-		if res, err := f.tryWithRetry(ctx, cand, etag, lastModified); err == nil {
+		if res, err := f.tryWithRetry(ctx, client, via, cand, etag, lastModified); err == nil {
 			return res, nil
 		}
 	}
 
-	return f.tryWithRetry(ctx, url, etag, lastModified)
+	return f.tryWithRetry(ctx, client, via, url, etag, lastModified)
 }
 
 // tryWithRetry 带网络层重试地拉取一次。
 //
 // 只在请求没拿到响应时重试，避免重复下载已经成功的内容；
 // 带状态码的错误（HTTP 4xx/5xx）重试没有意义，直接返回。
-func (f *Fetcher) tryWithRetry(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
+func (f *Fetcher) tryWithRetry(ctx context.Context, client *http.Client, via, url, etag, lastModified string) (*FetchResult, error) {
 	var lastErr error
 	for attempt := 1; attempt <= fetchAttempts; attempt++ {
-		res, err := f.fetchOnce(ctx, url, etag, lastModified)
+		res, err := f.fetchWith(ctx, client, via, url, etag, lastModified)
 		if err == nil {
 			return res, nil
 		}
@@ -295,38 +342,6 @@ type statusError struct {
 }
 
 func (e *statusError) Error() string { return fmt.Sprintf("订阅返回 HTTP %d", e.Code) }
-
-// fetchOnce 是一次完整的拉取尝试：代理优先，直连兜底。
-//
-// 回退策略说明（这是本次改动的核心）：
-//
-// 代理和直连各自能通一部分源。只走代理的话，代理挂了或代理被目标站拒绝时
-// 订阅彻底拉不动；只走直连的话，GitHub 这类源在国内机房完全不通。所以先走
-// 代理（管理员明确开了它），失败再走直连兜底。
-//
-// 只在「网络层失败」时兜底：拿到 HTTP 4xx/5xx 说明链路是通的，换条路也不会
-// 变好，反而会让真实原因（源站 404/403）被后一条路的错误盖掉。
-func (f *Fetcher) fetchOnce(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
-	if pc := f.proxyClient; pc != nil {
-		res, err := f.fetchWith(ctx, pc, "proxy", url, etag, lastModified)
-		if err == nil {
-			return res, nil
-		}
-		var se *statusError
-		if errors.As(err, &se) {
-			// 代理通了，但目标返回 4xx/5xx：换直连没有意义。
-			return nil, err
-		}
-		// 代理这条路网络层失败 → 直连兜底。
-		res2, err2 := f.fetchWith(ctx, f.client, "direct", url, etag, lastModified)
-		if err2 == nil {
-			return res2, nil
-		}
-		// 两条都不通：把两边的原因都写出来，否则管理员只能看到一半信息。
-		return nil, fmt.Errorf("代理与直连均失败（代理: %v；直连: %v）", err, err2)
-	}
-	return f.fetchWith(ctx, f.client, "direct", url, etag, lastModified)
-}
 
 // fetchWith 用指定客户端拉一次；via 只用于错误信息里标明走的哪条路。
 func (f *Fetcher) fetchWith(ctx context.Context, client *http.Client, via, url, etag, lastModified string) (*FetchResult, error) {

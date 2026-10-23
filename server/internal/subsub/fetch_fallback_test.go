@@ -108,6 +108,44 @@ func TestFetchNoFallbackOnHTTPError(t *testing.T) {
 	}
 }
 
+// TestProxyRoundCannotStarveFallback 断言代理卡死时直连仍能拿到时间。
+//
+// 这是实测踩到的坑：代理轮如果把整个超时耗尽，直连兜底就永远轮不上 ——
+// 表现出来是订阅一直显示「同步中」，直到 300 秒超时才报错。所以开代理时
+// 把预算对半分，代理最多用一半。
+func TestProxyRoundCannotStarveFallback(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("direct-content\n"))
+	}))
+	defer target.Close()
+
+	// 一个只接受连接但永不响应的「黑洞代理」。
+	blackhole := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer blackhole.Close()
+
+	// 总预算 2 秒：对半分后代理最多用 1 秒，直连还有 1 秒可用。
+	f := NewFetcherWithTimeout(2 * time.Second)
+	if err := f.SetProxy(blackhole.URL); err != nil {
+		t.Fatalf("设置代理失败: %v", err)
+	}
+
+	start := time.Now()
+	res, err := f.Fetch(context.Background(), target.URL, "", "")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("代理黑洞时直连兜底应成功，实际失败: %v（耗时 %v）", err, elapsed)
+	}
+	if !strings.Contains(string(res.Content), "direct-content") {
+		t.Fatalf("应拿到直连内容，实际 %q", string(res.Content))
+	}
+	if elapsed > 1900*time.Millisecond {
+		t.Fatalf("兜底必须留出时间，总耗时不该逼近预算上限，实际 %v", elapsed)
+	}
+}
+
 // TestSetProxyEmptyRestoresDirect 断言清空代理后彻底回到直连。
 func TestSetProxyEmptyRestoresDirect(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
