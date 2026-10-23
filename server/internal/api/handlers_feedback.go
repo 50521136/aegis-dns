@@ -80,6 +80,21 @@ func (s *Server) handleCreateFeedback(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "")
 		return
 	}
+
+	// on_submit 模式下立刻排一次 AI 诊断（异步，不阻塞本次响应）。
+	//
+	// 只对「误杀申诉」触发：wrong_allow（该拦没拦）与 other 的处置
+	// 方式差别太大，交给管理员判断更稳。模型对这两类也基本给不出
+	// 可执行建议，跑了纯属浪费额度。
+	if f.Kind == model.FeedbackWrongBlock && s.diagnoser != nil && s.diagnoser.ShouldAutoRun() {
+		if err := s.store.ResetAIDiagnosis(r.Context(), f.ID); err != nil {
+			s.log.Warn("初始化诊断状态失败", "feedback", f.ID, "err", err)
+		} else {
+			f.AIStatus = model.AIDiagPending
+			s.diagnoser.Enqueue(*f)
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, feedbackJSON(f))
 }
 

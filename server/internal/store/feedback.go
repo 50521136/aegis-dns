@@ -12,12 +12,15 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
 
-const feedbackCols = `id, user_id, username, domain, kind, message, status, admin_reply, created_at, updated_at`
+const feedbackCols = `id, user_id, username, domain, kind, message, status, admin_reply, created_at, updated_at,
+	ai_status, ai_verdict, ai_reason, ai_action, ai_reply, ai_domains, ai_guard_notes, ai_evidence, ai_model, ai_ran_at`
 
 func scanFeedback(sc interface{ Scan(...any) error }) (*model.Feedback, error) {
 	var f model.Feedback
 	if err := sc.Scan(&f.ID, &f.UserID, &f.Username, &f.Domain, &f.Kind, &f.Message,
-		&f.Status, &f.AdminReply, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		&f.Status, &f.AdminReply, &f.CreatedAt, &f.UpdatedAt,
+		&f.AIStatus, &f.AIVerdict, &f.AIReason, &f.AIAction, &f.AIReply,
+		&f.AIDomains, &f.AIGuardNotes, &f.AIEvidence, &f.AIModel, &f.AIRanAt); err != nil {
 		return nil, err
 	}
 	return &f, nil
@@ -33,9 +36,11 @@ func (s *Store) CreateFeedback(ctx context.Context, f *model.Feedback) error {
 		f.Status = model.FeedbackOpen
 	}
 	_, err := s.write.ExecContext(ctx,
-		`INSERT INTO feedback (`+feedbackCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO feedback (`+feedbackCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		f.ID, f.UserID, f.Username, f.Domain, f.Kind, f.Message, f.Status, f.AdminReply,
-		f.CreatedAt, f.UpdatedAt)
+		f.CreatedAt, f.UpdatedAt,
+		f.AIStatus, f.AIVerdict, f.AIReason, f.AIAction, f.AIReply,
+		f.AIDomains, f.AIGuardNotes, f.AIEvidence, f.AIModel, f.AIRanAt)
 	if err != nil {
 		return fmt.Errorf("提交反馈失败: %w", err)
 	}

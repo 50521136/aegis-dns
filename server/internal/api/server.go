@@ -38,6 +38,13 @@ type Server struct {
 	startedAt time.Time
 	ipLimiter *ipLimiter
 
+	// diagnoser 是 AI 诊断 worker（未启用时为 nil）。
+	// 用 interface 而不是具体类型：worker 的构造依赖设置，
+	// 而设置可以在运行期改，需要能整体替换。
+	diagnoser diagnoserIface
+	// secretBox 负责加解密模型 Key（密钥来自 .env）。
+	secretBox *secretBox
+
 	httpSrv  *http.Server
 	tlsSrv   *http.Server
 	staticFS fs.FS
@@ -67,6 +74,13 @@ func New(
 		s.staticFS = sub
 	} else {
 		log.Warn("前端静态资源不可用，/ 将返回提示页", "err", err)
+	}
+	// 密钥盒：模型 API Key 的加密存储依赖它。拿不到就降级为「不可存 Key」，
+	// 不影响其它功能 —— 用户仍可手工填 Key 到 .env 之外的地方。
+	if sb, err := newSecretBox(log); err == nil {
+		s.secretBox = sb
+	} else {
+		log.Warn("AI 诊断的密钥加密器初始化失败，模型 Key 将无法保存", "err", err)
 	}
 	return s
 }
@@ -234,6 +248,13 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/settings/test-upstream", s.handleTestUpstream)
 				// 出口代理实测：同时给代理与直连的结果，判断是代理问题还是配置问题
 				r.Post("/settings/test-proxy", s.handleTestProxy)
+				// AI 诊断：模型先给出「是否误杀 + 建议动作」，管理员一键采纳
+				r.Post("/feedback/{id}/diagnose", s.handleAdminDiagnoseFeedback)
+				r.Post("/feedback/{id}/apply", s.handleAdminApplyDiagnosis)
+				r.Get("/ai/settings", s.handleAdminGetAISettings)
+				r.Put("/ai/settings", s.handleAdminUpdateAISettings)
+				// 用 1 次真实调用验证模型连通性，避免「保存了但一跑就失败」
+				r.Post("/ai/test", s.handleAdminTestAI)
 				// 系统级备份：数据库 + 配置 + 证书打包下载
 				r.Get("/backup", s.handleAdminBackup)
 
@@ -303,6 +324,11 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// 按已保存的设置初始化出口代理（订阅拉取 + 在线更新）。
 	s.ApplyProxyFromSettings(context.Background())
+
+	// 按已保存的设置启动 AI 诊断 worker（未启用时是空操作）。
+	if set, err := s.store.GetSettings(context.Background()); err == nil {
+		s.rebuildDiagnoser(set)
+	}
 
 	errCh := make(chan error, 2)
 

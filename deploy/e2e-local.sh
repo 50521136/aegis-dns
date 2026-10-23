@@ -631,6 +631,43 @@ else
   bad "建临时订阅失败，无法验证 list_type 重拉: $(echo "$NEWSUB" | head -c 120)"
 fi
 
+hdr "AI 诊断"
+# 默认关闭：未启用时诊断接口必须明确报错，而不是静默成功
+ADIAG=$(curl -s -o /tmp/ai1.json -w "%{http_code}" -X POST "$API/admin/feedback/fb_not_exist/diagnose" \
+  -H "Authorization: Bearer $ADMTOK")
+[[ "$ADIAG" == "404" || "$ADIAG" == "503" ]] && ok "未启用时诊断接口如实报错（$ADIAG）" \
+  || bad "未启用时诊断接口应报错，实际 $ADIAG: $(head -c 120 /tmp/ai1.json)"
+
+# 设置可存可读，Key 不回显
+curl -fsS -X PUT "$API/admin/ai/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"ai_base_url":"https://api.example.com/v1","ai_model":"test-model","ai_timeout_sec":25,"ai_max_per_hour":7,"ai_trigger_mode":"manual"}' >/dev/null
+AIS=$(curl -fsS "$API/admin/ai/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$AIS" | grep -q '"ai_model":"test-model"' && ok "AI 配置可持久化" || bad "AI 配置没存住: $AIS"
+echo "$AIS" | grep -q '"ai_max_per_hour":7' && ok "每小时上限可持久化" || bad "上限没存住"
+echo "$AIS" | grep -q '"ai_key_set"' && ok "只暴露「是否已配置」而非明文 Key" || bad "缺少 ai_key_set"
+echo "$AIS" | grep -q 'sk-' && bad "响应里不该出现 Key 明文" || ok "响应里没有 Key 明文"
+
+# 非法触发模式要被拒绝
+AIBAD=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API/admin/ai/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"ai_trigger_mode":"always"}')
+[[ "$AIBAD" == "422" ]] && ok "非法触发模式被拒绝（422）" || bad "非法触发模式应 422，实际 $AIBAD"
+
+# 有模型配置但没有可诊断反馈时，采纳应报错而不是写空规则
+FBID=$(curl -fsS "$API/admin/feedback" -H "Authorization: Bearer $ADMTOK" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+items=d.get('items') or []
+print(items[0]['id'] if items else '')
+" 2>/dev/null)
+if [[ -n "$FBID" ]]; then
+  AAPPLY=$(curl -s -o /tmp/ai2.json -w "%{http_code}" -X POST "$API/admin/feedback/$FBID/apply" \
+    -H "Authorization: Bearer $ADMTOK")
+  [[ "$AAPPLY" == "400" ]] && ok "无诊断结果时采纳被拒绝（400）" \
+    || bad "无诊断结果时采纳应报错，实际 $AAPPLY: $(head -c 120 /tmp/ai2.json)"
+else
+  ok "无反馈可测，跳过采纳断言"
+fi
+
 hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')

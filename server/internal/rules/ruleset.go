@@ -170,6 +170,16 @@ func (rs *RuleSet) addRule(r model.Rule, allow, rewrite, block *trie) error {
 	return nil
 }
 
+// SplitPattern 把规则 pattern 拆成「域名 + 是否通配」。
+//
+// 导出出来是给 diagnose 包用的：诊断证据要回填「命中的是哪条规则」，
+// 需要把 pattern 里的域名叫出来。复用它而不是在新包重写一遍，是为了
+// 保证「规则怎么解析」这件事只有一处实现 —— 一旦两处口径不同，
+// 诊断结论就会和 dnsd 的实际行为对不上。
+func SplitPattern(pattern string) (string, bool, error) {
+	return splitPattern(pattern)
+}
+
 // splitPattern 把规则 pattern 拆成「域名 + 是否通配」。
 //
 // 同时兼容 AdGuard 的 ||domain^ 写法与裸域名、*.domain 写法。

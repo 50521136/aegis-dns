@@ -137,7 +137,35 @@ type Feedback struct {
 	AdminReply string `json:"admin_reply"`
 	CreatedAt  int64  `json:"created_at"`
 	UpdatedAt  int64  `json:"updated_at"`
+
+	// --- AI 诊断（异步，独立于 Status）---
+	//
+	// 单独维护一套字段而不是塞进 AdminReply：诊断结论要保留
+	// 「模型说了什么」「闸门挡了什么」两份原始信息，便于事后复盘
+	// 模型的判断是否可信 —— 混进回复文本里就再也拆不出来了。
+	AIStatus     string `json:"ai_status,omitempty"`      // '' | pending | done | failed
+	AIVerdict    string `json:"ai_verdict,omitempty"`     // wrong_block | correct | unclear
+	AIReason     string `json:"ai_reason,omitempty"`      // 给管理员看的判断依据
+	AIAction     string `json:"ai_action,omitempty"`      // add_global_allow | add_user_allow | no_action | need_human
+	AIReply      string `json:"ai_reply,omitempty"`       // 建议发给用户的回复
+	AIDomains    string `json:"ai_domains,omitempty"`     // 建议放行的域名，逗号分隔
+	AIGuardNotes string `json:"ai_guard_notes,omitempty"` // 闸门拒绝了哪些，为什么
+	AIEvidence   string `json:"-"`                        // 证据 JSON，仅入库审计，不返回前端
+	AIModel      string `json:"ai_model,omitempty"`
+	AIRanAt      int64  `json:"ai_ran_at,omitempty"`
 }
+
+// 诊断状态与动作枚举。
+const (
+	AIDiagPending = "pending"
+	AIDiagDone    = "done"
+	AIDiagFailed  = "failed"
+
+	AIActGlobalAllow = "add_global_allow"
+	AIActUserAllow   = "add_user_allow"
+	AIActNoAction    = "no_action"
+	AIActNeedHuman   = "need_human"
+)
 
 // 反馈类型与状态。
 const (
@@ -310,6 +338,25 @@ type GlobalSettings struct {
 	UpdateRepo    string `json:"update_repo"`
 	UpdateChannel string `json:"update_channel"`
 
+	// --- AI 诊断（把用户反馈的误杀交给模型先给出处置建议）---
+	//
+	// 走 OpenAI 兼容的 /chat/completions，所以 DeepSeek / 通义 / Kimi /
+	// 自建 vLLM 都能对接，不锁死厂商。
+	//
+	// AIKeyEncrypted 存的是 AES-GCM 密文，密钥由 .env 里的 AEGIS_SECRET 派生。
+	// 明文 Key 既不落库也不回显接口 —— 面板只告诉前端「已配置 / 未配置」。
+	AIEnabled      bool   `json:"ai_enabled"`
+	AIBaseURL      string `json:"ai_base_url"`
+	AIModel        string `json:"ai_model"`
+	AIKeyEncrypted string `json:"-"`
+	// AITimeoutSec 是单次诊断的超时，默认 30 秒。
+	AITimeoutSec int `json:"ai_timeout_sec"`
+	// AIMaxPerHour 是每小时最多的诊断次数，防止莫名刷爆模型额度。
+	// 0 表示不限。
+	AIMaxPerHour int `json:"ai_max_per_hour"`
+	// AITriggerMode 控制什么时候跑：off / on_submit / manual。
+	AITriggerMode string `json:"ai_trigger_mode"`
+
 	// --- 配额：不限制的话单个用户就能把内存打爆 ---
 	//
 	// 一次订阅拉进来 23 万条是常态，而订阅条目是**按用户压平**进快照的，
@@ -464,6 +511,14 @@ func DefaultSettings() GlobalSettings {
 		AllowRegister:   true,
 		InviteCode:      "",
 		UpdateChannel:   "stable",
+
+		// AI 诊断默认关闭：需要管理员自己填模型地址与 Key 才会生效。
+		// 触发方式给 manual 而不是 on_submit —— 首次接入时让管理员
+		// 手动跑几条看看结论可信不可信，比一上线就自动跑更稳妥。
+		AIEnabled:     false,
+		AITimeoutSec:  30,
+		AIMaxPerHour:  20,
+		AITriggerMode: "manual",
 
 		AllowRootDomain: true,
 		StatsRetentionD: 30,

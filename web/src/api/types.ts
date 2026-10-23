@@ -423,6 +423,49 @@ export interface Feedback {
   admin_reply: string
   created_at: string
   updated_at: string
+
+  /** AI 诊断（异步，独立于 status） */
+  ai_status?: AIDiagStatus
+  ai_verdict?: AIVerdict
+  ai_reason?: string
+  ai_action?: AIActionType
+  ai_reply?: string
+  /** 建议放行的域名，逗号分隔 */
+  ai_domains?: string
+  /** 闸门拒绝了哪些、为什么 */
+  ai_guard_notes?: string
+  ai_model?: string
+  ai_ran_at?: number
+}
+
+export type AIDiagStatus = '' | 'pending' | 'done' | 'failed'
+export type AIVerdict = 'wrong_block' | 'correct' | 'unclear'
+export type AIActionType = 'add_global_allow' | 'add_user_allow' | 'no_action' | 'need_human'
+
+/** AI 模型配置（Key 不回显，只有 ai_key_set 表示是否已配置）。 */
+export interface AISettings {
+  ai_enabled: boolean
+  ai_base_url: string
+  ai_model: string
+  ai_timeout_sec: number
+  ai_max_per_hour: number
+  ai_trigger_mode: 'off' | 'on_submit' | 'manual'
+  ai_key_set: boolean
+}
+
+/** 模型连通性测试结果。 */
+export interface AITestResult {
+  ok: boolean
+  model?: string
+  base_url?: string
+  elapsed_ms?: number
+  error?: string
+  sample?: {
+    verdict: string
+    reason: string
+    action: { type: string; domains?: string[] }
+    reply: string
+  }
 }
 
 export type FeedbackKind = 'wrong_block' | 'wrong_allow' | 'other'

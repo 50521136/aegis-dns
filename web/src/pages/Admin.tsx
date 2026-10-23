@@ -46,6 +46,7 @@ import { getAdminUserTraffic, type AdminStatsRange } from '@/api/adminStats'
 import type { AdminSettings, User } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
+import { AiSettingsCard } from '@/components/AiSettingsCard'
 import { downloadBackup, testUpstream, testProxy, type ProxyTestResult, type UpstreamTestResult } from '@/api/admin'
 import { PasswordCard, UpdateCard } from './Settings'
 import { useAuth } from '@/hooks/useAuth'
@@ -511,6 +512,8 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                   proxyEnabled={Boolean(form.watch('proxy_enabled'))}
                 />
               </div>
+
+              <AiSettingsCard />
             </CardContent>
           </Card>
         </>

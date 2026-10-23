@@ -102,3 +102,50 @@ export async function updatePreferences(patch: Partial<Preferences>): Promise<Pr
   const { data } = await api.put<Preferences>('/me/preferences', patch)
   return data
 }
+
+// ---------------------------------------------------------------------------
+// AI 诊断（管理员）
+// ---------------------------------------------------------------------------
+
+import type { AISettings, AITestResult } from './types'
+
+/**
+ * 触发一次 AI 诊断。
+ *
+ * 立即返回 202，模型结果异步写入 feedback 的 ai_* 字段，
+ * 前端靠轮询列表刷新，不要在此同步等待。
+ */
+export async function diagnoseFeedback(id: string): Promise<{ id: string; ai_status: string }> {
+  const { data } = await api.post<{ id: string; ai_status: string }>(`/admin/feedback/${id}/diagnose`)
+  return data
+}
+
+/**
+ * 采纳诊断建议：把建议的域名写成放行规则。
+ *
+ * 这是唯一会真正改动规则的接口，服务端会重新做一次安全校验，
+ * 所以库里存的建议被改脏也拦得住。
+ */
+export async function applyDiagnosis(
+  id: string,
+): Promise<{ applied: string[]; rule_count: number; global: boolean }> {
+  const { data } = await api.post<{ applied: string[]; rule_count: number; global: boolean }>(
+    `/admin/feedback/${id}/apply`,
+  )
+  return data
+}
+
+export async function getAISettings(): Promise<AISettings> {
+  const { data } = await api.get<AISettings>('/admin/ai/settings')
+  return data
+}
+
+export async function updateAISettings(patch: Partial<AISettings> & { ai_key?: string; clear_key?: boolean }): Promise<void> {
+  await api.put('/admin/ai/settings', patch)
+}
+
+/** 用一条假数据跑一次模型，验证地址/Key/模型名是否都对。 */
+export async function testAI(): Promise<AITestResult> {
+  const { data } = await api.post<AITestResult>('/admin/ai/test')
+  return data
+}

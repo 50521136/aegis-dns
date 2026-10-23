@@ -116,6 +116,32 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["proxy_enabled"]; ok {
 		set.ProxyEnabled = v == "1" || strings.EqualFold(v, "true")
 	}
+	// AI 诊断配置。空串合法（例如清掉密钥），所以用 if v, ok 而非 if v != ""。
+	if v, ok := kv["ai_enabled"]; ok {
+		set.AIEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["ai_base_url"]; ok {
+		set.AIBaseURL = v
+	}
+	if v, ok := kv["ai_model"]; ok {
+		set.AIModel = v
+	}
+	if v, ok := kv["ai_key_encrypted"]; ok {
+		set.AIKeyEncrypted = v
+	}
+	if v, ok := kv["ai_timeout_sec"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			set.AITimeoutSec = n
+		}
+	}
+	if v, ok := kv["ai_max_per_hour"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			set.AIMaxPerHour = n
+		}
+	}
+	if v, ok := kv["ai_trigger_mode"]; ok && v != "" {
+		set.AITriggerMode = v
+	}
 	if v, ok := kv["bootstrap_dns"]; ok {
 		// 允许显式清空（空串 → 空切片），此时回退到系统解析器。
 		set.BootstrapDNS = splitList(v)
@@ -285,6 +311,15 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"update_repo":             set.UpdateRepo,
 		"update_channel":          set.UpdateChannel,
 		"sub_interval_hours":      strconv.Itoa(set.SubIntervalH),
+
+		// AI 诊断
+		"ai_enabled":       boolStr(set.AIEnabled),
+		"ai_base_url":      set.AIBaseURL,
+		"ai_model":         set.AIModel,
+		"ai_key_encrypted": set.AIKeyEncrypted,
+		"ai_timeout_sec":   strconv.Itoa(set.AITimeoutSec),
+		"ai_max_per_hour":  strconv.Itoa(set.AIMaxPerHour),
+		"ai_trigger_mode":  set.AITriggerMode,
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
 		"max_sub_entries":      strconv.Itoa(set.MaxSubEntries),

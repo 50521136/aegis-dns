@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, MessageSquare, MessageSquareWarning, Send } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { AiDiagnosisPanel } from '@/components/AiDiagnosisPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -180,6 +181,14 @@ export default function AdminFeedback() {
                         <p className="eyebrow mb-1">我的回复</p>
                         <p className="whitespace-pre-wrap">{f.admin_reply}</p>
                       </div>
+                    )}
+
+                    {/* AI 诊断结论：只在还没结单时显示，已结单的没必再占版面 */}
+                    {f.status !== 'closed' && (
+                      <AiDiagnosisPanel
+                        feedback={f}
+                        onDone={() => qc.invalidateQueries({ queryKey: ['admin', 'feedback'] })}
+                      />
                     )}
                   </li>
                 )
