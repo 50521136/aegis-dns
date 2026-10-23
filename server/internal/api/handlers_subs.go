@@ -292,6 +292,9 @@ func (s *Server) updateSub(w http.ResponseWriter, r *http.Request, global bool) 
 		writeError(w, http.StatusNotFound, CodeNotFound, "订阅不存在", nil)
 		return
 	}
+	// 先记下旧值再改：下面的「是否需要重拉」要跟旧值比。
+	oldURL, oldListType := sub.URL, sub.ListType
+
 	if req.Name != "" {
 		sub.Name = req.Name
 	}
@@ -321,6 +324,19 @@ func (s *Server) updateSub(w http.ResponseWriter, r *http.Request, global bool) 
 		writeStoreError(w, err, "")
 		return
 	}
+
+	// 列表类型或地址变了必须重新拉取条目。
+	//
+	// 条目是按 list_type 的口径筛出来存的（blocklist 只存 block 那批），
+	// 只改字段不重拉的话，界面会显示「同步成功但 0 条」—— 用户看到的是
+	// 「订阅明明好了却一条规则都没有」，无从理解。换地址同理：旧条目属于
+	// 旧源，留着就是错的。
+	//
+	// 这里用 force 重拉：ETag 对应的是旧内容，不 force 会拿到 304 而跳过解析。
+	if (sub.ListType != oldListType || sub.URL != oldURL) && sub.Enabled {
+		s.refreshSubAsync(u.ID, sub, global, true)
+	}
+
 	writeJSON(w, http.StatusOK, subToJSON(sub))
 }
 

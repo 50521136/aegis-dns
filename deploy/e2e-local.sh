@@ -600,6 +600,37 @@ else
   ok "当前无失败订阅，跳过状态格式断言"
 fi
 
+hdr "订阅列表类型切换会重拉条目"
+# 改 list_type 必须重新拉取：条目是按旧口径筛出来存的，只改字段不重拉的话
+# 界面会显示「同步成功但 0 条」，用户无从理解。
+#
+# 自建一条临时全局订阅来测：e2e 里预置的那些是用户级订阅，管理员列表只看
+# 全局层，拿不到 id。
+TMPURL="http://127.0.0.1:${DNS_PORT:-15353}/probe-list.txt"
+NEWSUB=$(curl -s -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"e2e-listtype\",\"url\":\"$TMPURL\",\"list_type\":\"blocklist\"}" 2>/dev/null)
+SUBID=$(echo "$NEWSUB" | grep -o '"id":"sub_[^"]*"' | head -1 | cut -d'"' -f4)
+if [[ -n "$SUBID" ]]; then
+  curl -fsS -X PUT "$API/admin/subscriptions/$SUBID" -H "Authorization: Bearer $ADMTOK" \
+    -H 'Content-Type: application/json' -d '{"list_type":"allowlist"}' >/dev/null
+  ST=""
+  for _ in $(seq 1 15); do
+    ST=$(curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for it in d.get('items') or []:
+    if it.get('id')=='$SUBID': print(it.get('last_status') or '')
+" 2>/dev/null)
+    [[ "$ST" == *pending* ]] && break
+    sleep 1
+  done
+  [[ "$ST" == *pending* ]] && ok "改 list_type 触发重拉（状态 $ST）" || bad "改 list_type 未触发重拉: $ST"
+  curl -s -X DELETE "$API/admin/subscriptions/$SUBID" -H "Authorization: Bearer $ADMTOK" >/dev/null 2>&1 || true
+else
+  bad "建临时订阅失败，无法验证 list_type 重拉: $(echo "$NEWSUB" | head -c 120)"
+fi
+
 hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')
