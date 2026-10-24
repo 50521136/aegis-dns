@@ -147,8 +147,10 @@ grep -q '<string>HTTPS</string>' "$RUN/e2e.mobileconfig" \
 # 描述文件里的 ServerURL 必须和 /me/dns-config 主推的地址一致 ——
 # 装一个连不上的地址比不给还糟：用户会以为是自己设备的问题。
 MC_URL=$(grep -o '<string>https://[^<]*' "$RUN/e2e.mobileconfig" | head -1 | sed 's/<string>//')
-[[ "$MC_URL" == "https://dns.e2e.local/dns-query/$CID" ]] \
-  && ok "ServerURL 是路径式地址（当前证书无通配符）" || bad "ServerURL 不对: $MC_URL"
+# e2e 的 listen_doh 是 127.0.0.1:14443，非 443 端口，URL 必须显式带端口 ——
+# 不带的话客户端会回落到 443，而 dnsd 在 14443 上，结果就是连不上。
+[[ "$MC_URL" == "https://dns.e2e.local:14443/dns-query/$CID" ]] \
+  && ok "ServerURL 是路径式地址且带实际端口（当前证书无通配符）" || bad "ServerURL 不对: $MC_URL"
 # plist 必须是合法 XML，否则 iOS 会直接拒绝安装
 python3 -c "import plistlib,sys; plistlib.load(open('$RUN/e2e.mobileconfig','rb'))" 2>/dev/null \
   && ok "plist 可被解析（结构合法）" || bad "plist 解析失败"
@@ -428,7 +430,7 @@ hdr "接入地址按证书能力选择形态"
 # 测试实例用的是自签证书（SAN 只有 * 和 localhost，没有 *.dns.e2e.local），
 # 所以必须给出路径式 DoH + 裸域名 DoT —— 给子域名形态的话客户端握手就会被拒。
 DC=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $TOKEN")
-echo "$DC" | grep -q '"doh_url_path":"https://dns.e2e.local/dns-query/' && ok "给出路径式 DoH 地址" || bad "缺路径式 DoH"
+echo "$DC" | grep -q '"doh_url_path":"https://dns.e2e.local:14443/dns-query/' && ok "给出路径式 DoH 地址（含实际端口）" || bad "缺路径式 DoH"
 DOUH=$(echo "$DC" | grep -o '"doh_url":"[^"]*"' | cut -d'"' -f4)
 DOUP=$(echo "$DC" | grep -o '"doh_url_path":"[^"]*"' | cut -d'"' -f4)
 [[ "$DOUH" == "$DOUP" ]] && ok "无通配符证书时主推地址 = 路径式（$DOUH）" || bad "主推地址仍是子域名形态：$DOUH"

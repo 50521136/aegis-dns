@@ -292,7 +292,26 @@ type protoSet struct {
 	Plain bool
 }
 
-func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard bool, protos protoSet) dnsConfigJSON {
+// dnsPorts 是下发给客户端的实际端口。
+//
+// 单独打包而不是传两个 int：DoH 端口必须跟着 config.yaml 的 listen_doh 走，
+// 否则管理员把 DoH 换到 8443 后，面板还在发 https://host/dns-query（隐含 443），
+// 用户照填连不上，而服务端日志只有握手失败 —— 这种错最难自查。
+type dnsPorts struct {
+	DoH int
+	DoT int
+}
+
+// urlHost 按端口拼「主机[:端口]」：标准端口省略端口号，
+// 非标准端口必须显式带上，否则客户端会回落到默认端口。
+func (p dnsPorts) urlHost(host string) string {
+	if p.DoH == 443 || p.DoH <= 0 {
+		return host
+	}
+	return fmt.Sprintf("%s:%d", host, p.DoH)
+}
+
+func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildcard bool, protos protoSet) dnsConfigJSON {
 	subHost := clientID + "." + domain
 	if clientID == "" {
 		subHost = domain
@@ -302,8 +321,8 @@ func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard 
 	// 校验会直接拒绝握手，而服务端只会看到「握手超时/EOF」，看不出是证书问题。
 	// 所以这时主推裸域名 + 路径段带 client_id 的形态 —— 它只依赖单域名证书，
 	// 身份照样能从路径里拿到，规则不受影响。
-	dohURL := "https://" + subHost + "/dns-query"
-	dohURLPath := "https://" + domain + "/dns-query/" + clientID
+	dohURL := "https://" + ports.urlHost(subHost) + "/dns-query"
+	dohURLPath := "https://" + ports.urlHost(domain) + "/dns-query/" + clientID
 	dothost := subHost
 	if !wildcard && clientID != "" {
 		dohURL = dohURLPath
@@ -325,12 +344,17 @@ func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard 
 		cfg.DoHURL = dohURL
 		cfg.DoHURLPath = dohURLPath
 	}
+	// DoT 端口先算好：平台指引里也要用（Android 换端口会连不上，得告知）
+	dotPort := ports.DoT
+	if dotPort <= 0 {
+		dotPort = 853
+	}
 	if protos.DoT {
 		cfg.DoTHost = dothost
 		cfg.DoTPort = dotPort
 		cfg.DoTAddr = fmt.Sprintf("%s:%d", dothost, dotPort)
 	}
-	cfg.PlatformGuides = platformGuides(clientID, domain, dohURL, dothost, wildcard, protos)
+	cfg.PlatformGuides = platformGuides(clientID, domain, dohURL, dothost, wildcard, protos, dotPort)
 	return cfg
 }
 
@@ -342,7 +366,7 @@ func buildDNSConfig(domain, clientID, fingerprint string, dotPort int, wildcard 
 //
 // dohURL / dothost 由 buildDNSConfig 按证书能力算好后传进来 —— 文案是用户唯一
 // 会照着做的地方，写一个连不上的地址等于没写。
-func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, protos protoSet) []platformGuide {
+func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, protos protoSet, dotPort int) []platformGuide {
 	host := dothost
 	dotNote := ""
 	if !wildcard && clientID != "" {
@@ -411,15 +435,22 @@ func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, pro
 		)
 	}
 
-	// Android 的「私人 DNS」只支持 DoT
+	// Android 的「私人 DNS」只支持 DoT，且端口写死 853 —— 系统不给改。
+	// 所以 listen_dot 一旦离开 853，Android 这条路就断了，必须如实告知，
+	// 不能让用户照着填一个连不上的主机名。
 	if protos.DoT {
+		androidHint := "（Android 使用 DoT，端口固定 853）" + dotNote
+		if dotPort != 853 {
+			androidHint = fmt.Sprintf("（注意：服务端 DoT 已改到 %d 端口，Android「私人 DNS」固定用 853，"+
+				"无法连接；此设备请改用 DoH）", dotPort) + dotNote
+		}
 		out = append(out, platformGuide{
 			Platform:  "android",
 			Supported: true,
 			Steps: []string{
 				"打开「设置」→「网络和互联网」→「私人 DNS」",
 				"选择「私人 DNS 提供商主机名」",
-				"填入：" + host + "（Android 使用 DoT，端口固定 853）" + dotNote,
+				"填入：" + host + androidHint,
 			},
 		})
 	} else {

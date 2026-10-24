@@ -176,7 +176,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, authResponse{
 		User:      toUserJSON(user, tiers),
-		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context())),
+		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.protos(r.Context())),
 		Tokens:    pair,
 	})
 }
@@ -224,7 +224,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	loginTiers, _ := s.store.TierMap(r.Context())
 	writeJSON(w, http.StatusOK, authResponse{
 		User:      toUserJSON(user, loginTiers),
-		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dotPort(), s.coversSubdomains(r), s.protos(r.Context())),
+		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.protos(r.Context())),
 		Tokens:    pair,
 	})
 }
@@ -349,6 +349,18 @@ func (s *Server) coversSubdomains(r *http.Request) bool {
 // dotPort 返回 DoT 端口号。
 func (s *Server) dotPort() int {
 	return portToInt(s.cfg.DNS.ListenDOT, 853)
+}
+
+// dnsPorts 返回下发给客户端的实际端口。
+//
+// DoH 必须读 listen_doh：地址里带不带端口完全由它决定，
+// 写死 443 会让「改了 listen_doh 但用户拿到的地址还是 443」这种
+// 故障静默存在 —— dnsd 在新端口上正常服务，用户却连不上。
+func (s *Server) dnsPorts() dnsPorts {
+	return dnsPorts{
+		DoH: portToInt(s.cfg.DNS.ListenDOH, 443),
+		DoT: portToInt(s.cfg.DNS.ListenDOT, 853),
+	}
 }
 
 func portToInt(addr string, def int) int {
