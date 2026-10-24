@@ -129,19 +129,23 @@ check_listen() {
 # install.sh 生成的是 8080，但部署时经常要改（例如 8080 已被别的服务占用）。
 # 写死端口的自检会在一台完全正常的机器上报「API 无响应」，
 # 看起来像 apid 挂了，实际只是探错了端口。
-cfg_api_port=""; cfg_tls_port=""
+cfg_api_port=""; cfg_tls_port=""; cfg_doh_port=""; cfg_dot_port=""
 CFG_FILE="${CFG_FILE:-/opt/aegis/config.yaml}"
 if [[ -r "$CFG_FILE" ]]; then
   cfg_api_port=$(sed -n 's/^  listen: ":\{0,1\}\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
   cfg_tls_port=$(sed -n 's/^  tls_listen: ":\{0,1\}\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
+  cfg_doh_port=$(sed -n 's/^  listen_doh: "[^:]*:\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
+  cfg_dot_port=$(sed -n 's/^  listen_dot: "[^:]*:\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
 fi
 API_PORT="${API_PORT:-${cfg_api_port:-8080}}"
 TLS_PORT="${TLS_PORT:-${cfg_tls_port:-8443}}"
+DOH_PORT="${DOH_PORT:-${cfg_doh_port:-443}}"
+DOT_PORT="${DOT_PORT:-${cfg_dot_port:-853}}"
 
 check_listen udp 53 "UDP DNS"
 check_listen tcp 53 "TCP DNS"
-check_listen tcp 853 "DoT"
-check_listen tcp 443 "DoH"
+check_listen tcp "$DOT_PORT" "DoT"
+check_listen tcp "$DOH_PORT" "DoH"
 check_listen tcp "$TLS_PORT" "面板 HTTPS"
 check_listen tcp "$API_PORT" "API HTTP"
 

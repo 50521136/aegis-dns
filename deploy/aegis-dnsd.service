@@ -48,7 +48,24 @@ LimitNOFILE=65535
 # --- 资源约束 ---
 # 参考文档 15.2 容量规划：小型部署 256MB 足够；
 # 中型（<500 用户 / <100 万规则）建议提到 1G。
+#
+# 这三个值配套使用，缺一个都会出问题：
+#
+# GOMEMLIMIT 是 Go 运行时的软上限，只管 GC 策略、不预分配。设太小会让
+# 快照重建（解析 48MB JSON）期间被迫频繁 GC，表现为规则变更时 CPU 尖峰
+# 和延迟抖动。设得比 MemoryMax 低 200MB 左右，留出非堆开销的余量。
+#
+# MemoryHigh 是「黄灯」：超过就限速分配并积极回收，进程变慢但不会被杀。
+# MemoryMax 是硬上限，超了只杀这个 unit —— 有它才不会重演
+# anon-rss 涨到 1.42GB、整机 1.7GB 被内核连锅端的事故。
+#
+# MemorySwapMax=0 对 DNS 尤其重要：dnsd 一旦被换到 swap，一次解析要等
+# 磁盘 I/O，延迟从毫秒变秒级。宁可干净地 OOM 重启，也不要带着几千条
+# TLS 连接慢慢爬。
+Environment=GOMEMLIMIT=800MiB
+MemoryHigh=900M
 MemoryMax=1G
+MemorySwapMax=0
 
 [Install]
 WantedBy=multi-user.target
