@@ -255,6 +255,10 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/ai/settings", s.handleAdminUpdateAISettings)
 				// 用 1 次真实调用验证模型连通性，避免「保存了但一跑就失败」
 				r.Post("/ai/test", s.handleAdminTestAI)
+				// DoH 端口：先单独探测占用，确认可用再写入并重启 dnsd
+				r.Get("/dns/ports", s.handleGetDNSPorts)
+				r.Post("/dns/ports/check", s.handleCheckDNSPort)
+				r.Put("/dns/ports", s.handleUpdateDNSPort)
 				// 系统级备份：数据库 + 配置 + 证书打包下载
 				r.Get("/backup", s.handleAdminBackup)
 

@@ -692,6 +692,56 @@ else
   ok "无反馈可测，跳过采纳断言"
 fi
 
+hdr "DNS 端口设置"
+# 读取当前端口配置
+DPORTS=$(curl -fsS "$API/admin/dns/ports" -H "Authorization: Bearer $ADMTOK")
+echo "$DPORTS" | grep -q '"doh_port"' && ok "可读取 DoH 端口" || bad "读不到 DoH 端口: $DPORTS"
+echo "$DPORTS" | grep -q 'panel_listen' && ok "返回面板端口（供冲突清单使用）" || bad "缺 panel_listen"
+
+# 探测一个绝对不可能被占用的高位端口，应判为可用
+DCHK=$(curl -fsS -X POST "$API/admin/dns/ports/check" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"port":59991}')
+echo "$DCHK" | grep -q '"ok":true' && ok "空闲高位端口判为可用" || bad "空闲端口被误判: $DCHK"
+
+# 探测一个被真实占用中的端口，必须判为不可用 —— 这是「防止冲突导致停机」的核心
+# 占住一个端口来制造确定性的冲突
+python3 -c "
+import socket,time,sys
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(('0.0.0.0',59992)); s.listen(1)
+time.sleep(8)
+" &
+HOLDER=$!
+sleep 1
+DOCUP=$(curl -fsS -X POST "$API/admin/dns/ports/check" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"port":59992}')
+echo "$DOCUP" | grep -q '"ok":false' && ok "被占用的端口判为不可用" || bad "占用端口未被识别: $DOCUP"
+echo "$DOCUP" | grep -q '占用' && ok "给出占用原因" || bad "未说明占用原因: $DOCUP"
+kill $HOLDER 2>/dev/null; wait $HOLDER 2>/dev/null
+
+# 越界端口必须拒绝
+DBAD=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API/admin/dns/ports" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"doh_port":70000}')
+[[ "$DBAD" == "422" ]] && ok "越界端口被拒（422）" || bad "越界端口应 422，实际 $DBAD"
+
+# 与 DoT 撞车的端口必须拒绝：dnsd 单进程绑全部端口，撞车会起不来
+DOTP=$(echo "$DPORTS" | python3 -c "import json,sys;print(json.load(sys.stdin).get('dot_port',0))")
+if [[ -n "$DOTP" && "$DOTP" != "0" ]]; then
+  DCLASH=$(curl -s -o /tmp/dclash.json -w "%{http_code}" -X PUT "$API/admin/dns/ports" \
+    -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' -d "{\"doh_port\":$DOTP}")
+  [[ "$DCLASH" == "422" ]] && ok "与 DoT 撞车被拒（422）" || bad "撞车端口应 422，实际 $DCLASH"
+else
+  bad "拿不到 DoT 端口，无法验证撞车检测"
+fi
+
+# 端口未变化时不重启
+DOHP=$(echo "$DPORTS" | python3 -c "import json,sys;print(json.load(sys.stdin).get('doh_port',0))")
+if [[ -n "$DOHP" && "$DOHP" != "0" ]]; then
+  DNOP=$(curl -fsS -X PUT "$API/admin/dns/ports" -H "Authorization: Bearer $ADMTOK" \
+    -H 'Content-Type: application/json' -d "{\"doh_port\":$DOHP}")
+  echo "$DNOP" | grep -q '未变化' && ok "端口未变化时不重启" || bad "同端口应返回「未变化」: $DNOP"
+fi
+
 hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')

@@ -149,3 +149,47 @@ export async function testAI(): Promise<AITestResult> {
   const { data } = await api.post<AITestResult>('/admin/ai/test')
   return data
 }
+
+// ---------------------------------------------------------------------------
+// DNS 监听端口（管理员）
+// ---------------------------------------------------------------------------
+
+export interface DNSPortsInfo {
+  listen_udp: string
+  listen_tcp: string
+  listen_dot: string
+  listen_doh: string
+  listen_doh_plain: string
+  doh_port: number
+  dot_port: number
+  panel_listen: string
+  panel_tls_listen: string
+  in_use_by_dnsd: Record<string, boolean>
+  in_use_by_panel: Record<string, boolean>
+}
+
+export interface DNSPortCheck {
+  port: number
+  ok: boolean
+  current?: boolean
+  reason: string
+}
+
+export async function getDNSPorts(): Promise<DNSPortsInfo> {
+  const { data } = await api.get<DNSPortsInfo>('/admin/dns/ports')
+  return data
+}
+
+/** 只探测、不改配置：输入框失焦或停顿后调用。 */
+export async function checkDNSPort(port: number): Promise<DNSPortCheck> {
+  const { data } = await api.post<DNSPortCheck>('/admin/dns/ports/check', { port })
+  return data
+}
+
+/** 写入并重启 dnsd；失败时服务端会自动回滚并返回说明。 */
+export async function updateDNSPort(dohPort: number): Promise<{ ok: boolean; port: number; message: string }> {
+  const { data } = await api.put<{ ok: boolean; port: number; message: string }>('/admin/dns/ports', {
+    doh_port: dohPort,
+  })
+  return data
+}
