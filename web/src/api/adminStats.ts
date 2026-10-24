@@ -12,6 +12,8 @@ export interface UserTrafficRow {
   allowed: number
   cached: number
   block_rate: number
+  /** 识别不出租户的汇总桶（扫描器/未绑定 IP 的设备），不是真实用户 */
+  anonymous?: boolean
 }
 
 export interface UserTrafficResponse {

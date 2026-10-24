@@ -219,9 +219,21 @@ func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, it := range rows {
+		// user_id 为空的桶是「识别不出租户」的汇总：全网扫描器、
+		// 直接拿 IP 打端口的探测、没绑来源 IP 的设备。
+		//
+		// 它不该在排行榜上显示成一行没有名字的幽灵用户（用户看到会以为
+		// 数据坏了）。给它一个明确的名字 + 标记，前端据此渲染成灰色徽章，
+		// 并且可以按 anonymous 字段过滤掉。
+		name := it.Username
+		anonymous := it.UserID == ""
+		if anonymous {
+			name = "未识别来源"
+		}
 		items = append(items, map[string]any{
 			"user_id":    it.UserID,
-			"username":   it.Username,
+			"username":   name,
+			"anonymous":  anonymous,
 			"total":      it.Total,
 			"blocked":    it.Blocked,
 			"allowed":    it.Allowed,

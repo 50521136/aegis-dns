@@ -13,66 +13,96 @@ import { navItems } from './navItems'
 function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { isAdmin } = useAuth()
   const items = navItems.filter((i) => (i.adminOnly ? isAdmin : !(i.userOnly && isAdmin)))
+
+  // Esc 关闭。移动端用不到，但平板接了键盘、桌面窄窗口调试时都需要。
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  // 抽屉打开时锁住背景滚动。
+  // 不锁的话手指在遮罩上滑会滚动下面的页面，关掉抽屉后位置已经跑偏。
+  useEffect(() => {
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [open])
+
   return (
     <AnimatePresence>
+      {/* 两个子元素必须各自带 key。
+          AnimatePresence 靠 key 跟踪「谁正在退出」——原来这里包的是
+          <>...</> 碎片，碎片没有 key，退出动画就收不到完成回调，
+          于是 DOM 留在页面上而 React 认为已经移除：
+          表现为点了导航跳转成功、侧边栏却一直盖着，而且点 X 和遮罩
+          都关不掉（状态早就是 false，setState 是空操作），只能刷新。 */}
       {open && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm md:hidden"
-            onClick={onClose}
-          />
-          <motion.aside
-            initial={{ x: '-100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '-100%' }}
-            transition={{ type: 'spring', stiffness: 400, damping: 36 }}
-            className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[80vw] flex-col border-r border-border bg-card pt-safe md:hidden"
-          >
-            <div className="flex h-16 items-center justify-between px-5">
-              <div className="flex items-center gap-2.5">
-                <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-                  <ShieldCheck className="size-5" />
-                </div>
-                <p className="text-base font-bold">DNSForge</p>
+        <motion.div
+          key="drawer-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm md:hidden"
+          onClick={onClose}
+        />
+      )}
+      {open && (
+        <motion.aside
+          key="drawer-panel"
+          initial={{ x: '-100%' }}
+          animate={{ x: 0 }}
+          exit={{ x: '-100%' }}
+          transition={{ type: 'spring', stiffness: 400, damping: 36 }}
+          className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[80vw] flex-col border-r border-border bg-card pt-safe md:hidden"
+        >
+          <div className="flex h-16 items-center justify-between px-5">
+            <div className="flex items-center gap-2.5">
+              <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+                <ShieldCheck className="size-5" />
               </div>
-              <button
-                onClick={onClose}
-                className="flex size-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
-                aria-label="关闭菜单"
-              >
-                <X className="size-5" />
-              </button>
+              <p className="text-base font-bold">DNSForge</p>
             </div>
-            <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
-              {items.map((item) => {
-                const Icon = item.icon
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.end}
-                    onClick={onClose}
-                    className={({ isActive }) =>
-                      cn(
-                        'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors',
-                        isActive
-                          ? 'bg-primary/10 text-primary'
-                          : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                      )
-                    }
-                  >
-                    <Icon className="size-5" />
-                    {item.label}
-                  </NavLink>
-                )
-              })}
-            </nav>
-          </motion.aside>
-        </>
+            <button
+              onClick={onClose}
+              className="flex size-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
+              aria-label="关闭菜单"
+            >
+              <X className="size-5" />
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+            {items.map((item) => {
+              const Icon = item.icon
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={onClose}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors',
+                      isActive
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                    )
+                  }
+                >
+                  <Icon className="size-5" />
+                  {item.label}
+                </NavLink>
+              )
+            })}
+          </nav>
+        </motion.aside>
       )}
     </AnimatePresence>
   )
@@ -82,6 +112,16 @@ export function AppLayout() {
   const location = useLocation()
   const isDesktop = useIsDesktop()
   const [drawerOpen, setDrawerOpen] = useState(false)
+
+  // 路由一变就无条件关掉抽屉。
+  //
+  // 这是上一版那个「侧边栏关不掉」bug 的兜底：不管用户是点导航跳转、
+  // 点浏览器后退、还是程序里 push 了新路由，只要路径变了，抽屉一定收起。
+  // 只依赖 NavLink 的 onClick 是不够的 —— 任何一次动画或事件异常都会
+  // 让它停留在打开状态，而那种状态下用户只能刷新。
+  useEffect(() => {
+    setDrawerOpen(false)
+  }, [location.pathname])
 
   // 路由变化时滚动到顶部
   useEffect(() => {

@@ -78,6 +78,11 @@ type Handler struct {
 	protosRejected atomic.Int64
 	// quotaRefused 统计因超出每日请求量上限被拒的次数
 	quotaRefused atomic.Int64
+	// fallbackRefused 统计「识别不出租户」而被兜底策略拒绝的查询数。
+	//
+	// 这类请求不写查询日志（见下方说明），但仍要能看出「有没有人在乱打」，
+	// 所以留一个纯计数器：面板/排查时能拿到数字，而不会污染用户排行榜。
+	fallbackRefused atomic.Int64
 	// quota 是每日请求量计数器（会员档位）
 	quota        *dailyQuota
 	upstreamErrs atomic.Int64
@@ -296,8 +301,18 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 
 	// 未识别请求的 refused 策略。
+	//
+	// 这里**故意不写查询日志**。
+	//
+	// 原因：识别不出租户的请求（全网扫描器的 hostname.bind / version.bind、
+	// 直接拿 IP 打 53 的探测、没绑来源 IP 的设备）全部会落到 user_id="" 这个
+	// 兜底桶里。它们写进日志后，管理员在「用户排行榜」上会看到一行没有名字
+	// 的幽灵用户，拦截率接近 100%、缓存命中 0 —— 看起来像数据坏了，
+	// 实际是一堆扫描器。排行榜是给人看用量排行的，不该被这类噪音占位。
+	//
+	// 保留一个纯计数器：既避免污染榜单，又还能看出「有没有人在乱打」。
 	if isFallback && d.FallbackPolicy == model.FallbackRefused {
-		h.record("", q, "blocked", "REFUSED", time.Since(start), w)
+		h.fallbackRefused.Add(1)
 		writeMsg(w, req, refusedResponse(req))
 		return
 	}

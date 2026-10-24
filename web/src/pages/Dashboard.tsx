@@ -437,7 +437,20 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                     <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold tabular-nums text-muted-foreground">
                       {i + 1}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{row.username}</span>
+                    <span
+                      className={
+                        row.anonymous
+                          ? 'min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground'
+                          : 'min-w-0 flex-1 truncate text-sm font-medium'
+                      }
+                    >
+                      {row.username}
+                      {row.anonymous && (
+                        <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-[10px] font-normal text-muted-foreground">
+                          非用户
+                        </span>
+                      )}
+                    </span>
                     <span className="w-24 text-right font-mono text-xs tabular-nums">
                       {formatNumber(row.total)}
                     </span>
