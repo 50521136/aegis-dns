@@ -260,6 +260,9 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 
 	set.StatsRetentionD = intOr(kv["stats_retention_days"], set.StatsRetentionD)
 	set.MaxIDResets = intOr(kv["max_id_resets"], set.MaxIDResets)
+	if v, ok := kv["root_domain_reserved"]; ok {
+		set.RootDomainReserved = v == "1"
+	}
 	if v, ok := kv["allow_root_domain"]; ok {
 		set.AllowRootDomain = v == "1" || strings.EqualFold(v, "true")
 	}
@@ -363,6 +366,7 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"stats_retention_days": strconv.Itoa(set.StatsRetentionD),
 		"max_id_resets":        strconv.Itoa(set.MaxIDResets),
 		"allow_root_domain":    boolStr(set.AllowRootDomain),
+		"root_domain_reserved": boolStr(set.RootDomainReserved),
 		"allow_user_rules":     boolStr(set.AllowUserRules),
 		"allow_user_subs":      boolStr(set.AllowUserSubs),
 	}

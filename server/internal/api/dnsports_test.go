@@ -19,7 +19,7 @@ var allProtos = protoSet{DoH: true, DoT: true, Plain: true}
 // 443 是 DoH 的默认端口，带上 :443 虽然能用，但地址更啰嗦，
 // 而且部分客户端对带端口的 URL 处理不一致。
 func TestDoHURLStandardPort(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 443, DoT: 853}, true, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 443, DoT: 853}, true, false, allProtos)
 	if cfg.DoHURL != "https://abc123.example.com/dns-query" {
 		t.Fatalf("443 时应省略端口，实际 %q", cfg.DoHURL)
 	}
@@ -42,7 +42,7 @@ func TestDoHURLNonStandardPort(t *testing.T) {
 		{80, "https://abc123.example.com:80/dns-query"},
 	}
 	for _, c := range cases {
-		cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: c.port, DoT: 853}, true, allProtos)
+		cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: c.port, DoT: 853}, true, false, allProtos)
 		if cfg.DoHURL != c.want {
 			t.Errorf("端口 %d：期望 %q，实际 %q", c.port, c.want, cfg.DoHURL)
 		}
@@ -54,7 +54,7 @@ func TestDoHURLNonStandardPort(t *testing.T) {
 // 两个分支（子域名式 / 路径式）都要覆盖：只改一个分支的话，
 // 用户一旦用上路径式地址，端口又会丢。
 func TestDoHURLPathForm(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 8443, DoT: 853}, false, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 8443, DoT: 853}, false, false, allProtos)
 	want := "https://example.com:8443/dns-query/abc123"
 	if cfg.DoHURLPath != want {
 		t.Fatalf("路径式地址应带端口，期望 %q，实际 %q", want, cfg.DoHURLPath)
@@ -67,7 +67,7 @@ func TestDoHURLPathForm(t *testing.T) {
 
 // TestDoTPortFollowsConfig 断言 DoT 端口跟着 listen_dot 走。
 func TestDoTPortFollowsConfig(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 443, DoT: 8853}, true, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 443, DoT: 8853}, true, false, allProtos)
 	if cfg.DoTPort != 8853 {
 		t.Fatalf("DoT 端口应跟随配置 8853，实际 %d", cfg.DoTPort)
 	}
@@ -80,7 +80,7 @@ func TestDoTPortFollowsConfig(t *testing.T) {
 //
 // 老配置里可能没有 listen_doh 这一项，不能因此生成 :0 这种地址。
 func TestPortsZeroFallBack(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{}, true, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{}, true, false, allProtos)
 	if strings.Contains(cfg.DoHURL, ":0") {
 		t.Fatalf("端口 0 不能出现在地址里：%q", cfg.DoHURL)
 	}
@@ -93,8 +93,7 @@ func TestPortsZeroFallBack(t *testing.T) {
 //
 // 下发了地址用户就会照着填，填了连不上比看不到更糟。
 func TestDisabledProtoNoAddr(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 8443, DoT: 853},
-		true, protoSet{DoH: false, DoT: true, Plain: false})
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 8443, DoT: 853}, true, false, protoSet{DoH: false, DoT: true, Plain: false})
 	if cfg.DoHURL != "" || cfg.DoHURLPath != "" {
 		t.Fatalf("DoH 关闭时不该下发地址，实际 %q / %q", cfg.DoHURL, cfg.DoHURLPath)
 	}
@@ -108,7 +107,7 @@ func TestDisabledProtoNoAddr(t *testing.T) {
 // 指引是用户唯一会照着做的地方：它给的地址错了，
 // 前面算得再对也没用。
 func TestPlatformGuidesCarryPort(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 8443, DoT: 8853}, true, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 8443, DoT: 8853}, true, false, allProtos)
 	joined := ""
 	for _, g := range cfg.PlatformGuides {
 		joined += strings.Join(g.Steps, "\n")
@@ -128,7 +127,7 @@ func TestPlatformGuidesCarryPort(t *testing.T) {
 
 // TestAndroidGuideStandardPort 断言 DoT 保持 853 时提示正常、不出现警告。
 func TestAndroidGuideStandardPort(t *testing.T) {
-	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 443, DoT: 853}, true, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", dnsPorts{DoH: 443, DoT: 853}, true, false, allProtos)
 	for _, g := range cfg.PlatformGuides {
 		if g.Platform != "android" {
 			continue

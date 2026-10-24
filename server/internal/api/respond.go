@@ -311,7 +311,7 @@ func (p dnsPorts) urlHost(host string) string {
 	return fmt.Sprintf("%s:%d", host, p.DoH)
 }
 
-func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildcard bool, protos protoSet) dnsConfigJSON {
+func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildcard, rootReserved bool, protos protoSet) dnsConfigJSON {
 	subHost := clientID + "." + domain
 	if clientID == "" {
 		subHost = domain
@@ -329,6 +329,11 @@ func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildca
 		// DoT 没有路径段可放 client_id，只能用裸域名；
 		// 此时租户靠来源 IP 识别，未登记 IP 的客户端会走兜底策略。
 		dothost = domain
+	} else if rootReserved {
+		// 主域名被拿去当网站了，路径式地址指向的是网站而不是 DNS 服务，
+		// 发出去只会让用户白试。有通配符时子域名形态本来就能用，
+		// 所以这里直接不发 —— 前端见到空值就不渲染那一栏。
+		dohURLPath = ""
 	}
 
 	cfg := dnsConfigJSON{
@@ -523,6 +528,18 @@ func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, pro
 //
 // 读不到设置或三个全关时按「全开」处理：这个函数决定用户能不能拿到地址，
 // 因为一次读库失败就返回「全部未开放」，用户会以为服务挂了。
+// rootDomainReserved 返回「主域名是否已被用作网站/前端域名」。
+//
+// 读不到设置时按 false 处理：宁可多发一个可能用不了的地址，
+// 也不要在读库失败时把唯一可用的接入地址藏起来。
+func (s *Server) rootDomainReserved(ctx context.Context) bool {
+	set, err := s.store.GetSettings(ctx)
+	if err != nil || set == nil {
+		return false
+	}
+	return set.RootDomainReserved
+}
+
 func (s *Server) protos(ctx context.Context) protoSet {
 	set, err := s.store.GetSettings(ctx)
 	if err != nil || set == nil {

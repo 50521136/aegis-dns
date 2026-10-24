@@ -277,6 +277,7 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		// 这个 map 是手写的，加字段时这里必须同步 —— 漏了的话设置存进去了
 		// 但前端读不到，表现为「改了没生效」。
 		"allow_root_domain":    set.AllowRootDomain,
+		"root_domain_reserved": set.RootDomainReserved,
 		"stats_retention_days": set.StatsRetentionD,
 		"max_id_resets":        set.MaxIDResets,
 		"allow_user_rules":     set.AllowUserRules,
@@ -370,11 +371,12 @@ type settingsPatch struct {
 	SMTPTLS             *string `json:"smtp_tls"`
 	EmailVerifyRegister *bool   `json:"email_verify_register"`
 
-	AllowRootDomain *bool `json:"allow_root_domain"`
-	StatsRetentionD *int  `json:"stats_retention_days"`
-	MaxIDResets     *int  `json:"max_id_resets"`
-	AllowUserRules  *bool `json:"allow_user_rules"`
-	AllowUserSubs   *bool `json:"allow_user_subs"`
+	AllowRootDomain    *bool `json:"allow_root_domain"`
+	RootDomainReserved *bool `json:"root_domain_reserved"`
+	StatsRetentionD    *int  `json:"stats_retention_days"`
+	MaxIDResets        *int  `json:"max_id_resets"`
+	AllowUserRules     *bool `json:"allow_user_rules"`
+	AllowUserSubs      *bool `json:"allow_user_subs"`
 }
 
 // applySettingsPatch 把请求里出现过的字段写到 dst 上。
@@ -466,6 +468,7 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setBool(&dst.EnablePlainDNS, p.EnablePlainDNS)
 	setBool(&dst.AllowRegister, p.AllowRegister)
 	setBool(&dst.AllowRootDomain, p.AllowRootDomain)
+	setBool(&dst.RootDomainReserved, p.RootDomainReserved)
 	setBool(&dst.AllowUserRules, p.AllowUserRules)
 	setBool(&dst.AllowUserSubs, p.AllowUserSubs)
 	if p.InviteCode != nil {
@@ -661,6 +664,7 @@ func mergeSettings(dst *model.GlobalSettings, src *model.GlobalSettings) {
 	dst.EnableQueryLog = src.EnableQueryLog
 	dst.AllowRegister = src.AllowRegister
 	dst.AllowRootDomain = src.AllowRootDomain
+	dst.RootDomainReserved = src.RootDomainReserved
 	dst.AllowUserRules = src.AllowUserRules
 	dst.AllowUserSubs = src.AllowUserSubs
 	dst.InviteCode = strings.TrimSpace(src.InviteCode)

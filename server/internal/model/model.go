@@ -215,6 +215,7 @@ type Defaults struct {
 	// AllowRootDomain 决定裸域名（如 adguard.com）能否被当作合法入口。
 	// 为真时它按「无租户」处理、只套全局规则；为假时直接 REFUSED。
 	AllowRootDomain bool `json:"allow_root_domain"`
+
 	// EnableECS / EnableDNSSEC 是转发行为开关，dnsd 据此决定要不要动查询报文。
 	EnableECS    bool `json:"enable_ecs"`
 	EnableDNSSEC bool `json:"enable_dnssec"`
@@ -466,6 +467,18 @@ type GlobalSettings struct {
 	// AllowRootDomain 为真时，主域名本身（如 example.com）也能解析，
 	// 而不只是 <client_id>.example.com。方便用户在没法填子域名的客户端里直接用主域名。
 	AllowRootDomain bool `json:"allow_root_domain"`
+	// RootDomainReserved 表示主域名已经被拿去当网站/前端域名了，
+	// 不再作为 DNS 接入点。
+	//
+	// 为什么需要单独一个开关：DoH 有两种地址形态 ——
+	//   <client_id>.<域名>/dns-query      靠 SNI 认租户（需要通配符证书）
+	//   <域名>/dns-query/<client_id>      靠路径段认租户（只需单域名证书）
+	// 后者天生用裸域名当 Host。主域名一旦挂了自己的网站，这个形态就废了：
+	// 用户拿到的地址指向的是网站，不是 DNS 服务。
+	//
+	// 注意不能只看证书就自动隐藏 —— 没有通配符时路径式是唯一可用形态，
+	// 藏起来等于什么都不给。所以做成显式开关，由管理员确认。
+	RootDomainReserved bool `json:"root_domain_reserved"`
 
 	// StatsRetentionD 是统计汇总（query_rollup / top_domains）的保留天数。
 	StatsRetentionD int `json:"stats_retention_days"`

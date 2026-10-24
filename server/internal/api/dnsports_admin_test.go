@@ -254,7 +254,7 @@ func TestDNSConfigReflectsNewPort(t *testing.T) {
 	if ports.DoH != 8443 {
 		t.Fatalf("dnsPorts().DoH 应读 listen_doh，实际 %d", ports.DoH)
 	}
-	cfg := buildDNSConfig("example.com", "abc123", "", ports, true, allProtos)
+	cfg := buildDNSConfig("example.com", "abc123", "", ports, true, false, allProtos)
 	want := "https://abc123.example.com:8443/dns-query"
 	if cfg.DoHURL != want {
 		t.Fatalf("期望 %q，实际 %q", want, cfg.DoHURL)

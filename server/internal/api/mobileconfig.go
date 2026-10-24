@@ -168,7 +168,7 @@ func xmlEscape(s string) string {
 func (s *Server) handleMobileConfig(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	protos := s.protos(r.Context())
-	cfg := buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), protos)
+	cfg := buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.rootDomainReserved(r.Context()), protos)
 
 	// proto 让用户自己选生成哪种描述文件：
 	//   doh → DNSProtocol=HTTPS（默认，Apple 支持最稳）

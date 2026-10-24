@@ -301,6 +301,8 @@ export interface AdminSettings {
 
   /** 裸域名（主域名本身）是否可用；关掉后只认 <client_id>.域名 */
   allow_root_domain: boolean
+  /** 主域名已用作网站/前端域名，不再下发基于裸主域名的 DoH 路径式地址 */
+  root_domain_reserved: boolean
   /** 统计汇总保留天数，0 = 不按时间清理 */
   stats_retention_days: number
   /** 每个用户可自助重置 client_id 的次数，0 = 禁止 */

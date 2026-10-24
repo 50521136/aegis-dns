@@ -742,6 +742,38 @@ if [[ -n "$DOHP" && "$DOHP" != "0" ]]; then
   echo "$DNOP" | grep -q '未变化' && ok "端口未变化时不重启" || bad "同端口应返回「未变化」: $DNOP"
 fi
 
+hdr "主域名保留给网站"
+# 打开 root_domain_reserved 后，路径式 DoH 地址必须消失（有通配符时）
+RDR=$(curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"root_domain_reserved":true}')
+echo "$RDR" | grep -q '"root_domain_reserved":true' && ok "root_domain_reserved 可持久化" || bad "设置没存住: $RDR"
+# 等快照重建后再读 dns-config
+sleep 1
+DCR=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $ADMTOK")
+echo "$DCR" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+p=d.get('doh_url_path') or ''
+u=d.get('doh_url') or ''
+print('PATH='+p); print('URL='+u)
+" > /tmp/rdr.txt 2>/dev/null
+if grep -q "^PATH=$" /tmp/rdr.txt; then
+  ok "主域名保留时不再下发路径式地址"
+else
+  # 无通配符证书时路径式是唯一形态，允许保留
+  grep -q "^PATH=https://.*dns-query/" /tmp/rdr.txt \
+    && ok "无通配符证书，路径式保留（唯一可用形态）" \
+    || bad "路径式地址状态异常: $(cat /tmp/rdr.txt)"
+fi
+grep -q "^URL=https://" /tmp/rdr.txt && ok "子域名形态仍然下发" || bad "子域名地址丢了"
+
+# 关闭后应恢复两种形态（有通配符时）
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"root_domain_reserved":false}' >/dev/null
+sleep 1
+DC2=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $ADMTOK")
+echo "$DC2" | grep -q '"root_domain_reserved"' && bad "dns-config 不该带设置字段" || ok "dns-config 结构未受污染"
+
 hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')

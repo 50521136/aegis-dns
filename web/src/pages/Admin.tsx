@@ -109,6 +109,7 @@ const settingsSchema = z.object({
   update_channel: z.enum(['stable', 'beta']),
 
   allow_root_domain: z.boolean(),
+  root_domain_reserved: z.boolean(),
   stats_retention_days: z.coerce.number().int().min(0),
   max_id_resets: z.coerce.number().int().min(0),
   allow_user_rules: z.boolean(),
@@ -416,6 +417,12 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                 desc="关闭时裸域名请求直接 REFUSED，用户分配的子域名不受影响"
                 checked={Boolean(form.watch('allow_root_domain'))}
                 onChange={(v) => form.setValue('allow_root_domain', v)}
+              />
+              <ToggleRow
+                title="主域名已用作网站"
+                desc="打开后不再下发 <主域名>/dns-query/<ID> 这种路径式 DoH 地址（它会指向你的网站而不是 DNS 服务）。需要通配符证书，否则路径式是唯一可用形态、不会被隐藏"
+                checked={Boolean(form.watch('root_domain_reserved'))}
+                onChange={(v) => form.setValue('root_domain_reserved', v)}
               />
               <div className="space-y-2">
                 <Label htmlFor="invite_code">全局邀请码（可选）</Label>

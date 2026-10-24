@@ -176,7 +176,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, authResponse{
 		User:      toUserJSON(user, tiers),
-		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.protos(r.Context())),
+		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.rootDomainReserved(r.Context()), s.protos(r.Context())),
 		Tokens:    pair,
 	})
 }
@@ -224,7 +224,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	loginTiers, _ := s.store.TierMap(r.Context())
 	writeJSON(w, http.StatusOK, authResponse{
 		User:      toUserJSON(user, loginTiers),
-		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.protos(r.Context())),
+		DNSConfig: buildDNSConfig(s.domain(r), user.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.rootDomainReserved(r.Context()), s.protos(r.Context())),
 		Tokens:    pair,
 	})
 }
