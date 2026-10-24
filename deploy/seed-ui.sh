@@ -72,8 +72,13 @@ EOF
 
 # 前端产物要先进 embed 目录，否则 apid 端的是仓库里的占位 index.html
 ( cd "$ROOT/web" && npm run build >/dev/null 2>&1 ) || { echo "前端构建失败" >&2; exit 1; }
-rm -rf "$ROOT/server/internal/api/webdist/dist"
-cp -r "$ROOT/web/dist" "$ROOT/server/internal/api/webdist/dist"
+# 不要 rm -rf 整个目录：.gitkeep 是 //go:embed all:dist 的占位保护，
+# 删掉后 git 会认为该目录被删除，推到 CI 上（Go 作业跑在前端构建之前）
+# 就会以 pattern all:dist: no matching files found 编译失败。
+DEST="$ROOT/server/internal/api/webdist/dist"
+mkdir -p "$DEST"
+find "$DEST" -mindepth 1 ! -name .gitkeep -delete
+cp -r "$ROOT/web/dist/." "$DEST/"
 
 ( cd "$ROOT/server" && go build -o "$RUN/apid" ./cmd/apid && go build -o "$RUN/dnsd" ./cmd/dnsd ) \
   || { echo "后端构建失败" >&2; exit 1; }

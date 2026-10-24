@@ -43,3 +43,11 @@ tar czf "$PKG.tar.gz" "$PKG"
 echo "    包: $OUT/$PKG.tar.gz  ($(du -h "$OUT/$PKG.tar.gz" | cut -f1))"
 echo "    版本: $(/tmp/aegis-apid -version 2>/dev/null || echo "$VERSION")"
 rm -f /tmp/aegis-dnsd /tmp/aegis-apid
+
+# 兜底：确认 embed 占位文件还在。
+# //go:embed all:dist 要求该目录至少有一个文件，CI 的 Go 作业跑在前端构建之前，
+# 少了 .gitkeep 就会以 "pattern all:dist: no matching files found" 编译失败。
+# 本地因为 dist 里总有构建产物，这个问题永远复现不出来，只能在每次构建后自检。
+GITKEEP="$ROOT/server/internal/api/webdist/dist/.gitkeep"
+[ -f "$GITKEEP" ] || { : > "$GITKEEP"; echo "    注意: 已补回 $GITKEEP"; }
+git -C "$ROOT" add -f "$GITKEEP" 2>/dev/null || true
