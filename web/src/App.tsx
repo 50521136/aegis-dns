@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { Suspense, lazy, useEffect, useRef } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/hooks/useTheme'
@@ -8,34 +8,56 @@ import { PublicLayout } from '@/components/layout/PublicLayout'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute, AdminRoute, UserOnlyRoute } from '@/components/ProtectedRoute'
 import { getVersion } from '@/api/system'
+import { RouteFallback } from '@/components/RouteFallback'
 
+// 页面全部按路由懒加载。
+//
+// 原来这里是 20 多个同步 import，于是所有页面 + recharts + framer-motion
+// 全被打进入口 chunk：单文件 1.32 MB（gzip 394 KB）。在 2 Mbps 的机器上
+// 一次页面加载要 5.3 秒，而普通用户一个会话只看其中两三个页面。
+//
+// 拆开之后入口只留壳组件 + 落地页；Admin 那一坨（Admin.tsx 1412 行、
+// 带 recharts 的图表）只有管理员进后台才会下载。
+//
+// 唯一刻意保留同步导入的是 Landing：它是未登录访客的第一屏，
+// 让它多等一个网络往返去取 chunk 不值得。
 import Landing from '@/pages/Landing'
-import Login from '@/pages/Login'
-import Register from '@/pages/Register'
-import ForgotPassword from '@/pages/ForgotPassword'
-import Dashboard from '@/pages/Dashboard'
-import DnsSetup from '@/pages/DnsSetup'
-import Account from '@/pages/Account'
-import Rules from '@/pages/Rules'
-import Subscriptions from '@/pages/Subscriptions'
-import QueryLog from '@/pages/QueryLog'
-import Settings from '@/pages/Settings'
-import Admin from '@/pages/Admin'
-import {
-  AdminUsersPage,
-  AdminMemberPage,
-  AdminAnnouncePage,
-  AdminDnsPage,
-  AdminGeneralPage,
-  AdminEmailPage,
-  AdminSystemPage,
-} from '@/pages/Admin'
-import AdminLogs from '@/pages/AdminLogs'
-import { AdminRulesPage, AdminSubsPage } from '@/pages/AdminAssetsPages'
-import AdminFeedback from '@/pages/AdminFeedback'
-import AdminTls from '@/pages/AdminTls'
-import Feedback from '@/pages/Feedback'
 import NotFound from '@/pages/NotFound'
+
+// 命名导出的页面要在 lazy 里转成 default，否则 React.lazy 会拿到
+// 模块对象而不是组件，报 “Element type is invalid”。
+const lazyNamed = <T extends Record<string, unknown>, K extends keyof T>(
+  loader: () => Promise<T>,
+  name: K,
+) => lazy(() => loader().then((m) => ({ default: m[name] as unknown as React.ComponentType })))
+
+const Login = lazy(() => import('@/pages/Login'))
+const Register = lazy(() => import('@/pages/Register'))
+const ForgotPassword = lazy(() => import('@/pages/ForgotPassword'))
+const Dashboard = lazy(() => import('@/pages/Dashboard'))
+const DnsSetup = lazy(() => import('@/pages/DnsSetup'))
+const Account = lazy(() => import('@/pages/Account'))
+const Rules = lazy(() => import('@/pages/Rules'))
+const Subscriptions = lazy(() => import('@/pages/Subscriptions'))
+const QueryLog = lazy(() => import('@/pages/QueryLog'))
+const Settings = lazy(() => import('@/pages/Settings'))
+const Feedback = lazy(() => import('@/pages/Feedback'))
+const Admin = lazy(() => import('@/pages/Admin'))
+const AdminLogs = lazy(() => import('@/pages/AdminLogs'))
+const AdminFeedback = lazy(() => import('@/pages/AdminFeedback'))
+const AdminTls = lazy(() => import('@/pages/AdminTls'))
+
+// Admin.tsx 里是多个命名导出，共用同一个模块 —— 用 lazyNamed 拆出来，
+// 打包后它们仍然落在同一个 chunk 里（这正是我们要的：进一次后台只拉一次）。
+const AdminUsersPage = lazyNamed(() => import('@/pages/Admin'), 'AdminUsersPage')
+const AdminMemberPage = lazyNamed(() => import('@/pages/Admin'), 'AdminMemberPage')
+const AdminAnnouncePage = lazyNamed(() => import('@/pages/Admin'), 'AdminAnnouncePage')
+const AdminDnsPage = lazyNamed(() => import('@/pages/Admin'), 'AdminDnsPage')
+const AdminGeneralPage = lazyNamed(() => import('@/pages/Admin'), 'AdminGeneralPage')
+const AdminEmailPage = lazyNamed(() => import('@/pages/Admin'), 'AdminEmailPage')
+const AdminSystemPage = lazyNamed(() => import('@/pages/Admin'), 'AdminSystemPage')
+const AdminRulesPage = lazyNamed(() => import('@/pages/AdminAssetsPages'), 'AdminRulesPage')
+const AdminSubsPage = lazyNamed(() => import('@/pages/AdminAssetsPages'), 'AdminSubsPage')
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -94,7 +116,10 @@ export default function App() {
           <BrowserRouter>
             <AuthProvider>
               <VersionWatcher />
-              <Routes>
+              {/* 懒加载页面的加载态。放在 Routes 外层而不是每个 Route 里：
+                  路由切换时整个内容区替换成占位，避免旧页面残留造成「点了没反应」的错觉。 */}
+              <Suspense fallback={<RouteFallback />}>
+                <Routes>
                 {/* 公共页面 */}
                 <Route element={<PublicLayout />}>
                   <Route path="/" element={<Landing />} />
@@ -147,9 +172,10 @@ export default function App() {
                   </Route>
                 </Route>
 
-                <Route path="/404" element={<NotFound />} />
-                <Route path="*" element={<NotFound />} />
-              </Routes>
+                  <Route path="/404" element={<NotFound />} />
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </Suspense>
             </AuthProvider>
           </BrowserRouter>
         </ToastProvider>
