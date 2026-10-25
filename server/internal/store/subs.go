@@ -317,6 +317,42 @@ func (s *Store) CountSubEntriesAll(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// GlobalLayerStats 是全局层的规模，用于给用户看「管理员已经替你挡了多少」。
+//
+// 为什么要给用户看这个：管理员开了全局规则/订阅之后，用户在自己的规则页
+// 看到的是一片空白，很自然会以为「没有任何规则在生效」，于是自己再挂一份
+// 大订阅 —— 既占他自己的配额，也占服务器内存（订阅条目是按用户压平进快照的）。
+// 把真实条数摆出来，用户才知道不需要重复添加。
+type GlobalLayerStats struct {
+	// RuleCount 是启用的全局规则条数（不含订阅）。
+	RuleCount int `json:"rule_count"`
+	// SubCount 是启用的全局订阅份数。
+	SubCount int `json:"sub_count"`
+	// SubEntryCount 是这些全局订阅展开后的域名条目总数。
+	SubEntryCount int `json:"sub_entry_count"`
+}
+
+// CountEnabledGlobalRules 数启用的全局规则。
+func (s *Store) CountEnabledGlobalRules(ctx context.Context) (int, error) {
+	var n int
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM rules WHERE enabled = 1 AND is_global = 1`).Scan(&n)
+	return n, err
+}
+
+// GlobalSubStats 数启用的全局订阅份数与条目总数。
+//
+// 一次查询取两个数：份数用 COUNT(DISTINCT s.id)，条目数用 COUNT(e.domain)。
+// 分两次查会在两次之间插入新订阅时给出自相矛盾的数字（份数 0、条目几万）。
+func (s *Store) GlobalSubStats(ctx context.Context) (subs int, entries int, err error) {
+	err = s.read.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT s.id), COUNT(e.domain)
+		   FROM subscriptions s
+		   LEFT JOIN sub_entries e ON e.sub_id = s.id
+		  WHERE s.enabled = 1 AND s.is_global = 1`).Scan(&subs, &entries)
+	return subs, entries, err
+}
+
 // AuditRow 是一条审计日志。
 type AuditRow struct {
 	ID     int64  `json:"id"`

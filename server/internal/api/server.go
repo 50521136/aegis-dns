@@ -134,6 +134,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/feedback", s.handleListMyFeedback)
 			r.Put("/me/password", s.handleChangePassword)
 			r.Get("/me/dns-config", s.handleDNSConfig)
+			// 全局层规模：规则/订阅页据此提示「管理员已内置，一般无需自己添加」。
+			r.Get("/me/global-layer", s.handleMyGlobalLayer)
 			// iOS / macOS 的加密 DNS 描述文件，系统级批量下发用
 			r.Get("/me/mobileconfig", s.handleMobileConfig)
 			r.Post("/me/reset-client-id", s.handleResetMyClientID)

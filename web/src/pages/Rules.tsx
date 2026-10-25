@@ -23,7 +23,7 @@ import {
 import { errorMessage } from '@/api/client'
 import type { Rule, RuleInput, RuleKind, Scope } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
-import { GlobalLayerHint } from '@/components/UserLayerHints'
+import { GlobalLayerBanner, GlobalLayerHint } from '@/components/UserLayerHints'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -279,6 +279,10 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
       {/* 配额读数 + 全局层状态：
           用户看到「某域名还是被拦」，往往是因为全局层还在生效 ——
           把开关状态放在这一页，不用跑去设置里找。 */}
+      {/* 全局层已内置内容时，先告诉用户「不需要自己加」——
+          否则这一页空白会让人以为毫无防护，跑去挂一份重复的大订阅。 */}
+      {!isGlobal && <GlobalLayerBanner />}
+
       <div className="flex flex-wrap items-center gap-3">
         {!isGlobal && <GlobalLayerHint />}
         {limit > 0 && (

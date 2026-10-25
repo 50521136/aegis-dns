@@ -35,7 +35,7 @@ import type {
   SubscriptionInput,
 } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
-import { GlobalLayerHint, QuotaReadout } from '@/components/UserLayerHints'
+import { GlobalLayerBanner, GlobalLayerHint, QuotaReadout } from '@/components/UserLayerHints'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -300,6 +300,10 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
       {/* 订阅配额 + 全局层状态。
           之前这一页完全看不到「还能加几个订阅」，用户只有点「添加订阅」
           提交之后才知道已经满了。 */}
+      {/* 订阅页的空白最容易诱发重复添加：用户看到「还没有订阅」就以为没防护。
+          先把「管理员已内置多少」摆出来，再谈他自己的配额。 */}
+      {!isGlobal && <GlobalLayerBanner />}
+
       <div className="flex flex-wrap items-center gap-3">
         {!isGlobal && <GlobalLayerHint />}
         <QuotaReadout used={items.length} limit={limit} unit="个订阅" />

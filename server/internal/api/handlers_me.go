@@ -21,6 +21,43 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toUserJSON(u, tiers))
 }
 
+// handleMyGlobalLayer 返回「管理员全局层」对当前用户的生效情况与规模。
+//
+// 存在的理由：全局层在用户自己的规则/订阅列表里是**看不到**的（那是管理员
+// 的资源），于是用户看到一片空白就以为没有任何规则在生效，自己再挂一份大订阅 ——
+// 订阅条目会按用户压平进快照，重复挂既占他自己的配额也占服务器内存。
+// 这个接口把真实条数摆出来，前端据此给出「一般无需自己添加」的提示。
+//
+// 只返回**规模数字**，不返回规则内容：全局规则是管理员的配置，
+// 普通用户没有理由逐条看到（管理员侧有 /admin/rules）。
+func (s *Server) handleMyGlobalLayer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	u := currentUser(r)
+
+	// 用户自己关掉了全局层叠加时，这些数字对他没有意义 —— 明确告诉前端
+	// 「未生效」，而不是给一堆条数让前端自己判断。
+	// 偏好就存在 users 行上（UseGlobalRules），不需要单独查表。
+	enabled := u.UseGlobalRules
+
+	ruleCount, err := s.store.CountEnabledGlobalRules(ctx)
+	if err != nil {
+		s.log.Warn("统计全局规则失败", "err", err)
+	}
+	subCount, entryCount, err := s.store.GlobalSubStats(ctx)
+	if err != nil {
+		s.log.Warn("统计全局订阅失败", "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":         enabled,
+		"rule_count":      ruleCount,
+		"sub_count":       subCount,
+		"sub_entry_count": entryCount,
+		// has_rules 让前端不用自己拼条件：任一为 0 都不该提示「已内置」。
+		"has_rules": enabled && (ruleCount > 0 || entryCount > 0),
+	})
+}
+
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		OldPassword string `json:"old_password"`

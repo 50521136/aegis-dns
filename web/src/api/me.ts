@@ -16,6 +16,31 @@ export async function getDnsConfig(): Promise<DnsConfig> {
 }
 
 /**
+ * 全局层（管理员内置的规则与订阅）对当前用户的生效情况与规模。
+ *
+ * 全局层在用户自己的规则/订阅列表里看不到，用户容易以为「没有任何规则在生效」
+ * 而自己再挂一份大订阅 —— 订阅条目按用户压平进快照，重复挂既占用户配额
+ * 也占服务器内存。这个接口给前端提供「已内置多少」的真实数字。
+ */
+export interface GlobalLayerInfo {
+  /** 用户是否开启了全局层叠加 */
+  enabled: boolean
+  /** 启用的全局规则条数（不含订阅） */
+  rule_count: number
+  /** 启用的全局订阅份数 */
+  sub_count: number
+  /** 全局订阅展开后的域名条目总数 */
+  sub_entry_count: number
+  /** enabled 且确实有内容时为 true —— 前端据此决定要不要提示 */
+  has_rules: boolean
+}
+
+export async function getGlobalLayer(): Promise<GlobalLayerInfo> {
+  const { data } = await api.get<GlobalLayerInfo>('/me/global-layer')
+  return data
+}
+
+/**
  * 下载 iOS / macOS 的加密 DNS 描述文件。
  *
  * 不能直接用 <a href> 指向接口：该路由要 Bearer 鉴权，浏览器直接跳转会拿到 401。

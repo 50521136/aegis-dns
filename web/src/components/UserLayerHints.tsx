@@ -1,8 +1,8 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Globe, GlobeLock } from 'lucide-react'
+import { Globe, GlobeLock, ShieldCheck } from 'lucide-react'
 
-import { getMe } from '@/api/me'
+import { getGlobalLayer, getMe } from '@/api/me'
 import { cn } from '@/lib/utils'
 
 /**
@@ -78,6 +78,68 @@ export function QuotaReadout({
         </div>
       )}
       {full && <span className="text-danger">已达上限</span>}
+    </div>
+  )
+}
+
+/**
+ * GlobalLayerBanner 告诉用户「管理员已经内置了一批规则/订阅，一般无需自己添加」。
+ *
+ * 解决的是一个很具体的体感问题：管理员在全局层挂好公共规则集之后，
+ * 用户打开「我的规则」看到的是**一片空白**（全局规则属于管理员，不在他的列表里），
+ * 于是以为自己没有任何防护，再挂一份 OISD 之类的大订阅 ——
+ * 订阅条目会按用户压平进快照，重复挂既吃他自己的订阅配额，也吃服务器内存。
+ *
+ * 三条设计约束：
+ *  1. **数字必须是真的**。没有全局内容（或用户自己关掉了全局层）时整块不渲染 ——
+ *     在没有任何规则时提示「已内置」是纯误导，比不提示更糟。
+ *  2. 只报规模，不列内容。全局规则是管理员的配置，用户没必要逐条看到；
+ *     他要知道的是「有多少在替我挡」。
+ *  3. 给出口子。用户确实想自己加（例如某站点被全局规则误伤要自己放行）时，
+ *     文案不能把话说死，只提示「一般无需」。
+ */
+export function GlobalLayerBanner({ className }: { className?: string }) {
+  const q = useQuery({ queryKey: ['me', 'global-layer'], queryFn: getGlobalLayer, staleTime: 60_000 })
+  const info = q.data
+  if (!info || !info.has_rules) return null
+
+  // 条目数上万时显示成「6.1 万」这种量级，逐位数字反而看不清规模。
+  const fmt = (n: number) => (n >= 10000 ? `${(n / 10000).toFixed(1)} 万` : String(n))
+
+  const parts: string[] = []
+  if (info.sub_entry_count > 0) parts.push(`${info.sub_count} 份公共订阅（${fmt(info.sub_entry_count)} 条域名）`)
+  if (info.rule_count > 0) parts.push(`${info.rule_count} 条规则`)
+
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-3 rounded-xl border border-primary/25 bg-primary/5 px-3.5 py-3 text-sm',
+        className,
+      )}
+      role="status"
+    >
+      <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+      <div className="space-y-1">
+        <p className="font-medium text-foreground">
+          管理员已内置 {parts.join(' 与 ')}，正在为你生效
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          公共规则集已覆盖常见广告、追踪与恶意域名，<span className="font-medium text-foreground">一般无需自己再添加</span>
+          。重复挂同一批订阅不会提升拦截效果，反而会占用你自己的订阅配额与服务器内存。
+          只有在你需要针对某个特定域名单独放行/拦截时，才在这里添加。
+        </p>
+        <p className="text-xs text-muted-foreground">
+          被全局规则误伤？可以在{' '}
+          <Link to="/app/settings" className="text-primary underline underline-offset-2">
+            设置 → 全局规则层
+          </Link>{' '}
+          临时关闭，或到{' '}
+          <Link to="/app/feedback" className="text-primary underline underline-offset-2">
+            误杀反馈
+          </Link>{' '}
+          告诉我们。
+        </p>
+      </div>
     </div>
   )
 }

@@ -338,6 +338,38 @@ echo "$DCQ" | grep -q 'h3://' && bad "面板出现了 h3:// 地址（客户端�
 # DoQ 的平台指引要说明手机不支持，否则用户会去手机设置里找。
 echo "$DCQ" | grep -q '"platform":"doq"' && ok "给出 DoQ 平台指引" || bad "缺 DoQ 平台指引"
 
+hdr "全局层提示（用户侧）"
+# 用户在「我的规则/订阅」页看到的是一片空白（全局规则属于管理员，不在他的列表里），
+# 容易以为毫无防护而自己再挂一份大订阅 —— 订阅条目按用户压平进快照，
+# 重复挂既吃用户配额也吃服务器内存。所以面板要提示「管理员已内置 N 条」。
+GL=$(curl -fsS "$API/me/global-layer" -H "Authorization: Bearer $TOKEN")
+echo "  global-layer: $GL"
+echo "$GL" | grep -q '"has_rules"' && ok "全局层规模接口可用" || bad "缺 has_rules 字段: $GL"
+# 没有全局内容时必须明确 false —— 在没有任何规则时提示「已内置」是纯误导。
+if echo "$GL" | grep -q '"rule_count":0' && echo "$GL" | grep -q '"sub_entry_count":0'; then
+  echo "$GL" | grep -q '"has_rules":false' && ok "无全局内容时不提示（has_rules=false）" || bad "空全局层却宣称有规则"
+else
+  echo "$GL" | grep -q '"has_rules":true' && ok "有全局内容时提示（has_rules=true，条目=$(echo "$GL" | grep -o '"sub_entry_count":[0-9]*' | cut -d: -f2)）" || bad "有全局内容却没提示"
+fi
+# 建一条全局规则后，数字必须跟着变（否则前端提示的是过期/写死的值）。
+curl -s -X POST "$API/admin/rules" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"kind":"block","pattern":"global-hint-probe.example"}' >/dev/null
+sleep 1
+GL2=$(curl -fsS "$API/me/global-layer" -H "Authorization: Bearer $TOKEN")
+BEFORE=$(echo "$GL" | grep -o '"rule_count":[0-9]*' | cut -d: -f2)
+AFTER=$(echo "$GL2" | grep -o '"rule_count":[0-9]*' | cut -d: -f2)
+[[ "${AFTER:-0}" -gt "${BEFORE:-0}" ]] && ok "新增全局规则后计数跟着涨（$BEFORE → $AFTER）" \
+  || bad "全局规则计数没更新（$BEFORE → $AFTER）"
+# 用户关掉全局层后不能再提示「正在生效」。
+curl -s -X PUT "$API/me/preferences" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"use_global_rules":false}' >/dev/null
+GL3=$(curl -fsS "$API/me/global-layer" -H "Authorization: Bearer $TOKEN")
+echo "$GL3" | grep -q '"has_rules":false' && ok "用户关闭全局层后不再提示" || bad "关闭全局层后仍在提示: $GL3"
+curl -s -X PUT "$API/me/preferences" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"use_global_rules":true}' >/dev/null
+curl -s -X DELETE "$API/admin/rules" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"patterns":["global-hint-probe.example"]}' >/dev/null || true
+
 hdr "缓存与统计"
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
