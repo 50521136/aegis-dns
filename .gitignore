@@ -45,3 +45,9 @@ server/internal/api/webdist/dist/*
 .start-*.sh
 .[a-z]*check.py
 .[a-z]*probe.py
+
+# 本地编译产物（go build ./cmd/xxx 默认输出到当前目录，容易误提交）
+/server/dnsd
+/server/apid
+/dnsd
+/apid
