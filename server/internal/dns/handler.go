@@ -47,7 +47,24 @@ type IdentifyHint struct {
 	AltSource string
 }
 
-// Handler 实现 DNS 查询管线（文档第四章）。
+// semaphore 是一代不可变的并发信号量。重载时以指针换代，已取得名额的请求
+// 持有原通道的闭包释放，避免更新期间对新旧通道交叉收发。
+type semaphore chan struct{}
+
+func acquireSemaphore(current *atomic.Pointer[semaphore]) (func(), bool) {
+	sem := current.Load()
+	if sem == nil {
+		return func() {}, false
+	}
+	select {
+	case *sem <- struct{}{}:
+		return func() { <-*sem }, true
+	default:
+		return func() {}, false
+	}
+}
+
+// Handler 实现查询处理管线（文档第四章）。
 type Handler struct {
 	registry *Registry
 	// cache 用 atomic.Pointer 持有：管理员改缓存容量时需要整体替换，
@@ -56,8 +73,7 @@ type Handler struct {
 	collector *stats.Collector
 	log       *slog.Logger
 
-	// sem 限制并发处理的查询数（文档 4.2 max_goroutines）。
-	sem chan struct{}
+	sem atomic.Pointer[semaphore]
 	// inflight 是当前在处理中的查询数，用于系统状态展示。
 	inflight atomic.Int64
 
@@ -94,7 +110,6 @@ func NewHandler(reg *Registry, cache *Cache, collector *stats.Collector, log *sl
 		registry:  reg,
 		collector: collector,
 		log:       log,
-		sem:       make(chan struct{}, 300),
 		quota:     newDailyQuota(),
 		flight:    newFlightGroup(),
 	}
@@ -104,6 +119,8 @@ func NewHandler(reg *Registry, cache *Cache, collector *stats.Collector, log *sl
 	h.cache.Store(cache)
 	d := model.Defaults{MaxInflight: 300, QueryTimeout: 10000, BlockingMode: model.BlockingNullIP}
 	h.defaults.Store(&d)
+	sem := semaphore(make(chan struct{}, d.MaxInflight))
+	h.sem.Store(&sem)
 	return h
 }
 
@@ -136,9 +153,11 @@ func (h *Handler) ApplyDefaults(d model.Defaults) {
 	}
 	h.defaults.Store(&d)
 
-	// 并发信号量容量变化时重建（旧信号量在途查询仍能用，只是不再被使用）。
-	if cap(h.sem) != d.MaxInflight {
-		h.sem = make(chan struct{}, d.MaxInflight)
+	// 不可变信号量通过原子指针换代。请求 acquire 时固定持有该代，release
+	// 也归还同一代，避免热更新期间错误释放到新通道。
+	if sem := h.sem.Load(); sem == nil || cap(*sem) != d.MaxInflight {
+		next := semaphore(make(chan struct{}, d.MaxInflight))
+		h.sem.Store(&next)
 	}
 	if c := h.cache.Load(); c != nil {
 		c.minTTL = d.CacheMinTTL
@@ -209,16 +228,15 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	applyDNSSEC := d.EnableDNSSEC
 
 	// Stage 2 前置校验：并发闸门。
-	select {
-	case h.sem <- struct{}{}:
-		defer func() { <-h.sem }()
-	default:
+	releaseSem, ok := acquireSemaphore(&h.sem)
+	if !ok {
 		// 并发已满：立刻回 SERVFAIL 而不是排队。
 		// 排队会让延迟雪崩，客户端更可能超时后重试，形成正反馈。
 		h.rejected.Add(1)
 		writeMsg(w, req, servfailResponse(req))
 		return
 	}
+	defer releaseSem()
 	h.inflight.Add(1)
 	defer h.inflight.Add(-1)
 
@@ -339,6 +357,13 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// cacheKey 在 Stage 5 的并发合并里还要用（同一域名合并成一次上游查询），
 	// 所以在这里算一次存下来，避免热路径上重复做小写与去尾点。
 	cacheKey, cacheable := CacheKeyFrom(user.UserID, req)
+	injectedECS := false
+	if d.EnableECS && !hasECS(req) && (req.IsEdns0() != nil || d.EnableDNSSEC) {
+		injectedECS = clientSubnet(w) != nil
+	}
+	if !cacheRequestEligible(req, injectedECS) {
+		cacheable = false
+	}
 	if cacheable && cache != nil {
 		if msg, hit, allowRule, cachedAction := cache.GetWithAllow(cacheKey, req); hit {
 			// 必须把报文 ID 改回本次请求的 ID。
@@ -445,6 +470,8 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			}
 		}
 	}
+	// CacheKeyFrom 与上面的 ECS 资格判断已把带 ECS / 将注入 ECS 的请求排除，
+	// 因此它们也不会进入 flight，避免跨网段共享上游答案。
 	// Stage 5 上游解析。
 	//
 	// 并发合并：同一租户 + 同一域名 + 同一类型 + 同一 DO 位的请求只放一条
@@ -753,9 +780,13 @@ func itoa(n int) string {
 
 // Metrics 返回 dnsd 的运行指标。
 func (h *Handler) Metrics() map[string]any {
+	maxInflight := 0
+	if sem := h.sem.Load(); sem != nil {
+		maxInflight = cap(*sem)
+	}
 	return map[string]any{
 		"inflight":        h.inflight.Load(),
-		"max_inflight":    cap(h.sem),
+		"max_inflight":    maxInflight,
 		"rejected":        h.rejected.Load(),
 		"panics":          h.panics.Load(),
 		"upstream_errors": h.upstreamErrs.Load(),

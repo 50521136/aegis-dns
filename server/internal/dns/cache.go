@@ -417,7 +417,12 @@ func hasECS(req *dns.Msg) bool {
 	return false
 }
 
-// CacheKeyFrom 由查询构造缓存键。
+func cacheRequestEligible(req *dns.Msg, injectedECS bool) bool {
+	return req != nil && !hasECS(req) && !injectedECS
+}
+
+// CacheKeyFrom 由查询构造缓存键。带客户端 ECS 的请求不参与共享缓存，
+// 因为答案可能依网段变化，而缓存键不包含网段。
 func CacheKeyFrom(userID string, req *dns.Msg) (CacheKey, bool) {
 	if req == nil || len(req.Question) == 0 {
 		return CacheKey{}, false
@@ -425,9 +430,11 @@ func CacheKeyFrom(userID string, req *dns.Msg) (CacheKey, bool) {
 	q := req.Question[0]
 	name := strings.ToLower(q.Name)
 	name = strings.TrimSuffix(name, ".")
-	if name == "" {
+	if name == "" || hasECS(req) {
+		// ECS 回答可能依客户端网段变化，不能放进不含网段的共享缓存键。
 		return CacheKey{}, false
 	}
+
 	do := false
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()

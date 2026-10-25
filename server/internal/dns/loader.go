@@ -36,6 +36,7 @@ type Loader struct {
 	Debounce time.Duration
 
 	mu        sync.Mutex
+	loadMu    sync.Mutex // fsnotify 与轮询可能同时触发，保证快照只应用一次
 	lastMTime time.Time
 	lastSize  int64
 	lastVer   int64
@@ -168,11 +169,26 @@ func (l *Loader) invalidateCache(snap *model.Snapshot) {
 	l.log.Info("规则变更，已定向失效缓存", "users", len(changed)-1, "cache_entries", c.Len())
 }
 
+func (l *Loader) rememberFileVersion(version int64) {
+	st, err := os.Stat(l.path)
+	if err != nil {
+		return
+	}
+	l.mu.Lock()
+	l.lastMTime = st.ModTime()
+	l.lastSize = st.Size()
+	l.lastVer = version
+	l.mu.Unlock()
+}
+
 // LoadOnce 读取并应用一次快照。
 //
 // 任何失败都只记录日志并保留旧配置（文档 P4 / 7.4）：
 // 「快照解析失败，保留旧配置」比「清空规则继续跑」安全得多。
 func (l *Loader) LoadOnce() error {
+	l.loadMu.Lock()
+	defer l.loadMu.Unlock()
+
 	snap, err := snapshot.Read(l.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -182,6 +198,12 @@ func (l *Loader) LoadOnce() error {
 		return err
 	}
 
+	if l.registry.Version() >= snap.Version {
+		// watcher 与轮询可能同时读到同一版本，或短暂读到旧文件；
+		// 串行化后不重复应用，但仍更新文件指纹，避免每轮轮询重复读取。
+		l.rememberFileVersion(l.registry.Version())
+		return nil
+	}
 	verBefore := l.registry.Version()
 
 	if err := l.registry.Build(snap); err != nil {
