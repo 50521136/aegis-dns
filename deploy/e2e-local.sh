@@ -1685,6 +1685,112 @@ GC=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API/admin/user-rules/$GI
 US=$(curl -fsS "$API/admin/user-subs?page=1&page_size=50" -H "Authorization: Bearer $ADMTOK")
 echo "$US" | grep -q '"items"' && ok "管理员能看到用户订阅" || bad "管理员看不到用户订阅"
 
+hdr "订阅刷新只重建一次快照"
+# 一次手动刷新曾经触发**两次**全量重建：subsub.Manager 的 onChanged 一次，
+# refreshSubAsync 里的 s.touched 又一次，62MB 快照写两遍；304 未变更时
+# Manager 不回调、API 层却照样重建，于是每份订阅的定时轮询都在白写盘。
+#
+# 断言口径：快照 version 是单调递增的整数，每次重建恰好 +1，
+# 所以「version 差值」直接等于「重建次数」，不受采样时机影响 —— 比数日志可靠。
+SNAP="$RUN/data/runtime/config.json"
+snapver() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$SNAP" 2>/dev/null || echo 0; }
+
+# 自带 ETag 的本地列表服务：第一次 200 并记下 ETag，第二次带 If-None-Match 回 304。
+# 用本地服务而不是公共规则源，是为了让「未变更」这个场景可复现 —— 公共源的
+# 内容随时会变，拿它测 304 只能碰运气。
+SUBLIST_PORT=18991
+cat > "$RUN/sublist.py" <<'PY'
+import hashlib, http.server, sys
+
+BODY = b"||e2esub-a.example^\n||e2esub-b.example^\n"
+ETAG = '"' + hashlib.sha256(BODY).hexdigest()[:16] + '"'
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get("If-None-Match") == ETAG:
+            self.send_response(304)
+            self.send_header("ETag", ETAG)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("ETag", ETAG)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(BODY)))
+        self.end_headers()
+        self.wfile.write(BODY)
+
+    def log_message(self, *a):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+python3 "$RUN/sublist.py" "$SUBLIST_PORT" >/dev/null 2>&1 &
+SUBLIST_PID=$!
+
+# 重新登录拿新令牌：这个脚本跑到这里已经过了不少时间，早先的 access token 可能已过期。
+ATOK=$(curl -fsS -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"E2eTestPass123"}' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+NSUB=$(curl -s -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ATOK" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"rebuild-probe\",\"url\":\"http://127.0.0.1:$SUBLIST_PORT/list.txt\",\"list_type\":\"blocklist\",\"format\":\"auto\",\"enabled\":true}")
+NSID=$(echo "$NSUB" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+subcount() {
+  curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ATOK" | python3 -c '
+import json,sys
+sid = sys.argv[1]
+for s in json.load(sys.stdin).get("items", []):
+    if s.get("id") == sid:
+        print(s.get("last_count") or 0)
+        break
+else:
+    print(0)' "$NSID" 2>/dev/null || echo 0
+}
+
+if [[ -n "$NSID" ]]; then
+  # 创建时的首次拉取也是后台任务，先等它同步完再开始计数。
+  for _ in $(seq 1 40); do
+    [[ "$(subcount)" -ge 2 ]] && break
+    sleep 0.5
+  done
+  sleep 2   # 让首次同步那次重建彻底落定
+
+  V0=$(snapver)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/subscriptions/$NSID/refresh?force=1" \
+    -H "Authorization: Bearer $ATOK")
+  [[ "$code" == "202" ]] && ok "临时订阅强制刷新受理（202）" || bad "强制刷新接口异常：$code"
+  # 轮询等重建落地（慢机器上留足时间），再多等 2 秒让「本不该有的第二次重建」暴露出来。
+  for _ in $(seq 1 20); do
+    [[ "$(snapver)" -gt "$V0" ]] && break
+    sleep 0.5
+  done
+  sleep 2
+  V1=$(snapver); D1=$((V1 - V0))
+  [[ "$D1" -eq 1 ]] && ok "一次强制刷新只重建 1 次快照（version +$D1）" \
+    || bad "一次刷新重建了 $D1 次快照（期望 1 次）"
+
+  # 上游未变更（304）时条目没变，重建一次都是白写 62MB。
+  V2=$(snapver)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/subscriptions/$NSID/refresh" \
+    -H "Authorization: Bearer $ATOK")
+  sleep 3
+  V3=$(snapver); D2=$((V3 - V2))
+  [[ "$D2" -eq 0 ]] && ok "上游 304 未变更时不重建快照（version +$D2）" \
+    || bad "304 未变更也触发了 $D2 次重建"
+
+  # 全局订阅必须全量重建：范围若只按创建者算，其他启用全局层的用户会停在旧规则上。
+  if grep -q '"changed_users"' "$SNAP"; then
+    bad "全局订阅刷新走了增量重建（快照里出现 changed_users）"
+  else
+    ok "全局订阅刷新是全量重建（快照无 changed_users）"
+  fi
+
+  curl -s -X DELETE "$API/admin/subscriptions/$NSID" -H "Authorization: Bearer $ATOK" >/dev/null 2>&1 || true
+else
+  bad "建临时订阅失败，无法验证刷新重建次数: $(echo "$NSUB" | head -c 160)"
+fi
+kill "$SUBLIST_PID" 2>/dev/null
+wait "$SUBLIST_PID" 2>/dev/null
+
 hdr "优雅关闭"
 kill -TERM "$DNSD_PID" "$APID_PID" 2>/dev/null
 wait "$DNSD_PID" 2>/dev/null

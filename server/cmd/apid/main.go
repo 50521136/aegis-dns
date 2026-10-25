@@ -136,9 +136,19 @@ func main() {
 	}
 
 	// --- 订阅管理 ---
-	subsMgr := subsub.NewManager(st, log, func(c context.Context, userID string) {
-		if _, err := cd.Changed(c, userID); err != nil {
-			log.Error("订阅刷新后重建快照失败", "user", userID, "err", err)
+	// 刷新成功后由 Manager 回调触发快照重建，**这里是唯一入口**：
+	// 早先 refreshSubAsync 里还额外调了一次 touched，导致一次手动刷新
+	// 触发两次全量重建（62MB 快照写两遍），304 未变更时也白重建一次。
+	subsMgr := subsub.NewManager(st, log, func(c context.Context, userID string, global bool) {
+		var err error
+		if global {
+			// 全局订阅影响所有启用全局层的用户，必须全量重建。
+			_, err = cd.Changed(c)
+		} else {
+			_, err = cd.Changed(c, userID)
+		}
+		if err != nil {
+			log.Error("订阅刷新后重建快照失败", "user", userID, "global", global, "err", err)
 		}
 	})
 	settings, err := st.GetSettings(ctx)

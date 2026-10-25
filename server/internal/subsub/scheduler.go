@@ -27,10 +27,15 @@ type RefreshResult struct {
 // 它不直接写快照：刷新完成后通过 onChanged 回调通知 coord 重建，
 // 这样「谁改了数据」和「怎么发布配置」两件事保持解耦。
 type Manager struct {
-	st        *store.Store
-	fetcher   *Fetcher
-	log       *slog.Logger
-	onChanged func(ctx context.Context, userID string)
+	st      *store.Store
+	fetcher *Fetcher
+	log     *slog.Logger
+	// onChanged 在条目真正写库之后通知上层重建快照。
+	//
+	// global 来自订阅自身（sub.IsGlobal），不是来自「谁调用了刷新」：
+	// 全局订阅的条目对所有启用全局层的用户生效，只按创建者重建会让
+	// 其他人一直停留在旧规则上。
+	onChanged func(ctx context.Context, userID string, global bool)
 
 	// locks 按 sub_id 串行化刷新，避免用户连点两次「立即刷新」
 	// 导致同一订阅的两个事务互相覆盖（文档 6.3 并发控制）。
@@ -40,7 +45,7 @@ type Manager struct {
 }
 
 // NewManager 创建订阅管理器。
-func NewManager(st *store.Store, log *slog.Logger, onChanged func(context.Context, string)) *Manager {
+func NewManager(st *store.Store, log *slog.Logger, onChanged func(context.Context, string, bool)) *Manager {
 	return &Manager{
 		st:        st,
 		fetcher:   NewFetcher(),
@@ -186,7 +191,7 @@ func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bo
 	)
 
 	if m.onChanged != nil {
-		m.onChanged(ctx, sub.UserID)
+		m.onChanged(ctx, sub.UserID, sub.IsGlobal)
 	}
 	return res, nil
 }
