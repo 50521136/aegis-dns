@@ -116,6 +116,11 @@ func main() {
 		defer storeHandle.Close()
 		go flushLoop(ctx, storeHandle, collector, cfg, log)
 	}
+	// 缓存未命中分类指标：dnsd 与 apid 零 RPC，apid 的 /admin/system 读不到
+	// dnsd 的内存计数器，所以这些数字只能在 dnsd 侧落地。
+	// 用周期性结构化日志（而不是新增端点或写库）的好处：不引入新的传输通道、
+	// 不动表结构，运维 grep 一次就能看，也能被 journal 留存回溯。
+	go metricsLoop(ctx, handler, log)
 	// 打印生效域名而不是 cfg.Domain：config.yaml 的 domain 只是首次初始化的兜底，
 	// 后台改过域名后它就不再更新，直接打印会报出一个早就不用的域名。
 	effDomain := registry.Domain()
@@ -141,8 +146,9 @@ func main() {
 	log.Info("收到退出信号，开始优雅关闭")
 
 	// 关闭前把统计刷一次，避免丢掉最后一批数据。
+	// 这里用一次性调度器：退避与缓冲在退出路径上没有意义，只求尽力写完。
 	if storeHandle != nil {
-		flushOnce(context.Background(), storeHandle, collector, cfg, log)
+		flushOnce(context.Background(), storeHandle, collector, newFlushScheduler(defaultFlushBufferRows), log)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -157,13 +163,14 @@ func main() {
 // snapshotModel 别名已移除：main 直接使用 model.Snapshot，避免类型别名
 // 在跨包回调里制造不必要的间接层。
 
-// flushLoop 按配置的间隔把内存统计批量写入 SQLite（文档 8.3 / R4 对策）。
-func flushLoop(ctx context.Context, st *store.Store, c *stats.Collector, cfg *config.Config, log *slog.Logger) {
-	interval := time.Duration(cfg.DNS.StatsFlushSeconds) * time.Second
-	if interval <= 0 {
-		interval = 10 * time.Second
-	}
-	log.Info("统计落库循环已启动", "interval", interval.String())
+// metricsLoop 每 5 分钟打一条缓存指标快照。
+//
+// 存在的理由：命中率低的时候，光看「命中率 55%」无法判断该动什么 ——
+// 冷启动多说明域名长尾（容量/TTL），过期多说明上游 TTL 短（该调 minTTL），
+// 被并发合并的多说明是并发击穿（singleflight 已挡住上游压力，不该再拿命中率
+// 当目标）。三者动作完全不同，所以把分类计数打出来，让判断有据可依。
+func metricsLoop(ctx context.Context, h *dns.Handler, log *slog.Logger) {
+	const interval = 5 * time.Minute
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -171,19 +178,65 @@ func flushLoop(ctx context.Context, st *store.Store, c *stats.Collector, cfg *co
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			flushOnce(ctx, st, c, cfg, log)
+			m := h.Metrics()
+			absent, _ := m["cache_miss_absent"].(int64)
+			expired, _ := m["cache_miss_expired"].(int64)
+			merged, _ := m["cache_merged"].(int64)
+			totalMiss := absent + expired
+			// 占比用 ‰ 表示（整数，避免浮点日志在不同版本里格式不一致）
+			var absentPermille, expiredPermille int64
+			if totalMiss > 0 {
+				absentPermille = absent * 1000 / totalMiss
+				expiredPermille = expired * 1000 / totalMiss
+			}
+			log.Info("缓存指标快照",
+				"miss_absent", absent,
+				"miss_expired", expired,
+				"merged", merged,
+				"absent_permille", absentPermille,
+				"expired_permille", expiredPermille,
+				"inflight", m["inflight"],
+				"rejected", m["rejected"],
+				"upstream_errors", m["upstream_errors"],
+			)
 		}
 	}
 }
 
-func flushOnce(ctx context.Context, st *store.Store, c *stats.Collector, cfg *config.Config, log *slog.Logger) {
-	rollups, tops, logs := c.Flush()
-	if len(rollups) == 0 && len(tops) == 0 && len(logs) == 0 {
-		return
+// flushLoop 按配置的间隔把内存统计批量写入 SQLite（文档 8.3 / R4 对策）。
+func flushLoop(ctx context.Context, st *store.Store, c *stats.Collector, cfg *config.Config, log *slog.Logger) {
+	interval := time.Duration(cfg.DNS.StatsFlushSeconds) * time.Second
+	if interval <= 0 {
+		interval = 10 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
+	log.Info("统计落库循环已启动", "interval", interval.String())
 
+	// 带重试的落库调度器：失败的那批不再丢弃，放回缓冲与下一轮合并重试。
+	// 详见 flushretry.go —— 旧实现 flush 失败即丢，只留一行 Error 日志。
+	sched := newFlushScheduler(defaultFlushBufferRows)
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			// 退出前再冲一次，尽量少丢最后几秒的数据。
+			flushOnce(ctx, st, c, sched, log)
+			return
+		case <-t.C:
+			if sched.shouldSkip() {
+				continue
+			}
+			flushOnce(ctx, st, c, sched, log)
+		}
+	}
+}
+
+func flushOnce(ctx context.Context, st *store.Store, c *stats.Collector, sched *flushScheduler, log *slog.Logger) {
+	rollups, tops, logs := c.Flush()
+
+	// 把这一轮的新数据并进（可能非空的）待重试缓冲，然后整批写一次。
+	// 合并而不是分别写：库恢复慢时会积累几十个小事务，合并后只有一个。
 	sr := make([]store.RollupBucket, 0, len(rollups))
 	for _, r := range rollups {
 		sr = append(sr, store.RollupBucket{
@@ -197,12 +250,34 @@ func flushOnce(ctx context.Context, st *store.Store, c *stats.Collector, cfg *co
 			UserID: t.UserID, TS: t.TS, Domain: t.Domain, Hits: t.Hits, Blocked: t.Blocked,
 		})
 	}
-	if err := st.WriteStats(ctx, sr, stTop, logs); err != nil {
-		// 落库失败不回滚内存计数：这些计数已经丢了，但至少不要拖累查询路径。
-		log.Error("统计落库失败", "err", err, "rollups", len(sr), "tops", len(stTop), "logs", len(logs))
+	sched.buf.add(sr, stTop, logs)
+	total := sched.buf.len()
+	if total == 0 {
+		sched.onSuccess() // 没数据也算一轮健康
 		return
 	}
-	log.Debug("统计已落库", "rollups", len(sr), "tops", len(stTop), "logs", len(logs))
+
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	pendingR, pendingT, pendingL := sched.buf.take()
+	if err := st.WriteStats(ctx, pendingR, pendingT, pendingL); err != nil {
+		// 失败：把这一批放回缓冲，下一轮（退避后）重试。
+		// 缓冲有上限，超限时丢最旧的并累计 dropped —— 宁可丢统计，也不能把
+		// dnsd 的内存吃光（它是解析进程，被统计拖垮等于 DNS 全断）。
+		sched.buf.add(pendingR, pendingT, pendingL)
+		sched.onFailure()
+		log.Error("统计落库失败，已放回缓冲待重试",
+			"err", err,
+			"rollups", len(pendingR), "tops", len(pendingT), "logs", len(pendingL),
+			"buffered", sched.buf.len(), "dropped_total", sched.buf.dropped,
+			"failed_rounds", sched.failedRounds, "skip_rounds", sched.skip)
+		return
+	}
+	sched.onSuccess()
+	log.Debug("统计已落库",
+		"rollups", len(pendingR), "tops", len(pendingT), "logs", len(pendingL),
+		"dropped_total", sched.buf.dropped)
 }
 
 // runChecks 做启动前自检，返回进程退出码。

@@ -92,6 +92,16 @@ type Handler struct {
 	panics   atomic.Int64
 	// protosRejected 统计因协议被关闭而拒绝的查询数
 	protosRejected atomic.Int64
+
+	// 缓存未命中的分类计数。
+	//
+	// 只知道「命中率 55%」无法判断该动什么：冷启动多说明域名长尾（容量/TTL），
+	// 过期多说明上游 TTL 短（该调 minTTL），被并发合并的多说明是并发击穿
+	// （singleflight 已经挡住上游压力，不该再拿命中率当目标）。
+	// 三者对应的动作完全不同，所以分开记。
+	cacheMissAbsent  atomic.Int64
+	cacheMissExpired atomic.Int64
+	cacheMerged      atomic.Int64
 	// quotaRefused 统计因超出每日请求量上限被拒的次数
 	quotaRefused atomic.Int64
 	// fallbackRefused 统计「识别不出租户」而被兜底策略拒绝的查询数。
@@ -365,7 +375,17 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		cacheable = false
 	}
 	if cacheable && cache != nil {
-		if msg, hit, allowRule, cachedAction := cache.GetWithAllow(cacheKey, req); hit {
+		msg, hit, allowRule, cachedAction, missReason := cache.GetWithReason(cacheKey, req)
+		if !hit {
+			// 记下未命中的成因（仅当这条请求本来会进缓存时才有意义）。
+			switch missReason {
+			case MissAbsent:
+				h.cacheMissAbsent.Add(1)
+			case MissExpired:
+				h.cacheMissExpired.Add(1)
+			}
+		}
+		if hit {
 			// 必须把报文 ID 改回本次请求的 ID。
 			//
 			// 缓存里存的是首次应答的副本，它带着「当时那个请求」的随机 ID。
@@ -502,6 +522,9 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		// 等待者拿到的是别人那次的共享副本：leader 还会继续改它
 		// （回填 ID、置 Compress、写缓存），这里必须先复制。
 		resp = resp.Copy()
+		// 这次查询没有真正打上游，是被同域名的并发请求合并了。
+		// 它既不是缓存命中也不是一次真实的上游查询，单独记一类。
+		h.cacheMerged.Add(1)
 	}
 	det.Upstream = upSrc
 	if err != nil {
@@ -801,6 +824,10 @@ func (h *Handler) Metrics() map[string]any {
 		"rejected":        h.rejected.Load(),
 		"panics":          h.panics.Load(),
 		"upstream_errors": h.upstreamErrs.Load(),
+		// 缓存未命中分类：判断「命中率为什么低」的三个方向
+		"cache_miss_absent":  h.cacheMissAbsent.Load(),
+		"cache_miss_expired": h.cacheMissExpired.Load(),
+		"cache_merged":       h.cacheMerged.Load(),
 	}
 }
 

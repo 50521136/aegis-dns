@@ -330,6 +330,20 @@ func (s *Store) QueryLogs(ctx context.Context, f QueryLogFilter) ([]model.QueryL
 }
 
 // Cleanup 按保留期清理统计与日志，返回删除行数。
+const (
+	// maxRollupRows / maxTopDomainRows 是「保留期设为 0」时的行数兜底上限。
+	//
+	// 取这两个数的依据（56 用户规模实测）：
+	//   - query_rollup：每用户每 5 分钟一行 ≈ 每天 288 行/用户，
+	//     2000 万行 ≈ 1200 天 × 56 用户，足够长期趋势，也远小于磁盘风险线；
+	//   - top_domains：线上 24 小时约 50 万行（长尾域名多），
+	//     500 万行 ≈ 10 天量级，配合「按 ts 删最旧」不会突然把图表清空。
+	//
+	// 上限只在 retentionDays=0 时生效；设了天数就按天数删，两个机制不叠加。
+	maxRollupRows    = 20_000_000
+	maxTopDomainRows = 5_000_000
+)
+
 func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionMin, maxLogRows int) (map[string]int64, error) {
 	out := map[string]int64{}
 	now := time.Now().Unix()
@@ -355,6 +369,31 @@ func (s *Store) Cleanup(ctx context.Context, retentionDays, logRetentionMin, max
 	if logRetentionMin > 0 {
 		logCutoff := now - int64(logRetentionMin)*60
 		jobs = append(jobs, del{"query_log", `DELETE FROM query_log WHERE ts < ?`, []any{logCutoff}})
+	}
+	// 汇总表在 retentionDays=0（「不按时间清理」）下会**无界增长** ——
+	// 线上就是这么把 top_domains 涨到 52.9 万行的：管理员把保留期设成 0
+	// 本意是「别删我的历史统计」，结果变成「长到把磁盘吃满」。
+	//
+	// 保留「0 = 不按时间删」这个语义，但同时叠一层**行数上限**兜底：
+	// 老数据留下来是好事，但无限增长不是。上限按「长期趋势还能看」的量级取
+	// （rollup 每用户每 5 分钟一行；top_domains 每用户每桶每域名一行）。
+	if retentionDays <= 0 {
+		// 注意：query_rollup 与 top_domains 都是 **WITHOUT ROWID** 表
+		// （主键分别是 (user_id,ts) 与 (user_id,ts,domain)），所以不能用 rowid
+		// 定位 —— 第一版就写成了 `WHERE rowid IN (SELECT rowid ...)`，
+		// 直接报 `no such column: rowid`。改成「先算出截断的 ts 边界，再按 ts 删」，
+		// 既兼容 WITHOUT ROWID，也能走 idx_rollup_ts / idx_top_ts 索引。
+		//
+		// 边界取第 (总数-上限) 条的 ts：ts 小于它的行都删掉，数量自然收敛到上限附近
+		// （同一 ts 有多行时会略少，对统计表无所谓）。
+		jobs = append(jobs,
+			del{"query_rollup", `DELETE FROM query_rollup WHERE ts < (
+				SELECT ts FROM query_rollup ORDER BY ts ASC LIMIT 1 OFFSET MAX(0, (SELECT COUNT(*) FROM query_rollup) - ?))`,
+				[]any{maxRollupRows}},
+			del{"top_domains", `DELETE FROM top_domains WHERE ts < (
+				SELECT ts FROM top_domains ORDER BY ts ASC LIMIT 1 OFFSET MAX(0, (SELECT COUNT(*) FROM top_domains) - ?))`,
+				[]any{maxTopDomainRows}},
+		)
 	}
 	jobs = append(jobs, del{"refresh_tokens", `DELETE FROM refresh_tokens WHERE expires_at < ?`, []any{now}})
 

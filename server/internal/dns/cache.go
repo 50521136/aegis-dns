@@ -88,6 +88,28 @@ type Cache struct {
 	userGen map[string]uint64
 }
 
+// MissReason 说明一次缓存未命中的成因。
+//
+// 只有「命中率掉了」的时候才会有人来看这个，而仅仅知道「命中率 55%」无法
+// 判断该动什么：
+//   - 绝大多数是 MissAbsent（冷启动）→ 说明域名长尾，缓存容量或 TTL 是瓶颈；
+//   - 绝大多数是 MissExpired（过期）→ 说明上游 TTL 短，或者客户端查询间隔
+//     太长，这时候该考虑的是 minTTL 而不是扩容；
+//   - 有相当比例是 MissInflight → 那是并发击穿，靠 singleflight 已经挡住上游
+//     压力，命中率的数字本身不该再拿它当目标。
+//
+// 三者对应的动作完全不同，所以必须分开计数。
+type MissReason string
+
+const (
+	// MissNone 表示命中（或这条查询本就不参与缓存）。
+	MissNone MissReason = ""
+	// MissAbsent 表示缓存里从来没有过这个键（冷启动/长尾域名）。
+	MissAbsent MissReason = "absent"
+	// MissExpired 表示有过但已过 TTL。
+	MissExpired MissReason = "expired"
+)
+
 // CacheStamp 是一次查询「开始那一刻」看到的失效代际。
 //
 // 解决的是一个只在生产并发下才出现的正确性问题：
@@ -180,8 +202,17 @@ func (c *Cache) Get(k CacheKey, req *dns.Msg) (*dns.Msg, bool) {
 // action 同理：拦截/改写结果进缓存之后，命中时必须还原成 blocked / handled，
 // 否则拦截率会凭空掉一截。
 func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, string) {
+	msg, hit, allow, action, _ := c.GetWithReason(k, req)
+	return msg, hit, allow, action
+}
+
+// GetWithReason 与 GetWithAllow 相同，额外返回未命中的成因。
+//
+// 成因只用于指标分类，不影响返回内容 —— 拆成独立方法而不是改 GetWithAllow
+// 的签名，是为了不动那些只关心命中的调用点。
+func (c *Cache) GetWithReason(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, string, MissReason) {
 	if c == nil {
-		return nil, false, false, ""
+		return nil, false, false, "", MissAbsent
 	}
 	now := time.Now()
 	s := c.shardFor(k)
@@ -190,7 +221,7 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, st
 	el, ok := s.items[k]
 	if !ok {
 		s.mu.Unlock()
-		return nil, false, false, ""
+		return nil, false, false, "", MissAbsent
 	}
 	item := el.Value.(*cacheItem)
 	entry := item.entry
@@ -199,7 +230,7 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, st
 		s.lru.Remove(el)
 		delete(s.items, k)
 		s.mu.Unlock()
-		return nil, false, false, ""
+		return nil, false, false, "", MissExpired
 	}
 	s.lru.MoveToFront(el)
 	msg := entry.msg.Copy()
@@ -225,7 +256,7 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, st
 	for _, rr := range msg.Extra {
 		decTTL(rr, elapsed)
 	}
-	return msg, true, entry.allowRule, entry.action
+	return msg, true, entry.allowRule, entry.action, MissNone
 }
 
 // alignOPT 把应答里的 OPT 调整成与本次请求一致。

@@ -931,9 +931,19 @@ hdr "日志与统计清理"
 CL=$(curl -fsS -X POST "$API/admin/maintenance/cleanup" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{}')
 echo "$CL" | grep -q '"total"' && ok "手动清理接口可用" || bad "清理接口异常: $CL"
-# stats_retention_days=0 时绝不能把统计删光（now-0 会把历史全干掉）
-# retention=0 时统计清理任务根本不会加入，key 直接不出现（而不是删了 0 行）
-echo "$CL" | grep -q '"query_rollup"' && bad "统计被误删: $CL" || ok "统计保留 0 天时不按时间删（保护生效）"
+# stats_retention_days=0 时绝不能把统计删光（now-0 会把历史全干掉）。
+#
+# 断言要锁**意图**（删除量为 0），不能锁「key 不出现」这个实现细节：
+# 现在 retention=0 时仍然会挂一个「按行数上限兜底」的任务（防止汇总表
+# 无界增长，线上曾把 top_domains 涨到 52.9 万行），所以 key 恒出现、
+# 但在远低于上限时删除量必须是 0。
+RR=$(echo "$CL" | grep -o '"query_rollup":[0-9]*' | cut -d: -f2)
+TD=$(echo "$CL" | grep -o '"top_domains":[0-9]*' | cut -d: -f2)
+if [[ "${RR:-0}" -eq 0 && "${TD:-0}" -eq 0 ]]; then
+  ok "统计保留 0 天时不按时间删（删除量 query_rollup=$RR top_domains=$TD）"
+else
+  bad "统计被误删: query_rollup=${RR:-?} top_domains=${TD:-?}（保留 0 天时不该按时间删）"
+fi
 
 hdr "查询日志只保留最近 1 小时"
 # 塞一条 2 小时前、一条 30 分钟前的日志，清理后只该删掉老的那条

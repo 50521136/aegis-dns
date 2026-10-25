@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/hooks/useTheme'
 import { AuthProvider } from '@/hooks/useAuth'
+import { RouteErrorBoundary } from '@/components/ErrorBoundary'
 import { ToastProvider, useToast } from '@/components/ui/toast'
 import { PublicLayout } from '@/components/layout/PublicLayout'
 import { AppLayout } from '@/components/layout/AppLayout'
@@ -119,6 +120,11 @@ export default function App() {
               {/* 懒加载页面的加载态。放在 Routes 外层而不是每个 Route 里：
                   路由切换时整个内容区替换成占位，避免旧页面残留造成「点了没反应」的错觉。 */}
               <Suspense fallback={<RouteFallback />}>
+                {/* 错误边界放在**内容区**而不是 App 根部：
+                    放根部的话一个页面崩掉连侧边栏和顶栏一起没了，用户只能刷新；
+                    放这里则导航还在，可以点别的页面继续用。
+                    pathname 变化时自动复位，避免一处崩溃让后续页面都显示错误页。 */}
+                <RouteErrorBoundary>
                 <Routes>
                 {/* 公共页面 */}
                 <Route element={<PublicLayout />}>
@@ -175,6 +181,7 @@ export default function App() {
                   <Route path="/404" element={<NotFound />} />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
+                </RouteErrorBoundary>
               </Suspense>
             </AuthProvider>
           </BrowserRouter>
