@@ -370,6 +370,50 @@ curl -s -X PUT "$API/me/preferences" -H "Authorization: Bearer $TOKEN" -H 'Conte
 curl -s -X DELETE "$API/admin/rules" -H "Authorization: Bearer $ADMTOK" \
   -H 'Content-Type: application/json' -d '{"patterns":["global-hint-probe.example"]}' >/dev/null || true
 
+hdr "DoT 长连接（滑动空闲超时）"
+# 原来 DoT 是「固定 60 秒总时限 + 最多 100 条查询」，到点就断。AdGuard Home、
+# 路由器这类客户端会长期复用同一条连接，固定时限下每 60 秒就要重连一次、
+# 每次都要完整 TLS 握手。现在改成按「有多久没说话」判空闲，还在用就一直续期。
+# 这里验一条连接连发 110 条（旧的 100 条上限会让第 101 条读到 EOF）。
+DOTMANY=$(python3 - "$RUN" <<'PYEOF'
+import socket, ssl, struct, sys, random
+
+def build(qid, name):
+    h = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
+    q = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
+    return h + q + struct.pack(">HH", 1, 1)
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+ok = 0
+fail = None
+try:
+    raw = socket.create_connection(("127.0.0.1", 18853), timeout=10)
+    s = ctx.wrap_socket(raw, server_hostname="dotmany.dns.e2e.local")
+    for i in range(110):
+        qid = random.randint(0, 65535)
+        msg = build(qid, "example.com")
+        s.sendall(struct.pack(">H", len(msg)) + msg)
+        n = struct.unpack(">H", s.recv(2))[0]
+        buf = b""
+        while len(buf) < n:
+            buf += s.recv(n - len(buf))
+        ok += 1
+    s.close()
+except Exception as e:
+    fail = f"{type(e).__name__}: {e}"
+print(f"{ok}|{fail or ''}")
+PYEOF
+)
+DOTN=${DOTMANY%%|*}
+DOTERR=${DOTMANY#*|}
+if [[ "${DOTN:-0}" -ge 110 ]]; then
+  ok "DoT 单连接连发 110 条全部成功（旧的 100 条上限已去掉）"
+else
+  bad "DoT 长连接在第 ${DOTN:-0} 条断开: $DOTERR"
+fi
+
 hdr "缓存与统计"
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1

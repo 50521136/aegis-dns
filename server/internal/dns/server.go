@@ -47,6 +47,14 @@ type Server struct {
 	startErrs []error
 }
 
+// dotIdleTimeout 是 DoT 连接的**空闲**超时（不是总时长）。
+//
+// 每收到一条查询就续期，所以只要客户端还在用就一直不断；
+// 真正闲置 60 秒才回收。取 60 秒的理由：客户端保活间隔普遍在 30 秒量级
+// （AdGuard Home、路由器健康检查），给两倍余量既能容忍一次丢包，
+// 又不会让死连接占着 fd。
+const dotIdleTimeout = 60 * time.Second
+
 // NewServer 创建 DNS 服务器。
 func NewServer(cfg *config.Config, h *Handler, certs *certmgr.Manager, log *slog.Logger) *Server {
 	return &Server{cfg: cfg, handler: h, certs: certs, log: log}
@@ -281,19 +289,29 @@ func (s *Server) handleDOTConn(ctx context.Context, raw net.Conn) {
 	clientID := firstLabel(sni)
 
 	// 必须用 tlsConn 而不是 raw 收发 DNS 报文。
-	// 用 raw 会让服务端把 TLS 记录当成 DNS 长度前缀去解析：
-	// 读到一个巨大的长度值后永久阻塞在读取上，客户端表现为连接超时
-	// 而不是明确的错误 —— 这类 bug 从日志里几乎看不出来。
+	// 用 raw 会让服务端把 TLS 记录当成 DNS 长度前缀去解析：读到一个巨大的
+	// 长度值后永久阻塞在读取上，客户端表现为连接超时而不是明确的错误 ——
+	// 这类 bug 从日志里几乎看不出来。
 	dnsConn := &dns.Conn{Conn: tlsConn}
-	// 单连接最多处理 100 条查询或 60 秒，避免长连接占资源。
-	deadline := time.Now().Add(60 * time.Second)
-	_ = tlsConn.SetDeadline(deadline)
 
-	for i := 0; i < 100; i++ {
+	// 空闲超时必须是**滑动**的：每收到一条查询就把 deadline 往后推。
+	//
+	// 原来是固定 60 秒总时限 + 最多 100 条查询，到点就断 —— 而 AdGuard Home、
+	// 路由器这类客户端会长期复用同一条连接（每 30 秒一次健康检查是常态）。
+	// 固定时限下它们每 60 秒就要重建一次连接，每次都要完整 TLS 握手；
+	// 100 条上限在正常家用流量下也够呛（一条连接一天几百条查询很常见）。
+	//
+	// 判据从「连接活了多久」改成「有多久没说话」：只要还在发查询就一直续期，
+	// 真正闲置的连接照样在 60 秒后回收，不会泄漏。
+	_ = tlsConn.SetDeadline(time.Now().Add(dotIdleTimeout))
+	for {
 		msg, err := dnsConn.ReadMsg()
 		if err != nil {
+			// 超时/对端关闭都走这里，属正常回收路径。
 			return
 		}
+		// 收到一条就续期一次：空闲计时以「最后一次收到报文」为起点。
+		_ = tlsConn.SetDeadline(time.Now().Add(dotIdleTimeout))
 		w := &streamResponseWriter{conn: dnsConn, remote: raw.RemoteAddr(), local: raw.LocalAddr()}
 		s.handler.Handle(w, msg, &IdentifyHint{ClientID: clientID, Source: "sni", Host: normalizeHost(sni)})
 	}

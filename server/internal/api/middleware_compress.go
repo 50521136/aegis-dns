@@ -74,23 +74,54 @@ func compressible(ct string) bool {
 }
 
 // acceptsGzip 判断客户端是否接受 gzip。
+//
+// 必须按 RFC 9110 §12.5.3 解析 qvalue，不能用子串匹配。
+// 原来写的是 `strings.Contains(part, "q=0") && !strings.Contains(part, "q=0.")`，
+// 这套判断在四种真实写法上都判错：
+//
+//	"gzip;q=0.00"  → 含 "q=0." 被当成「接受」（实际是拒绝）
+//	"gzip; q=0.0"  → 同上（空格只是常见写法）
+//	"gzip;Q=0"     → 大小写敏感，没匹配到 "q=0"，当成接受
+//	"gzip;q=0.5"   → 碰巧对（因为含 "q=0."）
+//
+// 判错的方向是「多压缩了一次」：功能不坏，但把一个明确说不的客户端
+// 硬塞压缩体，属于该修干净的那类错误 —— 而且 qvalue 的正经解析只有几行。
 func acceptsGzip(r *http.Request) bool {
 	ae := r.Header.Get("Accept-Encoding")
 	if ae == "" {
 		return false
 	}
+	// wildcard 记下 `*` 的 qvalue，最后兜底用：`*;q=1` 但没单独列 gzip 时，
+	// gzip 也算可接受；`*;q=0` 则相反。
+	wildcard, hasWildcard := 0.0, false
 	for _, part := range strings.Split(ae, ",") {
-		// 形如 "gzip;q=0.8"，取分号前的编码名。
-		name := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
-		if strings.EqualFold(name, "gzip") || name == "*" {
-			// 显式 q=0 表示拒绝
-			if strings.Contains(part, "q=0") && !strings.Contains(part, "q=0.") {
-				return false
+		fields := strings.Split(part, ";")
+		name := strings.TrimSpace(fields[0])
+		q := 1.0 // 不写 q 参数表示 q=1
+		for _, param := range fields[1:] {
+			k, v, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(k), "q") {
+				continue
 			}
-			return true
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil {
+				// q 值写坏了按 RFC 的建议当 0 处理（宁可不压，也不要压了被拒）。
+				parsed = 0
+			}
+			q = parsed
+		}
+		switch {
+		case strings.EqualFold(name, "gzip"):
+			// 同名出现多次时取最大的 q（RFC 未规定，宽松处理）。
+			if q > 0 {
+				return true
+			}
+			return false
+		case name == "*":
+			wildcard, hasWildcard = q, true
 		}
 	}
-	return false
+	return hasWildcard && wildcard > 0
 }
 
 // middlewareCompress 是压缩中间件。
