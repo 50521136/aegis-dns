@@ -391,6 +391,17 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		}
 	}
 
+	// 取失效代际快照：必须在打上游/构造拦截应答**之前**。
+	//
+	// 缓存键不含规则版本，规则改了键不变。若这条查询在规则变更**之前**出发、
+	// 在 FlushUsers 之后才回来，它带的是旧规则下的答案 —— 不校验就会把旧答案
+	// 写进缓存（TTL 最长 86400），用户看到「规则加了没用，过一阵自己好」。
+	// stamp 与写入时的当前代际不一致，这次写入直接丢弃。
+	var cacheStamp CacheStamp
+	if cacheable && cache != nil {
+		cacheStamp = cache.Stamp(user.UserID)
+	}
+
 	// Stage 4 规则匹配。
 	// allowRule 表示「这次放行是规则明确允许的」，用于日志状态分类：
 	// 命中放行规则 → 允许项；其余正常解析/改写 → 已处理。
@@ -415,7 +426,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			// 规则变更时缓存会被定向失效（FlushUsers），所以不会出现
 			// 「规则删了但还被拦」的残留。
 			if cacheable && cache != nil {
-				cache.PutWithAction(cacheKey, resp, req, "blocked")
+				cache.PutWithActionStamp(cacheKey, resp, req, "blocked", cacheStamp)
 			}
 			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, "blocked", dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
@@ -425,7 +436,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 			resp := rewriteResponse(req, decision.Rewrite)
 			// 改写结果同理：只由规则决定，可以缓存。
 			if cacheable && cache != nil {
-				cache.PutWithAction(cacheKey, resp, req, actionHandled)
+				cache.PutWithActionStamp(cacheKey, resp, req, actionHandled, cacheStamp)
 			}
 			det.Answer = h.detail(resp)
 			h.record(user.UserID, q, actionHandled, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
@@ -516,7 +527,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 
 	// Stage 6 响应后处理：写缓存 + 统计。
 	if cacheable && cache != nil {
-		cache.PutWith(cacheKey, resp, req, allowRule)
+		cache.PutWithStamp(cacheKey, resp, req, allowRule, cacheStamp)
 	}
 	det.Answer = h.detail(resp)
 	status := actionHandled

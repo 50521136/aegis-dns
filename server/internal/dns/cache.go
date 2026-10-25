@@ -76,6 +76,35 @@ type Cache struct {
 	// minTTL / maxTTL 是 TTL 钳制区间。
 	minTTL int
 	maxTTL int
+	// genMu 保护 gen 与 userGen。
+	//
+	// 用 RWMutex 而不是 atomic：写缓存时要在**同一个临界区**里既读代际又写
+	// 条目，否则「读代际 → 失效发生 → 写条目」这三步之间会留下窗口，
+	// 陈旧条目照样写得进去（见 CacheStamp 的说明）。
+	genMu sync.RWMutex
+	// gen 是全量失效的代际，每次 Flush() 递增。
+	gen uint64
+	// userGen 是各租户定向失效的代际，FlushUsers 时递增。
+	userGen map[string]uint64
+}
+
+// CacheStamp 是一次查询「开始那一刻」看到的失效代际。
+//
+// 解决的是一个只在生产并发下才出现的正确性问题：
+//
+//	查询 Q 带着旧规则出发 → 管理员改规则 → 快照重载 → FlushUsers 清掉该租户缓存
+//	→ Q 才从上游回来，把**旧规则下的应答**写进缓存（TTL 最长 86400）。
+//
+// 用户看到的是「规则加了，这个域名还是照常解析」，而且过一阵子自己好
+// （缓存过期），最难自查。
+//
+// 做法：查询出发前取一个 stamp，写缓存时比对当前代际，不一致就丢弃这次写入。
+// 只影响「跨越了一次规则变更的在途查询」，正常查询零成本。
+type CacheStamp struct {
+	// Gen 是取 stamp 时的全局代际（Flush 递增）。
+	Gen uint64
+	// User 是该租户的代际（FlushUsers 递增）。
+	User uint64
 }
 
 type cacheShard struct {
@@ -100,6 +129,7 @@ func NewCache(size, minTTL, maxTTL int) *Cache {
 		maxTTL = minTTL
 	}
 	c := &Cache{size: size, minTTL: minTTL, maxTTL: maxTTL}
+	c.userGen = make(map[string]uint64, 64)
 	per := size / len(c.shards)
 	if per < 1 {
 		per = 1
@@ -236,18 +266,41 @@ func decTTL(rr dns.RR, elapsed uint32) {
 	}
 }
 
-// Put 写入缓存。
+// Stamp 取当前失效代际，供 PutWithStamp 校验。
 //
-// 返回是否真的写入了：含 EDNS Client Subnet 的请求与 DNSSEC 元记录不缓存
-// （文档 4.3 的「不缓存」清单），因为它们的答案与查询者位置/签名状态相关。
-// Put 缓存一条应答（默认不是放行规则命中）。
+// 必须在**查询出发前**取（Stage 3 之后、打上游之前），不能在写缓存时取 ——
+// 那样永远等于当前代际，等于没校验。
+func (c *Cache) Stamp(userID string) CacheStamp {
+	if c == nil {
+		return CacheStamp{}
+	}
+	c.genMu.RLock()
+	defer c.genMu.RUnlock()
+	return CacheStamp{Gen: c.gen, User: c.userGen[userID]}
+}
+
+// Put 写入缓存（不带失效代际校验，仅测试与不关心代际的调用方用）。
+//
+// 查询路径必须用 PutWithStamp：不带 stamp 的写入在规则变更期间会把
+// 旧规则下的应答写回缓存，正是这个功能要解决的问题。
 func (c *Cache) Put(k CacheKey, msg *dns.Msg, req *dns.Msg) bool {
 	return c.PutWith(k, msg, req, false)
 }
 
 // PutWith 缓存一条应答，并记下它是否来自「命中放行规则」。
 func (c *Cache) PutWith(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool) bool {
-	return c.put(k, msg, req, allowRule, "")
+	return c.put(k, msg, req, allowRule, "", nil)
+}
+
+// PutWithStamp 与 PutWith 相同，但会校验失效代际：若查询出发后发生过
+// Flush / FlushUsers，这次写入被丢弃。
+func (c *Cache) PutWithStamp(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, stamp CacheStamp) bool {
+	return c.put(k, msg, req, allowRule, "", &stamp)
+}
+
+// PutWithActionStamp 缓存规则决定型应答（拦截/改写），并校验失效代际。
+func (c *Cache) PutWithActionStamp(k CacheKey, msg *dns.Msg, req *dns.Msg, action string, stamp CacheStamp) bool {
+	return c.put(k, msg, req, false, action, &stamp)
 }
 
 // PutWithAction 缓存一条由规则直接产生的应答（拦截 / 改写），并记下状态。
@@ -255,10 +308,18 @@ func (c *Cache) PutWith(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool) 
 // action 会被存进缓存条目，命中时还原成查询日志里的状态 —— 否则被拦的
 // 查询走缓存后会被记成「已处理」，拦截率凭空掉一截。
 func (c *Cache) PutWithAction(k CacheKey, msg *dns.Msg, req *dns.Msg, action string) bool {
-	return c.put(k, msg, req, false, action)
+	return c.put(k, msg, req, false, action, nil)
 }
 
-func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, action string) bool {
+// put 是写入缓存的唯一实现。
+//
+// stamp 为 nil 表示不做失效代际校验（测试与不关心代际的调用方）。
+//
+// 加锁顺序固定为「分片锁 → genMu 读锁」：写条目与读代际必须在同一个临界区内，
+// 否则「读代际 → 失效发生 → 写条目」之间会留下窗口，陈旧条目照样写进去。
+// 反向顺序（先 genMu 再分片锁）在这里不需要，Flush 只拿 genMu 写锁、随后单独
+// 拿各分片锁，不存在交叉持有。
+func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, action string, stamp *CacheStamp) bool {
 	if c == nil || msg == nil {
 		return false
 	}
@@ -295,6 +356,16 @@ func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, acti
 	s := c.shardFor(k)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 失效代际校验：查询出发后规则变过，这条应答属于旧规则，不能进缓存。
+	if stamp != nil {
+		c.genMu.RLock()
+		fresh := c.gen == stamp.Gen && c.userGen[k.UserID] == stamp.User
+		c.genMu.RUnlock()
+		if !fresh {
+			return false
+		}
+	}
 
 	if el, ok := s.items[k]; ok {
 		el.Value.(*cacheItem).entry = entry
@@ -359,6 +430,13 @@ func (c *Cache) Flush() {
 	if c == nil {
 		return
 	}
+	// 先推进代际再清条目：在途查询的 stamp 会因此失效，写不回来。
+	// 两步顺序不能反 —— 先清后推进的话，清理与推进之间回来的应答
+	// 读到的还是旧代际，会被写进刚清空的缓存。
+	c.genMu.Lock()
+	c.gen++
+	c.genMu.Unlock()
+
 	for _, s := range c.shards {
 		s.mu.Lock()
 		s.items = make(map[CacheKey]*list.Element, s.cap)
@@ -388,6 +466,19 @@ func (c *Cache) FlushUsers(userIDs []string) {
 	for _, id := range userIDs {
 		drop[id] = struct{}{}
 	}
+
+	// 先推进这些租户的代际，再清条目。
+	//
+	// 这一步是整个定向失效能成立的前提：缓存键不含规则版本，规则改了键不变，
+	// 而**在途**的查询（带着旧规则出发、此刻还没回来）会在失效之后才写缓存 ——
+	// 没有代际校验的话，它写进去的就是旧规则下的应答，TTL 最长 86400。
+	// 用户看到的是「加了规则没用」，过一阵自己好，最难自查。
+	c.genMu.Lock()
+	for id := range drop {
+		c.userGen[id]++
+	}
+	c.genMu.Unlock()
+
 	for _, s := range c.shards {
 		s.mu.Lock()
 		for k, el := range s.items {

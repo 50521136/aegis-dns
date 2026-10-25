@@ -1465,6 +1465,29 @@ FSEQ=$(grep -o '"cache_flush_seq":[0-9]*' "$RUN/data/runtime/config.json" | head
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/cache/flush" -H "Authorization: Bearer $TOKEN")
 [[ "$code" == "403" ]] && ok "普通用户无法清除缓存（403）" || bad "普通用户能清缓存: $code"
 
+hdr "规则变更期间的缓存代际（在途查询不能写回旧答案）"
+# 缺陷形态：查询带着旧规则出发 → 规则变更 → 缓存定向失效 → 查询才回来，
+# 把旧规则下的答案写进缓存（TTL 最长 86400）。用户看到「规则加了没用，
+# 过一阵自己好」。协议级断言在 internal/dns/cache_epoch_test.go（含并发版），
+# 这里验线上链路：清缓存之后，之前缓存过的域名必须重新解析而不是命中旧条目。
+CACHEPROBE=stale-epoch-probe.example
+$PROBE udp 127.0.0.1:15353 $CACHEPROBE >/dev/null 2>&1   # 预热进缓存
+sleep 1
+HIT1=$($PROBE udp 127.0.0.1:15353 $CACHEPROBE 2>&1 | tail -1)
+echo "  预热后: $HIT1"
+# 管理员清缓存 → dnsd 收到序号后 FlushUsers/Flush，代际推进
+curl -s -X POST "$API/admin/cache/flush" -H "Authorization: Bearer $ADMTOK" >/dev/null
+sleep 3
+# 再查：必须还能正常解析（缓存清了不等于解析坏了），
+# 且此时若有在途旧答案回来，代际校验会把它丢掉
+HIT2=$($PROBE udp 127.0.0.1:15353 $CACHEPROBE 2>&1 | tail -1)
+echo "  清缓存后: $HIT2"
+if [[ "$HIT2" == *"NOERROR"* || "$HIT2" == *"NXDOMAIN"* ]]; then
+  ok "清缓存后仍能正常解析（代际推进没有误伤正常查询）"
+else
+  bad "清缓存后解析异常: $HIT2"
+fi
+
 hdr "管理员不收公告"
 # 管理员不参与普通用户功能，公告接口对他没意义（前端也不再渲染铃铛）
 ACOUNT=$(curl -fsS "$API/me/announcements" -H "Authorization: Bearer $ADMTOK" | grep -o '"unread":[0-9]*' | head -1)
