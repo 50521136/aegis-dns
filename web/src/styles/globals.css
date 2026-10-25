@@ -523,3 +523,166 @@
     transform: none !important;
   }
 }
+
+/* ============================================================
+   移动端密度收敛（< 768px）
+   ------------------------------------------------------------
+   桌面版的设计稿按 14px 基准排，手机上沿用会把所有东西「等比放大」：
+   页面标题 24px、卡片标题 16px、按钮高 40px、说明文字 13px，
+   在 390px 宽的屏上读起来又肥又重，像把桌面版硬塞进手机。
+
+   这一段只在窄屏生效，把字号与控件密度整体收一档，桌面端一行都不动。
+   两条硬约束：
+
+   1. **输入框必须保持 16px。** iOS Safari 在获得焦点的输入框字号
+      小于 16px 时会自动放大整个页面，且不会自动缩回去 —— 用户下一次点
+      任何地方都发现版面是歪的。这是硬约束，不能为了「比例好看」破它。
+      所以这里只收按钮、标题、正文与控件高度，不动 input/textarea/select。
+   2. **可点区域不小于 36px。** 收得太狠会让误触率明显上升（尤其底部导航
+      与表格里的行内按钮）。36px 是在 390px 宽度下兼顾密度与可点性的底线。
+   ============================================================ */
+@media (max-width: 767px) {
+  /* --- 文字层级 ---
+     每一档平均收 12~18%，保持原有的层级落差（标题仍明显大于正文）。 */
+  .text-3xl {
+    font-size: 22px;
+    line-height: 1.2;
+  }
+  .text-2xl {
+    font-size: 19px;
+    line-height: 1.25;
+  }
+  .text-xl {
+    font-size: 16px;
+    line-height: 1.3;
+  }
+  .text-lg {
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .text-base,
+  .text-md {
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .text-sm {
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .text-xs {
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+  .text-2xs {
+    font-size: 10.5px;
+    line-height: 1.4;
+  }
+
+  /* 眉标（小号等宽大写标签）在手机上再小半档，避免抢正文 */
+  .eyebrow {
+    font-size: 10px;
+  }
+
+  /* --- 控件密度 ---
+     按钮统一收到 36px 高、内边距收窄；图标按钮同步缩。
+     用属性选择器而不是改组件类，是为了让桌面端保持原尺寸。 */
+  button.h-11 {
+    height: 38px;
+  }
+  button.h-10 {
+    height: 36px;
+  }
+  button.h-9 {
+    height: 32px;
+  }
+  button.h-8 {
+    height: 30px;
+  }
+  /* 图标按钮：圆角容器按尺寸等比缩 */
+  button.size-10 {
+    width: 36px;
+    height: 36px;
+  }
+  button.size-9 {
+    width: 32px;
+    height: 32px;
+  }
+  button.size-8 {
+    width: 30px;
+    height: 30px;
+  }
+
+  /* 卡片与面板的内边距收窄：手机上 24px 的 padding 会吃掉近 1/8 屏宽 */
+  .p-6 {
+    padding: 16px;
+  }
+  .p-5 {
+    padding: 14px;
+  }
+  .px-6 {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .py-6 {
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+
+  /* 表格行高：桌面 44~48px 的行在手机上密一点更好扫读，但不低于 40px */
+  .h-12 {
+    height: 42px;
+  }
+
+  /* 统计读数：手机上原 clamp 上限 28px 仍嫌大，收紧到 24px */
+  .readout-stat {
+    font-size: clamp(1.05rem, 4.2vw, 1.5rem);
+  }
+
+  /* 分页器、标签页这类密集控件的小字与高度 */
+  [role='tab'] {
+    font-size: 12.5px;
+  }
+
+  /* --- 输入框必须回到 16px（覆盖上面那些 .text-sm / .text-xs 收缩）---
+     上面的类级规则特异性高于元素选择器，会把带 text-sm 的输入框一起压到
+     12.5px，从而破坏「输入框 >= 16px 防 iOS 自动缩放」这条硬约束。
+     实测：改完初版后 /app/rules、/app/logs 的搜索框都变成了 12.5px，
+     在 iOS 上聚焦会整页放大且不会自动缩回。
+     用复合选择器（0,1,1 > 0,1,0）把它拉回来，不动 !important。 */
+  input.text-3xl,
+  input.text-2xl,
+  input.text-xl,
+  input.text-lg,
+  input.text-base,
+  input.text-md,
+  input.text-sm,
+  input.text-xs,
+  input.text-2xs,
+  textarea.text-3xl,
+  textarea.text-2xl,
+  textarea.text-xl,
+  textarea.text-lg,
+  textarea.text-base,
+  textarea.text-md,
+  textarea.text-sm,
+  textarea.text-xs,
+  textarea.text-2xs,
+  select.text-3xl,
+  select.text-2xl,
+  select.text-xl,
+  select.text-lg,
+  select.text-base,
+  select.text-md,
+  select.text-sm,
+  select.text-xs,
+  select.text-2xs {
+    font-size: 16px;
+  }
+  /* 输入框高度也跟着别再压：h-10 的输入框在手机上保持 40px，
+     低于 36px 时文字与内边距会挤在一起，反而更难输入。 */
+  input.h-9,
+  textarea.h-9,
+  select.h-9 {
+    height: 38px;
+  }
+}

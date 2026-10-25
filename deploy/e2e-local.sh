@@ -414,6 +414,35 @@ else
   bad "DoT 长连接在第 ${DOTN:-0} 条断开: $DOTERR"
 fi
 
+hdr "移动端 UI 密度（只收窄屏，且输入框不破 16px）"
+# 两条硬约束：
+#  1. 移动端密度收敛必须包在 @media (max-width: 767px) 里 —— 桌面版不能被改小；
+#  2. 输入框在移动端必须仍是 16px —— 低于 16px 时 iOS Safari 聚焦会自动放大
+#     整页且不会自动缩回，用户下一次点任何地方都发现版面是歪的。
+CSSMAIN=$(ls "$SRC/../web/src/styles/globals.css" 2>/dev/null || echo "")
+if [[ -n "$CSSMAIN" ]]; then
+  if grep -q "@media (max-width: 767px)" "$CSSMAIN"; then
+    ok "移动端密度收敛包在窄屏媒体查询里"
+  else
+    bad "找不到 @media (max-width: 767px) 块，手机端的字号收敛可能影响桌面"
+  fi
+  # 输入框 16px 的护栏：必须存在把 .text-* 覆盖回去的复合选择器
+  if grep -q "input.text-sm" "$CSSMAIN" && grep -q "textarea.text-sm" "$CSSMAIN"; then
+    ok "输入框的 16px 护栏在位（防 iOS 自动缩放）"
+  else
+    bad "缺输入框 16px 护栏：带 text-sm 的输入框会被压到 12.5px，iOS 聚焦会整页放大"
+  fi
+  # 段落级断言：@media (max-width: 767px) 之后的 input 16px 规则要真的在那一段里
+  MOBILEBLOCK=$(awk '/@media \(max-width: 767px\)/,0' "$CSSMAIN")
+  if echo "$MOBILEBLOCK" | grep -q "font-size: 16px"; then
+    ok "16px 规则确实落在窄屏块内"
+  else
+    bad "16px 规则不在窄屏块内，移动端输入框可能被压小"
+  fi
+else
+  bad "找不到 globals.css，无法验证移动端密度规则"
+fi
+
 hdr "缓存与统计"
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
