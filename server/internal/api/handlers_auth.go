@@ -358,8 +358,10 @@ func (s *Server) dotPort() int {
 // 故障静默存在 —— dnsd 在新端口上正常服务，用户却连不上。
 func (s *Server) dnsPorts() dnsPorts {
 	return dnsPorts{
-		DoH: portToInt(s.cfg.DNS.ListenDOH, 443),
-		DoT: portToInt(s.cfg.DNS.ListenDOT, 853),
+		DoH:  portToInt(s.cfg.DNS.ListenDOH, 443),
+		DoT:  portToInt(s.cfg.DNS.ListenDOT, 853),
+		DoQ:  portToInt(s.cfg.DNS.ListenDOQ, 853),
+		DoH3: portToInt(s.cfg.DNS.ListenDOH3, 443),
 	}
 }
 

@@ -57,12 +57,23 @@ export interface DnsConfig {
   doh_url_path: string
   dot_host: string
   dot_port: number
+  // DoQ（DNS-over-QUIC）：走 UDP，与 DoT 同端口号但传输层不同。
+  // QUIC 没有路径段放 client_id，所以租户靠 SNI 识别，证书无通配符时
+  // 只能给主域名（与 DoT 同一个限制）。
+  doq_addr?: string
+  doq_host?: string
+  doq_port?: number
+  // DoH3 与 DoH 是同一个 URL，只是传输换成 QUIC，
+  // 所以没有独立地址，只有一个「也支持 HTTP/3」的标志。
+  doh3_supported?: boolean
   plain_dns: string | null
   cert_fingerprint_sha256: string
   /** 协议开关：关掉的协议后端不下发地址 */
   enable_doh: boolean
   enable_dot: boolean
   enable_plain_dns: boolean
+  enable_doq?: boolean
+  enable_doh3?: boolean
   platform_guides: PlatformGuide[]
 }
 

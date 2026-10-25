@@ -35,6 +35,9 @@ const platformMeta: Record<string, { label: string; icon: React.ReactNode }> = {
   macos: { label: 'macOS', icon: <Apple className="size-4" /> },
   linux: { label: 'Linux', icon: <Terminal className="size-4" /> },
   router: { label: '路由器', icon: <Wifi className="size-4" /> },
+  // DoQ 单列一页：它的适用客户端（AdGuard Home / dnsproxy / mosdns）
+  // 和手机平台不重叠，混进 Android/iOS 页会让用户以为手机也能用 DoQ。
+  doq: { label: 'DoQ', icon: <Terminal className="size-4" /> },
 }
 
 export default function DnsSetup() {
@@ -56,6 +59,7 @@ export default function DnsSetup() {
       data.doh_url_path,
       data.dot_host && data.dot_port ? `${data.dot_host}:${data.dot_port}` : '',
       data.dot_host,
+      data.doq_addr,
       data.plain_dns ?? '',
       data.domain,
     ].filter(Boolean) as string[]
@@ -223,6 +227,14 @@ export default function DnsSetup() {
                 {data.enable_doh && data.doh_url && (
                   <CopyField label="DoH（DNS over HTTPS）" value={data.doh_url} />
                 )}
+                {/* H3 与 DoH 是同一个 URL，不另给地址：客户端靠 Alt-Svc 与
+                    ALPN h3 自己切到 QUIC，手填 h3:// 只有 dnsproxy 这类工具认。 */}
+                {data.enable_doh && data.doh3_supported && (
+                  <p className="-mt-2 text-xs text-muted-foreground">
+                    该地址同时支持 <span className="font-medium text-foreground">HTTP/3（QUIC）</span>
+                    ：支持 H3 的客户端会自动从 TCP 切到 UDP，无需另填地址。
+                  </p>
+                )}
                 {/* 证书没有通配符时主推地址本身就是路径式，两个值一样，
                     再列一遍只会让人以为哪里配错了 */}
                 {data.enable_doh && data.doh_url_path && data.doh_url_path !== data.doh_url && (
@@ -231,10 +243,13 @@ export default function DnsSetup() {
                 {data.enable_dot && data.dot_host && (
                   <CopyField label="DoT（DNS over TLS）" value={`${data.dot_host}:${data.dot_port}`} />
                 )}
+                {data.enable_doq && data.doq_addr && (
+                  <CopyField label="DoQ（DNS over QUIC，UDP）" value={data.doq_addr} />
+                )}
                 {data.enable_plain_dns && data.plain_dns && (
                   <CopyField label="普通 DNS（UDP/TCP）" value={data.plain_dns} />
                 )}
-                {!data.enable_doh && !data.enable_dot && !data.enable_plain_dns && (
+                {!data.enable_doh && !data.enable_dot && !data.enable_doq && !data.enable_plain_dns && (
                   <p className="text-sm text-danger">管理员已关闭全部接入协议，请联系管理员。</p>
                 )}
               </CardContent>

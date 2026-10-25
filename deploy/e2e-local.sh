@@ -322,6 +322,22 @@ fi
 # DoT 关掉后 DoQ 必须一起被拒：两者是「853 上的加密 DNS」，不能留旁路。
 echo "  （DoQ/DoH3 的开关跟随 DoT/DoH，由 Go 测试断言，见 quic_test.go）"
 
+# 面板必须把 DoQ 地址下发出去，否则用户根本不知道有这个接入方式。
+# /me/dns-config 是「我的 DNS」页面的数据源。
+DCQ=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $TOKEN")
+echo "  dns-config: $(echo "$DCQ" | head -c 500)"
+if echo "$DCQ" | grep -q '"doq_addr":"[^"]\+:18853"'; then
+  ok "面板下发 DoQ 地址（含真实端口）"
+else
+  bad "面板没下发 DoQ 地址: $(echo "$DCQ" | grep -o '"doq_addr":"[^"]*"' || echo 缺失)"
+fi
+echo "$DCQ" | grep -q '"enable_doq":true' && ok "DoQ 开关状态已回传" || bad "缺 enable_doq"
+# H3 与 DoH 同 URL，只回传一个标志；不能造一个 h3:// 地址出来。
+echo "$DCQ" | grep -q '"doh3_supported":true' && ok "面板标明 DoH 地址同时支持 HTTP/3" || bad "缺 doh3_supported"
+echo "$DCQ" | grep -q 'h3://' && bad "面板出现了 h3:// 地址（客户端不认这种写法）" || ok "没有伪造 h3:// 地址"
+# DoQ 的平台指引要说明手机不支持，否则用户会去手机设置里找。
+echo "$DCQ" | grep -q '"platform":"doq"' && ok "给出 DoQ 平台指引" || bad "缺 DoQ 平台指引"
+
 hdr "缓存与统计"
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1

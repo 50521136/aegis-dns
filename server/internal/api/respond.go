@@ -265,14 +265,27 @@ type dnsConfigJSON struct {
 	DoTHost    string `json:"dot_host"`
 	DoTPort    int    `json:"dot_port"`
 	DoTAddr    string `json:"dot_addr"`
+	// DoQAddr 是 DoQ（DNS-over-QUIC，UDP）的接入地址，形态与 DoT 相同：
+	// QUIC 没有路径段可放 client_id，租户只能靠 SNI 首段识别，
+	// 所以证书没有通配符时只能给裸域名（与 DoT 同一个限制）。
+	DoQAddr string `json:"doq_addr"`
+	DoQHost string `json:"doq_host"`
+	DoQPort int    `json:"doq_port"`
+	// DoH3Supported 表示同一份 DoH 地址也支持 HTTP/3。
+	// 不另给地址：H3 与 DoH 是**同一个 URL**，只是传输从 TCP 换成 UDP，
+	// 客户端靠 Alt-Svc + ALPN 自己切。给一个"h3://"地址反而没有客户端认。
+	DoH3Supported bool `json:"doh3_supported"`
 	// PlainDNS 为 null：本系统不对外提供明文 DNS（避免被当作开放解析器滥用）。
 	PlainDNS *string `json:"plain_dns"`
 	// CertFingerprintSHA256 供客户端固定证书用（自签场景尤其重要）。
 	CertFingerprintSHA256 string `json:"cert_fingerprint_sha256"`
 	// 协议开关状态：前端据此决定显示哪些地址、哪些平台标「暂不支持」
-	EnableDoH      bool            `json:"enable_doh"`
-	EnableDoT      bool            `json:"enable_dot"`
-	EnablePlainDNS bool            `json:"enable_plain_dns"`
+	EnableDoH      bool `json:"enable_doh"`
+	EnableDoT      bool `json:"enable_dot"`
+	EnablePlainDNS bool `json:"enable_plain_dns"`
+	// EnableDoQ / EnableDoH3 跟随 DoT / DoH 开关，另加「config 里配了监听」这个前提。
+	EnableDoQ      bool            `json:"enable_doq"`
+	EnableDoH3     bool            `json:"enable_doh3"`
 	PlatformGuides []platformGuide `json:"platform_guides"`
 }
 
@@ -290,6 +303,10 @@ type protoSet struct {
 	DoH   bool
 	DoT   bool
 	Plain bool
+	// DoQ / DoH3 在开关之外还要求 config.yaml 里配了对应监听：
+	// 没配监听就下发地址，用户照填必然连不上。
+	DoQ  bool
+	DoH3 bool
 }
 
 // dnsPorts 是下发给客户端的实际端口。
@@ -300,6 +317,9 @@ type protoSet struct {
 type dnsPorts struct {
 	DoH int
 	DoT int
+	DoQ int
+	// DoH3 与 DoH 同端口号（传输层不同），单独存一份便于文案里显示。
+	DoH3 int
 }
 
 // urlHost 按端口拼「主机[:端口]」：标准端口省略端口号，
@@ -359,7 +379,25 @@ func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildca
 		cfg.DoTPort = dotPort
 		cfg.DoTAddr = fmt.Sprintf("%s:%d", dothost, dotPort)
 	}
-	cfg.PlatformGuides = platformGuides(clientID, domain, dohURL, dothost, wildcard, protos, dotPort)
+	// DoQ 与 DoT 用同一个主机名策略：QUIC 没有路径段，租户只能靠 SNI，
+	// 所以证书无通配符时同样只能给裸域名（此时租户靠来源 IP 识别）。
+	if protos.DoQ {
+		doqPort := ports.DoQ
+		if doqPort <= 0 {
+			doqPort = 853
+		}
+		cfg.DoQHost = dothost
+		cfg.DoQPort = doqPort
+		cfg.DoQAddr = fmt.Sprintf("%s:%d", dothost, doqPort)
+		cfg.EnableDoQ = true
+	}
+	// DoH3 与 DoH 同地址、同 URL，只是传输换成 QUIC，所以只置一个标志，
+	// 由前端在 DoH 那一栏加「支持 HTTP/3」的说明。
+	if protos.DoH3 && protos.DoH {
+		cfg.DoH3Supported = true
+		cfg.EnableDoH3 = true
+	}
+	cfg.PlatformGuides = platformGuides(clientID, domain, dohURL, dothost, wildcard, protos, dotPort, cfg.DoQAddr)
 	return cfg
 }
 
@@ -371,11 +409,16 @@ func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildca
 //
 // dohURL / dothost 由 buildDNSConfig 按证书能力算好后传进来 —— 文案是用户唯一
 // 会照着做的地方，写一个连不上的地址等于没写。
-func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, protos protoSet, dotPort int) []platformGuide {
+func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, protos protoSet, dotPort int, doqAddr string) []platformGuide {
 	host := dothost
 	dotNote := ""
 	if !wildcard && clientID != "" {
 		dotNote = "（当前证书不含通配符，DoT 只能用主域名；如需按用户区分请改用 DoH）"
+	}
+	// DoQ 的租户识别只能靠 SNI（QUIC 没有路径段），所以它的限制与 DoT 完全一样。
+	doqNote := ""
+	if !wildcard && clientID != "" {
+		doqNote = "（当前证书不含通配符，DoQ 只能用主域名，且租户靠来源 IP 识别）"
 	}
 
 	// unsupported 是「这个平台需要的协议都没开」时的统一文案。
@@ -521,6 +564,20 @@ func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, pro
 		out = append(out, unsupported("router", "DoT / DoH / 普通 DNS"))
 	}
 
+	// AdGuard Home / dnsproxy / mosdns 这类客户端是 DoQ 的主要使用者
+	// （Android 私人 DNS 和多数系统解析器都不支持 DoQ，所以不放进手机平台段）。
+	if protos.DoQ && doqAddr != "" {
+		out = append(out, platformGuide{
+			Platform:  "doq",
+			Supported: true,
+			Steps: []string{
+				"适用于支持 DoQ 的客户端：AdGuard Home、dnsproxy、mosdns、部分路由器固件",
+				"DoQ 地址（走 UDP，与 DoT 同端口号、传输层不同）：" + doqAddr + doqNote,
+				"Android「私人 DNS」与 iOS 描述文件都不支持 DoQ，手机请用 DoH/DoT",
+			},
+		})
+	}
+
 	return out
 }
 
@@ -543,11 +600,16 @@ func (s *Server) rootDomainReserved(ctx context.Context) bool {
 func (s *Server) protos(ctx context.Context) protoSet {
 	set, err := s.store.GetSettings(ctx)
 	if err != nil || set == nil {
-		return protoSet{DoH: true, DoT: true, Plain: true}
+		return protoSet{DoH: true, DoT: true, Plain: true, DoQ: s.cfg.DNS.ListenDOQ != "", DoH3: s.cfg.DNS.ListenDOH3 != ""}
 	}
 	ps := protoSet{DoH: set.EnableDoH, DoT: set.EnableDoT, Plain: set.EnablePlainDNS}
 	if !ps.DoH && !ps.DoT && !ps.Plain {
-		return protoSet{DoH: true, DoT: true, Plain: true}
+		return protoSet{DoH: true, DoT: true, Plain: true, DoQ: s.cfg.DNS.ListenDOQ != "", DoH3: s.cfg.DNS.ListenDOH3 != ""}
 	}
+	// DoQ 跟随 DoT、DoH3 跟随 DoH（与 dnsd 侧 protoEnabled 的判定一致），
+	// 另外要求 config.yaml 里真的配了监听 —— 没起监听却下发地址，
+	// 用户照着填一定连不上，而服务端连日志都不会有。
+	ps.DoQ = ps.DoT && s.cfg.DNS.ListenDOQ != ""
+	ps.DoH3 = ps.DoH && s.cfg.DNS.ListenDOH3 != ""
 	return ps
 }
