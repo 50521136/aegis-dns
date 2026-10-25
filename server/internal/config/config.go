@@ -26,8 +26,16 @@ type DNS struct {
 	// ListenDOHPlain 是明文 HTTP 的 DoH 监听（默认关闭）。
 	// 仅用于反代终止 TLS 的部署形态，或本机 curl 调试。
 	ListenDOHPlain string `yaml:"listen_doh_plain"`
-	CertFile       string `yaml:"cert_file"`
-	KeyFile        string `yaml:"key_file"`
+	// ListenDOQ 是 DoQ（DNS-over-QUIC，RFC 9250）的监听地址，走 UDP。
+	// 默认空 = 不启用：QUIC 需要 ALPN "doq"，且 853/udp 在老部署里可能被
+	// 别的服务占着，贸然默认开启会让升级瞬间多出一个绑定失败。
+	// 与 DoT 共用 853 端口号不冲突 —— 传输层不同（DoT 是 TCP）。
+	ListenDOQ string `yaml:"listen_doq"`
+	// ListenDOH3 是 DoH over HTTP/3 的监听地址，走 UDP，通常与 DoH 同端口。
+	// 默认空 = 不启用。启用后 DoH（TCP）响应会带上 Alt-Svc，客户端据此切到 H3。
+	ListenDOH3 string `yaml:"listen_doh3"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
 	// DevTLS 为 true 时，若无证书则自签一张内存证书，方便内网测试。
 	DevTLS bool `yaml:"dev_tls"`
 	ACME   ACME `yaml:"acme"`

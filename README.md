@@ -367,7 +367,13 @@ go test -race -count=1 ./...     # 规则引擎、缓存隔离、CIDR、订阅�
 
 ## 已知限制
 
-- **DoQ（DNS-over-QUIC）未实现**。文档列为二期功能。
+- **DoQ（DNS-over-QUIC）与 DoH over HTTP/3 已支持**（`config.yaml` 里
+  `listen_doq` / `listen_doh3` 配置后启用，默认关闭）。
+  DoQ 走 UDP 853（与 DoT 同端口号、传输层不同），ALPN `doq`；
+  DoH3 走 UDP 443（与 DoH 同端口号），ALPN `h3`，并在 DoH 响应里带 `Alt-Svc`
+  供客户端发现。两者的协议开关跟随 `enable_dot` / `enable_doh`：
+  关掉 DoT 时 DoQ 一起被拒，关掉 DoH 时 H3 一起被拒，不留旁路。
+  实现基于 `quic-go`（dnsproxy 早已间接引入，本次转为直接依赖）。
 - **DNSCrypt 未实现**。
 - **DNSSEC 验证未实现**：上游应答不做签名校验，仅透传。
 - **内置 ACME 未实现**（见上表）。证书需外部签发后以文件提供；

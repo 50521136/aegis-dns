@@ -136,6 +136,8 @@ if [[ -r "$CFG_FILE" ]]; then
   cfg_tls_port=$(sed -n 's/^  tls_listen: ":\{0,1\}\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
   cfg_doh_port=$(sed -n 's/^  listen_doh: "[^:]*:\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
   cfg_dot_port=$(sed -n 's/^  listen_dot: "[^:]*:\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
+  cfg_doq_port=$(sed -n 's/^  listen_doq: "[^:]*:\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
+  cfg_doh3_port=$(sed -n 's/^  listen_doh3: "[^:]*:\([0-9]\{1,5\}\)"$/\1/p' "$CFG_FILE" | head -1)
 fi
 API_PORT="${API_PORT:-${cfg_api_port:-8080}}"
 TLS_PORT="${TLS_PORT:-${cfg_tls_port:-8443}}"
@@ -146,6 +148,14 @@ check_listen udp 53 "UDP DNS"
 check_listen tcp 53 "TCP DNS"
 check_listen tcp "$DOT_PORT" "DoT"
 check_listen tcp "$DOH_PORT" "DoH"
+# DoQ / DoH3 是可选项（config 里留空 = 不启用），只有配了才检查，
+# 否则会给一台本来正常的机器报「未监听」的假失败。
+if [[ -n "$cfg_doq_port" ]]; then
+  check_listen udp "$cfg_doq_port" "DoQ"
+fi
+if [[ -n "$cfg_doh3_port" ]]; then
+  check_listen udp "$cfg_doh3_port" "DoH3"
+fi
 check_listen tcp "$TLS_PORT" "面板 HTTPS"
 check_listen tcp "$API_PORT" "API HTTP"
 

@@ -212,6 +212,25 @@ func (m *Manager) TLSConfig() *tls.Config {
 	}
 }
 
+// TLSConfigForALPN 返回只声明指定 ALPN 的 TLS 配置。
+//
+// QUIC 系协议（DoQ / HTTP3）**必须**单独给 ALPN：quic-go 用 NextProtos 做
+// 协议协商，TLSConfig() 里那份 {"h2","http/1.1","dot"} 会让 DoQ 客户端
+// （只认 "doq"）握手时 ALPN 不匹配，报 no application protocol 直接断开 ——
+// 而且服务端日志里只看到一条握手失败，很容易误判成证书问题。
+//
+// 也不能把 "doq"/"h3" 塞进同一个 config：DoT/DoH 与 DoQ 的监听是分开的，
+// 混在一起会让 DoT 客户端协商出 "doq"（不该发生但要避免）。
+func (m *Manager) TLSConfigForALPN(protos ...string) *tls.Config {
+	next := make([]string, 0, len(protos))
+	next = append(next, protos...)
+	return &tls.Config{
+		GetCertificate: m.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+		NextProtos:     next,
+	}
+}
+
 // CoversSubdomains 判断当前证书是否覆盖 <任意>.domain（即 SAN 里有 *.domain）。
 //
 // 这个判断决定面板给用户下发哪种 DoH 地址：

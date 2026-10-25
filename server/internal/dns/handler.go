@@ -984,7 +984,16 @@ func (h *Handler) protoEnabled(proto string) bool {
 	switch proto {
 	case "doh":
 		return d.EnableDoH
+	case "doh3":
+		// HTTP/3 只是 DoH 的另一种传输，跟随 DoH 开关：
+		// 单独给一个开关会让「DoH 关了但 H3 还开着」这种组合出现，
+		// 而客户端的 h3 地址与 DoH 完全相同，用户会以为是随机故障。
+		return d.EnableDoH
 	case "dot":
+		return d.EnableDoT
+	case "doq":
+		// DoQ 与 DoT 共用 853 端口号、同一张证书、同一条 SNI 识别路径，
+		// 语义上就是「853 上的加密 DNS」，所以跟随 DoT 开关。
 		return d.EnableDoT
 	case "udp", "tcp", "":
 		return d.EnablePlainDNS

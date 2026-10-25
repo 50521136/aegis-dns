@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/50521136/aegis-dns/server/internal/certmgr"
 	"github.com/50521136/aegis-dns/server/internal/config"
@@ -35,9 +37,11 @@ type Server struct {
 	tcp *dns.Server
 
 	dotLn net.Listener
+	doqLn *quic.Listener
 
 	dohTLS   *http.Server
 	dohPlain *http.Server
+	doh3     *http3.Server
 
 	// 启动错误汇总，便于在自检里一次性看到「哪个端口没起来」。
 	startErrs []error
@@ -148,6 +152,47 @@ func (s *Server) Start(ctx context.Context) error {
 		s.log.Info("明文 DoH 已启动（仅供本机或反代）", "addr", addr)
 	}
 
+	// --- DoQ 853/udp（可选）---
+	//
+	// 放在 DoT/DoH 之后：它依赖证书，且与 DoT 共用 853 端口号（TCP 与 UDP
+	// 互不影响）。没证书时与 DoT 同样降级跳过，不阻止其它协议。
+	if addr := s.cfg.DNS.ListenDOQ; addr != "" {
+		if !s.certs.Available() {
+			s.log.Warn("没有可用证书，跳过 DoQ 监听", "addr", addr)
+		} else {
+			s.startDOQ(ctx, addr)
+			started++
+		}
+	}
+
+	// --- DoH over HTTP/3（可选）---
+	//
+	// 与 DoH 用同一个 mux 和同一个 URL 形态，只是底层换成 UDP+QUIC，
+	// 客户端靠 ALPN "h3" 区分。DoH（TCP）响应里会带 Alt-Svc 指过来（见 handleDoH）。
+	if addr := s.cfg.DNS.ListenDOH3; addr != "" {
+		if !s.certs.Available() {
+			s.log.Warn("没有可用证书，跳过 DoH3 监听", "addr", addr)
+		} else {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/dns-query", s.handleDoH)
+			mux.HandleFunc("/dns-query/", s.handleDoH)
+			mux.HandleFunc("/", s.handleDoHRoot)
+			s.doh3 = &http3.Server{
+				Addr:       addr,
+				Handler:    mux,
+				TLSConfig:  s.certs.TLSConfigForALPN("h3"),
+				QUICConfig: &quic.Config{MaxIdleTimeout: 120 * time.Second},
+			}
+			go func() {
+				if err := s.doh3.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					s.recordErr("DoH3", addr, err)
+				}
+			}()
+			started++
+			s.log.Info("DNS over HTTP/3 已启动", "addr", addr, "alpn", "h3")
+		}
+	}
+
 	if started == 0 {
 		return fmt.Errorf("没有任何 DNS 协议成功启动：%v", s.startErrs)
 	}
@@ -179,11 +224,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.dotLn != nil {
 		errs = append(errs, s.dotLn.Close())
 	}
+	if s.doqLn != nil {
+		errs = append(errs, s.doqLn.Close())
+	}
 	if s.dohTLS != nil {
 		errs = append(errs, s.dohTLS.Shutdown(ctx))
 	}
 	if s.dohPlain != nil {
 		errs = append(errs, s.dohPlain.Shutdown(ctx))
+	}
+	if s.doh3 != nil {
+		errs = append(errs, s.doh3.Close())
 	}
 	return errors.Join(errs...)
 }
@@ -411,12 +462,23 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cap := &captureWriter{remote: clientAddr(r)}
+	// 显式标注协议，不靠 protoOf 的推断。
+	//
+	// 推断路径在两种情况下会走错：请求没带任何 client_id 线索时，
+	// protoOf 会退到 RemoteAddr().Network() —— DoH over HTTP/3 的远端地址是
+	// *net.UDPAddr，于是被当成「明文 UDP」，一旦管理员关掉明文 DNS，
+	// 明明开着 DoH 的 H3 请求会被 REFUSED；TCP 上的 DoH 同理会落到「明文 TCP」。
+	proto := "doh"
+	if r.ProtoMajor >= 3 {
+		proto = "doh3"
+	}
 	s.handler.Handle(cap, msg, &IdentifyHint{
 		ClientID:    clientID,
 		Source:      source,
 		Host:        normalizeHost(host),
 		AltClientID: altID,
 		AltSource:   altSource,
+		Proto:       proto,
 	})
 
 	if cap.msg == nil {
@@ -433,6 +495,18 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/dns-message")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Alt-Svc 是客户端发现 HTTP/3 的**唯一**正常途径（RFC 7838）：
+	// 手写 h3:// 的只有 dnsproxy 这类工具，浏览器和系统解析器都是先走 TCP
+	// 上的 DoH，看到这个头才切到 QUIC。所以开了 H3 就必须在这里宣告，
+	// 光起 UDP 监听不会有任何客户端切过去。
+	//
+	// 只在 TLS 请求上加：明文 DoH（listen_doh_plain，给反代终止 TLS 用）
+	// 上宣告 h3 没有意义，还会让客户端尝试一个不存在的 QUIC 端点。
+	if r.TLS != nil && s.doh3 != nil {
+		if err := s.doh3.SetQUICHeaders(w.Header()); err != nil {
+			s.log.Debug("设置 Alt-Svc 失败", "err", err)
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
 }

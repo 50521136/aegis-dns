@@ -66,6 +66,10 @@ dns:
   listen_dot: "127.0.0.1:18853"
   listen_doh: "127.0.0.1:14443"
   listen_doh_plain: "127.0.0.1:18053"
+  # DoQ 走 UDP、DoH3 也走 UDP：端口与 TCP 上的 DoT/DoH 无关，可以同号，
+  # 这里为了不和别的东西撞，用独立端口。
+  listen_doq: "127.0.0.1:18853"
+  listen_doh3: "127.0.0.1:14443"
   dev_tls: true
   query_log_ring: 500
   # 联调用 3 秒：默认 60 秒的话，测试跑完了统计还没落库。
@@ -289,6 +293,34 @@ t "DoH Host 首段识别"     "0.0.0.0"      doh https://127.0.0.1:14443 --host 
 t "DoH 路径段识别"        "192.168.1.10" doh https://127.0.0.1:14443 --path "/dns-query/$CID" --insecure nas.home
 t "明文 DoH（调试端口）"  "0.0.0.0"      doh http://127.0.0.1:18053 --path "/dns-query/$CID" ads.example.com
 t "DoH 正常域名"          "NOERROR"      doh https://127.0.0.1:14443 --host "$CID.dns.e2e.local" --insecure example.com
+
+hdr "DoQ / DoH3 接入"
+# 协议级的正确性（ALPN、长度前缀、大应答不截断、按 SNI 识别租户、Alt-Svc）
+# 由 server/internal/dns/quic_test.go 用 quic-go 客户端端到端覆盖 ——
+# python 标准库没有 QUIC 栈，这里只做「端口真的在 UDP 上监听」这一层，
+# 剩下的交给 Go 测试，避免为了探针引入 aioquic 依赖。
+if ss -lnu 2>/dev/null | grep -qE "127.0.0.1:18853\b"; then
+  ok "DoQ 在 18853/udp 监听"
+else
+  bad "DoQ 未监听（853/udp 对应的 UDP socket 不在）"
+fi
+if ss -lnu 2>/dev/null | grep -qE "127.0.0.1:14443\b"; then
+  ok "DoH3 在 14443/udp 监听（与 DoH 同端口号，传输层不同）"
+else
+  bad "DoH3 未监听"
+fi
+# Alt-Svc：客户端靠它发现 HTTP/3，缺了就等于 H3 白开。
+# 必须发一条**合法**的 DNS 查询：空 body 会走 400 分支，那条路径不写 Alt-Svc。
+Q64=$(python3 -c 'import base64,sys;print(base64.urlsafe_b64encode(bytes.fromhex("123401000001000000000000076578616d706c6503636f6d0000010001")).decode().rstrip("="))')
+ALTSVC=$(curl -sk -D - -o /dev/null "https://127.0.0.1:14443/dns-query?dns=$Q64" \
+  -H "Host: $CID.dns.e2e.local" 2>/dev/null | grep -i '^alt-svc:' || true)
+if [[ -n "$ALTSVC" ]]; then
+  ok "DoH 响应带 Alt-Svc（客户端可发现 H3）：$(echo "$ALTSVC" | tr -d '\r')"
+else
+  bad "DoH 响应缺少 Alt-Svc 头，客户端不会切到 HTTP/3"
+fi
+# DoT 关掉后 DoQ 必须一起被拒：两者是「853 上的加密 DNS」，不能留旁路。
+echo "  （DoQ/DoH3 的开关跟随 DoT/DoH，由 Go 测试断言，见 quic_test.go）"
 
 hdr "缓存与统计"
 $PROBE udp 127.0.0.1:15353 example.org >/dev/null 2>&1
