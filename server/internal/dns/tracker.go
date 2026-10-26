@@ -137,6 +137,84 @@ var trackerDB = []trackerEntry{
 	{"logservice.hicloud.com", "华为日志", "客户交互"},
 	{"hianalytics.com", "华为分析", "客户交互"},
 	{"logbak.hicloud.com", "华为日志", "客户交互"},
+
+	// --- 字节跳动 / 穿山甲 / 火山引擎（互联网全量最大的上报家族） ---
+	{"log.zijieapi.com", "字节跳动上报", "客户交互"},
+	{"applog.zijieapi.com", "字节跳动上报", "客户交互"},
+	{"mon.zijieapi.com", "字节跳动监控", "客户交互"},
+	{"mcs.zijieapi.com", "字节跳动采集", "客户交互"},
+	{"live-player-log.zijieapi.com", "字节播放日志", "客户交互"},
+	{"toblog.ctobsnssdk.com", "字节手机上报", "客户交互"},
+	{"mon.snssdk.com", "字节统计", "客户交互"},
+	{"log.snssdk.com", "字节日志", "客户交互"},
+	{"dm.toutiao.com", "头条设备上报", "客户交互"},
+	{"dm.bytedance.com", "字节设备上报", "客户交互"},
+	{"mssdk.bytedance.com", "字节风控 SDK", "客户交互"},
+	{"mssdk.volces.com", "火山风控 SDK", "客户交互"},
+	{"api-access.pangolin-sdk-toutiao.com", "穿山甲广告", "广告"},
+	{"api-access.pangolin-sdk-toutiao1.com", "穿山甲广告", "广告"},
+	{"pglstatp-toutiao.com", "穿山甲静态", "广告"},
+	{"ibytedapm.com", "字节 APM", "统计"},
+	{"apmplus.volces.com", "火山 APMPlus", "统计"},
+	{"gator.volces.com", "火山引擎监控", "统计"},
+	{"litemob.net", "LiteMob 广告", "广告"},
+	{"anythinktech.com", "TopOn 广告聚合", "广告"},
+
+	// --- 腾讯 / QQ / 微信补充 ---
+	{"trace.qq.com", "腾讯追踪", "客户交互"},
+	{"rmonitor.qq.com", "腾讯性能监控", "统计"},
+	{"bls.mdt.qq.com", "腾讯灯塔采集", "客户交互"},
+	{"ab.qq.com", "腾讯数据上报", "客户交互"},
+	{"gatherer.m.qq.com", "腾讯采集", "客户交互"},
+	{"bugly.qq.com", "腾讯 Bugly", "统计"},
+	{"htrace.wetvinfo.com", "腾讯 WeTV 上报", "客户交互"},
+	{"guid.tpns.tencent.com", "腾讯 TPNS 标识", "客户交互"},
+	{"dns.weixin.qq.com.cn", "微信 DNS", "客户交互"},
+
+	// --- 小米 / MIUI ---
+	{"metok.sys.miui.com", "MIUI 统计", "统计"},
+	{"tracker.xiaomixiaoai.com", "小爱统计", "统计"},
+	{"sentry.d.xiaomi.net", "小米 Sentry", "统计"},
+	{"adv.sec.miui.com", "MIUI 广告", "广告"},
+	{"w.pandora.xiaomi.com", "MIUI 系统广告", "广告"},
+	{"screentime.comm.miui.com", "MIUI 屏幕时间", "统计"},
+
+	// --- vivo / OPPO（heytap） ---
+	// vivo 遥测 SDK 的主机名是「前缀+连字符+stsdk」的单标签变体
+	// （onrt- / pfpd- / ort- / abeacdata- / moni- …），后缀匹配按标签剥离，
+	// 所以必须逐个登记完整主机名；stsdk.vivo.com.cn 本身也保留作兜底。
+	{"onrt-stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"pfpdonrt-stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"pfpdort-stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"ort-stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"abeacdataort-stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"moni-onrt-stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"stsdk.vivo.com.cn", "vivo SDK 上报", "客户交互"},
+	{"vcode-od.vivo.com.cn", "vivo 校验上报", "客户交互"},
+	{"vcode-or.vivo.com.cn", "vivo 校验上报", "客户交互"},
+	{"adreq.vivo.com.cn", "vivo 广告", "广告"},
+	{"rkp.vivo.com.cn", "vivo 风控", "客户交互"},
+	{"dc.heytapmobi.com", "OPPO 数据采集", "客户交互"},
+
+	// --- 阿里系（UC / 支付宝 / 阿里云） ---
+	{"applog-perf.uc.cn", "UC 上报", "客户交互"},
+	{"px.ucweb.com", "UC 统计", "统计"},
+	{"mobile-data-acquisition.cn-hangzhou.log.aliyuncs.com", "阿里云日志采集", "统计"},
+	{"amdc.alipay.com", "阿里网络调度", "统计"},
+
+	// --- 推送 / 统计 SDK ---
+	{"ido.gepush.com", "个推上报", "统计"},
+	{"stats.jpush.cn", "极光统计", "统计"},
+	{"ali-stats.jpush.cn", "极光统计", "统计"},
+
+	// --- 其它 ---
+	{"cgicol.amap.com", "高德采集", "统计"},
+	{"wwstat.com", "搜狗统计", "统计"},
+	{"logcollection.ronghub.com", "融云日志", "统计"},
+	{"gvt2.com", "Google 遥测", "统计"},
+	{"ipify.org", "公网 IP 探测", "统计"},
+	{"checkip.dyndns.com", "公网 IP 探测", "统计"},
+	{"onethingpcs.com", "网心 PCDN", "统计"},
 }
 
 // trackerIndex 是后缀 → 条目 的索引，用于 O(1) 判断。
