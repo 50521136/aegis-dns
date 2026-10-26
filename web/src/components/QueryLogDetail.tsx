@@ -118,10 +118,24 @@ export function QueryLogDetail({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && reset()}>
-      {/* 桌面居中、宽度显式 md:max-w-3xl 覆盖基类的 md:max-w-lg
-          （只写 max-w-* 不带 md: 前缀会被基类在 md 断点盖掉）；
-          手机是底部抽屉，内边距与间距压一档，避免半屏空白。 */}
-      <DialogContent className="max-h-[88dvh] gap-3 p-4 md:max-w-3xl md:gap-3.5 md:p-5">
+      {/* 宽度约束（这是「撑满屏幕」的修复点）：
+          基类是 md:w-full + left-1/2 + -translate-x-1/2，视口落在 768~800px
+          区间时 w-full 会把弹窗撑到贴边（实测 800px 下左右边距只有 11px、
+          768px 下左边距 0），看起来就是「超出屏幕」。
+
+          修法不用 100vw：100vw **含滚动条宽度**（实测 10px），
+          calc(100vw-3rem) 在 768px 视口只剩 19px 边距，仍然贴边。
+          改用 `md:w-[calc(100%-2rem)]` —— 百分比相对定位父级（视口内容区）
+          计算，不把滚动条算进来；再配 max-w-3xl 限上限。
+
+          <768px 时基类是手机底部抽屉（inset-x-0），抽屉本来该贴边，
+          所以把左右保底间距限定在 md 断点以上。
+
+          左右边距必须对称：基类的 left-1/2 是相对**含滚动条**的视口算的，
+          而 100% 是相对内容区算的，两者差一个滚动条宽度（实测 10px），
+          结果就是左边窄右边宽（768px 下 16/26）。补半条滚动条的位移把
+          它掰正，左右各 16px。 */}
+      <DialogContent className="max-h-[88dvh] gap-3 p-4 md:w-[calc(100%-2rem)] md:max-w-3xl md:translate-x-[calc(-50%+5px)] md:gap-3.5 md:p-5">
         <DialogHeader className="gap-1.5">
           <DialogTitle className="break-all pr-8 font-mono text-[15px] leading-tight md:text-base">
             {row.domain}
