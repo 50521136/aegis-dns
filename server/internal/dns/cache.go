@@ -63,6 +63,12 @@ type CacheEntry struct {
 type cacheItem struct {
 	key   CacheKey
 	entry *CacheEntry
+	// ecs 非零表示这条条目在网段层，key 需要再带上它才能定位与删除。
+	//
+	// 淘汰时是从 LRU 尾部取节点，只有 entry 无法反查它在哪一层、哪个键
+	// 下 —— 不记下来的话网段条目会变成删不掉的僵尸，占着容量却永不失效。
+	ecs   ecsKey
+	inSub bool
 }
 
 // Cache 是分片 LRU 缓存。
@@ -132,8 +138,18 @@ type CacheStamp struct {
 type cacheShard struct {
 	mu    sync.Mutex
 	items map[CacheKey]*list.Element
-	lru   *list.List
-	cap   int
+	// subItems 是「网段层」：带 ECS 且答案确实依赖网段的正常应答。
+	//
+	// 单独一层而不是把网段塞进 CacheKey：塞进去的话，拦截/改写应答（本地
+	// 规则构造、与网段无关）也会被迫按网段分裂，等于开 ECS 就把重复率最高
+	// 的那类流量也逐出缓存。分成两层之后两者互不影响。
+	//
+	// 与 items 共用同一把锁与同一条 LRU：网段条目也占容量，淘汰逻辑不需要
+	// 写两遍。代价是容量按「主键条目 + 网段条目」合计计算，这正是想要的
+	// 效果（cache_size 的语义是「一共存多少条应答」）。
+	subItems map[CacheKey]map[ecsKey]*list.Element
+	lru      *list.List
+	cap      int
 }
 
 // NewCache 创建一个容量为 size 条的分片 LRU。
@@ -158,9 +174,10 @@ func NewCache(size, minTTL, maxTTL int) *Cache {
 	}
 	for i := range c.shards {
 		c.shards[i] = &cacheShard{
-			items: make(map[CacheKey]*list.Element, per),
-			lru:   list.New(),
-			cap:   per,
+			items:    make(map[CacheKey]*list.Element, per),
+			subItems: make(map[CacheKey]map[ecsKey]*list.Element),
+			lru:      list.New(),
+			cap:      per,
 		}
 	}
 	return c
@@ -211,6 +228,22 @@ func (c *Cache) GetWithAllow(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, st
 // 成因只用于指标分类，不影响返回内容 —— 拆成独立方法而不是改 GetWithAllow
 // 的签名，是为了不动那些只关心命中的调用点。
 func (c *Cache) GetWithReason(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, string, MissReason) {
+	return c.GetWithECS(k, req, nil)
+}
+
+// GetWithECS 是带网段的查找。
+//
+// sub 为 nil 表示这次查询不带（也不会注入）ECS，只查主键层。
+//
+// 查找顺序（两层，最多 2 次 map 查找，不含遍历，热路径 O(1)）：
+//
+//  1. 带 sub 时先查网段层精确匹配 —— 这是大多数带 ECS 的查询的命中去处；
+//  2. 再查主键层 —— 那里存的是「与网段无关」的答案（拦截/改写，
+//     以及上游明确声明 scope=0 的正常应答）。
+//
+// 反过来（不带 sub 的查询）只查主键层：网段层的条目是按别人的网段算出来的
+// 答案，给一个没声明网段的客户端用等于凭空假设它属于那个网段。
+func (c *Cache) GetWithECS(k CacheKey, req *dns.Msg, sub *ecsKey) (*dns.Msg, bool, bool, string, MissReason) {
 	if c == nil {
 		return nil, false, false, "", MissAbsent
 	}
@@ -218,17 +251,45 @@ func (c *Cache) GetWithReason(k CacheKey, req *dns.Msg) (*dns.Msg, bool, bool, s
 	s := c.shardFor(k)
 
 	s.mu.Lock()
-	el, ok := s.items[k]
-	if !ok {
+	var (
+		el       *list.Element
+		miss     = MissAbsent
+		probeSub bool
+	)
+	if sub != nil {
+		if m, ok := s.subItems[k]; ok {
+			if e, ok := m[*sub]; ok {
+				el = e
+				probeSub = true
+			}
+		}
+	}
+	if el == nil {
+		if e, ok := s.items[k]; ok {
+			el = e
+		} else if sub != nil {
+			// 网段层有这个主键的条目、但网段对不上：那是「过期」而不是
+			// 「冷启动」—— 这个域名我们缓存过，只是别的网段先问的。
+			// 分类错了会让人误判成「容量不足」，实际是网段维度不够。
+			if m, ok := s.subItems[k]; ok && len(m) > 0 {
+				miss = MissExpired
+			}
+		}
+	}
+	if el == nil {
 		s.mu.Unlock()
-		return nil, false, false, "", MissAbsent
+		return nil, false, false, "", miss
 	}
 	item := el.Value.(*cacheItem)
 	entry := item.entry
 	if now.After(entry.expiresAt) {
 		// 过期即删，避免占着 LRU 位置。
 		s.lru.Remove(el)
-		delete(s.items, k)
+		if probeSub {
+			c.deleteSubLocked(s, k, item)
+		} else {
+			delete(s.items, k)
+		}
 		s.mu.Unlock()
 		return nil, false, false, "", MissExpired
 	}
@@ -342,6 +403,24 @@ func (c *Cache) PutWithAction(k CacheKey, msg *dns.Msg, req *dns.Msg, action str
 	return c.put(k, msg, req, false, action, nil)
 }
 
+// PutWithStampECS 缓存一条正常解析的应答，并按答案的适用范围决定写哪一层。
+//
+// subnet 为 nil：写主键层（与网段无关，所有网段共享）。
+// subnet 非 nil：写网段层，只有同一个网段能命中。
+//
+// 调用方用 sharedSubnet 算出参数，别自己拼 —— 那里的注释解释了为什么
+// 不能信上游声称的非零 scope。
+func (c *Cache) PutWithStampECS(
+	k CacheKey,
+	msg *dns.Msg,
+	req *dns.Msg,
+	allowRule bool,
+	stamp CacheStamp,
+	subnet *ecsKey,
+) bool {
+	return c.putECS(k, msg, req, allowRule, "", &stamp, subnet)
+}
+
 // put 是写入缓存的唯一实现。
 //
 // stamp 为 nil 表示不做失效代际校验（测试与不关心代际的调用方）。
@@ -351,6 +430,25 @@ func (c *Cache) PutWithAction(k CacheKey, msg *dns.Msg, req *dns.Msg, action str
 // 反向顺序（先 genMu 再分片锁）在这里不需要，Flush 只拿 genMu 写锁、随后单独
 // 拿各分片锁，不存在交叉持有。
 func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, action string, stamp *CacheStamp) bool {
+	return c.putECS(k, msg, req, allowRule, action, stamp, nil)
+}
+
+// putECS 是带上网段的写入。
+//
+// shared=false（或 subnet 为 nil）：写主键层，代表「这条答案与网段无关」。
+// shared=true：写网段层，键里带 sub，代表「这条答案只对 sub 这个网段成立」。
+//
+// 判断放在调用方（handler）是因为只有它知道答案是怎么来的：拦截/改写应答
+// 从来没有问过上游，天然与网段无关；正常解析要看上游回显的 scope。
+func (c *Cache) putECS(
+	k CacheKey,
+	msg *dns.Msg,
+	req *dns.Msg,
+	allowRule bool,
+	action string,
+	stamp *CacheStamp,
+	subnet *ecsKey,
+) bool {
 	if c == nil || msg == nil {
 		return false
 	}
@@ -361,9 +459,11 @@ func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, acti
 		// 那种模式下拦截结果每条都要重新判定，属于可接受的保守取舍。
 		return false
 	}
-	if hasECS(req) {
-		return false
-	}
+	// 注意：这里不再因为「请求带 ECS」就拒绝写入。
+	//
+	// 旧实现一律 return false，于是开了 ECS 之后所有带 EDNS 的客户端
+	// 100% 绕过缓存（线上命中率从 50% 掉到 1%）。网段维度改由 subnet
+	// 参数表达：与网段无关的答案照常进主键层，依赖网段的进网段层。
 	switch k.QType {
 	case dns.TypeDS, dns.TypeDNSKEY, dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
 		return false
@@ -374,6 +474,9 @@ func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, acti
 	ttl := c.ttlFor(msg)
 	if action != "" {
 		ttl = ruleCacheTTL
+		// 规则决定型应答一定在主键层：它是本地构造的 0.0.0.0 / 改写值，
+		// 与客户端网段没有任何关系，按网段分裂只会白丢命中率。
+		subnet = nil
 	}
 	now := time.Now()
 	entry := &CacheEntry{
@@ -398,22 +501,65 @@ func (c *Cache) put(k CacheKey, msg *dns.Msg, req *dns.Msg, allowRule bool, acti
 		}
 	}
 
-	if el, ok := s.items[k]; ok {
+	if subnet == nil {
+		if el, ok := s.items[k]; ok {
+			el.Value.(*cacheItem).entry = entry
+			s.lru.MoveToFront(el)
+			return true
+		}
+		el := s.lru.PushFront(&cacheItem{key: k, entry: entry})
+		s.items[k] = el
+		return c.evictLocked(s)
+	}
+
+	m := s.subItems[k]
+	if m == nil {
+		m = make(map[ecsKey]*list.Element, 4)
+		s.subItems[k] = m
+	}
+	if el, ok := m[*subnet]; ok {
 		el.Value.(*cacheItem).entry = entry
 		s.lru.MoveToFront(el)
 		return true
 	}
-	el := s.lru.PushFront(&cacheItem{key: k, entry: entry})
-	s.items[k] = el
+	el := s.lru.PushFront(&cacheItem{key: k, entry: entry, ecs: *subnet, inSub: true})
+	m[*subnet] = el
+	return c.evictLocked(s)
+}
+
+// evictLocked 按 LRU 淘汰到分片容量以内。调用方必须已持有 s.mu。
+//
+// 主键层与网段层共用一条 LRU，所以淘汰时要看条目自己记的层信息 ——
+// 只按主键删的话，网段条目会留在 subItems 里变成永不失效的僵尸。
+func (c *Cache) evictLocked(s *cacheShard) bool {
 	for s.lru.Len() > s.cap {
 		oldest := s.lru.Back()
 		if oldest == nil {
 			break
 		}
 		s.lru.Remove(oldest)
-		delete(s.items, oldest.Value.(*cacheItem).key)
+		item := oldest.Value.(*cacheItem)
+		if item.inSub {
+			c.deleteSubLocked(s, item.key, item)
+		} else {
+			delete(s.items, item.key)
+		}
 	}
 	return true
+}
+
+// deleteSubLocked 从网段层删除一条条目。调用方必须已持有 s.mu。
+func (c *Cache) deleteSubLocked(s *cacheShard, k CacheKey, item *cacheItem) {
+	m, ok := s.subItems[k]
+	if !ok {
+		return
+	}
+	delete(m, item.ecs)
+	if len(m) == 0 {
+		// 空 map 留着会一直累积（一个域名查过几个网段就留一个空壳），
+		// 而它占的内存和一次 map 分配一样多。
+		delete(s.subItems, k)
+	}
 }
 
 // ttlFor 计算一条应答的缓存时长。
@@ -451,6 +597,9 @@ func (c *Cache) Len() int {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		n += len(s.items)
+		for _, m := range s.subItems {
+			n += len(m)
+		}
 		s.mu.Unlock()
 	}
 	return n
@@ -471,6 +620,7 @@ func (c *Cache) Flush() {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		s.items = make(map[CacheKey]*list.Element, s.cap)
+		s.subItems = make(map[CacheKey]map[ecsKey]*list.Element)
 		s.lru.Init()
 		s.mu.Unlock()
 	}
@@ -518,6 +668,15 @@ func (c *Cache) FlushUsers(userIDs []string) {
 				delete(s.items, k)
 			}
 		}
+		for k, m := range s.subItems {
+			if _, ok := drop[k.UserID]; !ok {
+				continue
+			}
+			for _, el := range m {
+				s.lru.Remove(el)
+			}
+			delete(s.subItems, k)
+		}
 		s.mu.Unlock()
 	}
 }
@@ -539,10 +698,9 @@ func hasECS(req *dns.Msg) bool {
 	return false
 }
 
-func cacheRequestEligible(req *dns.Msg, injectedECS bool) bool {
-	return req != nil && !hasECS(req) && !injectedECS
-}
-
+// hasECS 已由 subnetFromMsg 取代（ecs.go）—— 那里同时返回选项本身，
+// 而缓存分层需要网段值而不只是「有没有」。保留此注释说明去向，避免
+// 后来者再写一份「带 ECS 就不缓存」的判断。
 // CacheKeyFrom 由查询构造缓存键。带客户端 ECS 的请求不参与共享缓存，
 // 因为答案可能依网段变化，而缓存键不包含网段。
 func CacheKeyFrom(userID string, req *dns.Msg) (CacheKey, bool) {
@@ -552,10 +710,14 @@ func CacheKeyFrom(userID string, req *dns.Msg) (CacheKey, bool) {
 	q := req.Question[0]
 	name := strings.ToLower(q.Name)
 	name = strings.TrimSuffix(name, ".")
-	if name == "" || hasECS(req) {
-		// ECS 回答可能依客户端网段变化，不能放进不含网段的共享缓存键。
+	if name == "" {
 		return CacheKey{}, false
 	}
+	// 注意：带 ECS 的请求**可以**构造缓存键了。
+	//
+	// 主键本身仍不含网段（网段由 Cache 的网段层单独表达），所以这里放行不会
+	// 造成跨网段串号：能不能共享由调用方根据答案的 scope 决定写哪一层。
+	// 旧实现在这里直接 return false，等于「开 ECS 就放弃全部缓存」。
 
 	do := false
 	if opt := req.IsEdns0(); opt != nil {

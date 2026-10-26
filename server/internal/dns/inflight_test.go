@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,7 +31,7 @@ func replyFor(qname string) *dns.Msg {
 // TestFlightMergesConcurrentQueries 断言 N 个并发同 key 查询只打一次上游。
 func TestFlightMergesConcurrentQueries(t *testing.T) {
 	g := newFlightGroup()
-	key := FlightKey(CacheKey{UserID: "u1", QName: "a.example", QType: dns.TypeA}, false)
+	key := FlightKey(CacheKey{UserID: "u1", QName: "a.example", QType: dns.TypeA}, false, nil)
 
 	var calls atomic.Int64
 	const n = 20
@@ -157,45 +158,62 @@ func TestFlightWaiterHonoursOwnDeadline(t *testing.T) {
 // 开了 DO 位上游会多带 RRSIG，和没开拿到的不是同一个答案。
 func TestFlightKeySeparatesDNSSEC(t *testing.T) {
 	k := CacheKey{UserID: "u1", QName: "d.example", QType: dns.TypeA}
-	if FlightKey(k, false) == FlightKey(k, true) {
+	if FlightKey(k, false, nil) == FlightKey(k, true, nil) {
 		t.Fatal("DNSSEC 开关必须参与合并键，否则 RRSIG 会串到没要 DNSSEC 的客户端")
 	}
 	// 不同租户不能合并：缓存键含 UserID，合并会跨租户泄漏规则结果。
-	if FlightKey(k, false) == FlightKey(CacheKey{UserID: "u2", QName: "d.example", QType: dns.TypeA}, false) {
+	if FlightKey(k, false, nil) == FlightKey(CacheKey{UserID: "u2", QName: "d.example", QType: dns.TypeA}, false, nil) {
 		t.Fatal("不同租户不能共用合并键")
 	}
 }
 
-// TestFlightKeyOfSkipsECS 断言带 ECS 的请求不参与合并。
+// TestFlightKeySeparatesECSBySubnet 断言不同网段的查询不会互相合并。
 //
-// 带 ECS 的应答按客户端网段定制，合并会把 leader 网段的答案发给别人。
-func TestFlightKeyOfSkipsECS(t *testing.T) {
+// 这是「网段进合并键」的核心约束：A 网段与 B 网段问到的是不同的就近节点，
+// 合并了就是把 B 的答案发给 A。以前的做法是干脆不合并带 ECS 的请求，
+// 代价是连并发击穿保护也一起关掉了（手机冷启动会同时发 5~10 条相同查询）。
+func TestFlightKeySeparatesECSBySubnet(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("e.example.", dns.TypeA)
 	k := CacheKey{UserID: "u1", QName: "e.example", QType: dns.TypeA}
 
-	if _, ok := flightKeyOf(k, true, false, req); !ok {
+	if _, ok := flightKeyOf(k, true, false, nil); !ok {
 		t.Fatal("普通请求应参与合并")
 	}
 
-	withECS := new(dns.Msg)
-	withECS.SetQuestion("e.example.", dns.TypeA)
-	opt := new(dns.OPT)
-	opt.Hdr.Name = "."
-	opt.Hdr.Rrtype = dns.TypeOPT
-	sub := &dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24}
-	sub.Address = []byte{1, 2, 3, 0}
-	opt.Option = append(opt.Option, sub)
-	withECS.Extra = append(withECS.Extra, opt)
+	subA, ok := ecsKeyFromPrefix(netip.MustParsePrefix("1.2.3.0/24"))
+	if !ok {
+		t.Fatal("构造网段键失败")
+	}
+	subB, ok := ecsKeyFromPrefix(netip.MustParsePrefix("5.6.7.0/24"))
+	if !ok {
+		t.Fatal("构造网段键失败")
+	}
 
-	if _, ok := flightKeyOf(k, true, false, withECS); ok {
-		t.Fatal("带 ECS 的请求不能参与合并：会把 leader 网段的答案发给别的网段")
+	ka, okA := flightKeyOf(k, true, false, &subA)
+	if !okA {
+		t.Fatal("带 ECS 的请求现在应当参与合并（网段已进合并键）")
+	}
+	kb, _ := flightKeyOf(k, true, false, &subB)
+	if ka == kb {
+		t.Fatal("不同网段不能共用合并键：会把 leader 网段的答案发给别的网段")
+	}
+	// 同一网段必须合并得起来，否则击穿保护等于没有。
+	ka2, _ := flightKeyOf(k, true, false, &subA)
+	if ka != ka2 {
+		t.Fatal("同一网段的相同查询必须共用合并键")
+	}
+	// 带网段与不带网段也不能合并：前者拿的是就近答案，后者是通用答案。
+	kNo, _ := flightKeyOf(k, true, false, nil)
+	if ka == kNo {
+		t.Fatal("带网段与不带网段的查询不能合并")
 	}
 
 	// 缓存键构造失败的畸形请求也不合并。
-	if _, ok := flightKeyOf(k, false, false, req); ok {
+	if _, ok := flightKeyOf(k, false, false, nil); ok {
 		t.Fatal("不可缓存的请求不该参与合并")
 	}
+	_ = req
 }
 
 // TestFlightEmptyKeyBypasses 断言空 key 直接执行，不进合并表。

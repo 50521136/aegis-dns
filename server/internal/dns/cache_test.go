@@ -116,8 +116,16 @@ func TestCacheTTLDecrement(t *testing.T) {
 	}
 }
 
-// TestCacheSkipsECS 验证带 EDNS Client Subnet 的请求不缓存（文档 4.3）。
-func TestCacheSkipsECS(t *testing.T) {
+// TestCacheStoresECSRequest 是「带 ECS 的请求不缓存」那条旧断言的替代。
+//
+// 旧行为：带 ECS 的请求一律不写入缓存（`put` 里 `if hasECS(req) { return false }`）。
+// 那条断言的出发点是「不能跨网段串号」，但实现选错了地方：拒绝的是**整个
+// 缓存写入**，于是开了 ECS 之后所有带 EDNS 的客户端（Android DoT、浏览器、
+// iOS 全都带）100% 绕过缓存，线上命中率从 50% 掉到 1%。
+//
+// 正确做法是把网段表达成缓存的分层维度（见 ecs_cache_test.go），
+// 而不是把请求踢出缓存。所以这里断言「能写进去」，隔离由网段层保证。
+func TestCacheStoresECSRequest(t *testing.T) {
 	c := NewCache(16, 60, 3600)
 
 	req := new(dns.Msg)
@@ -140,9 +148,19 @@ func TestCacheSkipsECS(t *testing.T) {
 		A:   net.IPv4(5, 6, 7, 8).To4(),
 	}}
 
-	key, _ := CacheKeyFrom("u1", req)
-	if c.Put(key, resp, req) {
-		t.Fatal("带 ECS 的请求不应被缓存")
+	key, ok := CacheKeyFrom("u1", req)
+	if !ok {
+		t.Fatal("带 ECS 的请求必须能构造缓存键，否则等于放弃全部缓存")
+	}
+	sub, ok := ecsKeyFromSUBNET(opt.Option[0].(*dns.EDNS0_SUBNET))
+	if !ok {
+		t.Fatal("解析网段失败")
+	}
+	if !c.PutWithStampECS(key, resp, req, false, c.Stamp("u1"), &sub) {
+		t.Fatal("带 ECS 的正常应答应写入网段层")
+	}
+	if _, hit, _, _, _ := c.GetWithECS(key, req, &sub); !hit {
+		t.Fatal("同一网段再查应命中")
 	}
 }
 

@@ -16,18 +16,12 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/resolver"
 )
 
-func TestCacheRequestEligibleRejectsInjectedECS(t *testing.T) {
-	m := new(dns.Msg)
-	m.SetQuestion("example.com.", dns.TypeA)
-	m.SetEdns0(1232, false)
-	if cacheRequestEligible(m, true) {
-		t.Fatal("可注入 ECS 的请求不能进入不含网段的共享缓存")
-	}
-	if !cacheRequestEligible(m, false) {
-		t.Fatal("没有注入 ECS 时，请求仍可缓存")
-	}
-}
-func TestCacheKeyFromRejectsECS(t *testing.T) {
+// 历史背景：这两条断言原本守的是「带 ECS / 会注入 ECS 的请求一律不进缓存」。
+//
+// 那个做法换来的是「开 ECS 就把全部缓存关掉」——线上实测命中率从 50% 掉到
+// 1%。正确形态是「网段进缓存分层，而不是把请求踢出缓存」，所以断言反过来了：
+// 带 ECS 的请求**必须能**构造缓存键，由 Cache 的网段层负责隔离。
+func TestCacheKeyFromAcceptsECSRequest(t *testing.T) {
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
 	m.SetEdns0(1232, false)
@@ -37,8 +31,8 @@ func TestCacheKeyFromRejectsECS(t *testing.T) {
 		SourceNetmask: 24,
 		Address:       net.IPv4(192, 0, 2, 1),
 	})
-	if _, cacheable := CacheKeyFrom("user-a", m); cacheable {
-		t.Fatal("带 ECS 的请求不应进入共享缓存")
+	if _, cacheable := CacheKeyFrom("user-a", m); !cacheable {
+		t.Fatal("带 ECS 的请求应当能构造缓存键（网段由网段层隔离，不能整个踢出缓存）")
 	}
 }
 

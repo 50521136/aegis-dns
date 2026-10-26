@@ -58,8 +58,11 @@ func newFlightGroup() *flightGroup {
 // FlightKey 由缓存键和 DNSSEC 开关拼成。
 // 用 strconv 而不是 fmt 拼：这条路径每条未命中查询都要走一次，
 // fmt 的反射开销在这里是白给的。
-func FlightKey(k CacheKey, dnssec bool) string {
-	buf := make([]byte, 0, len(k.UserID)+len(k.QName)+24)
+//
+// sub 非 nil 时把网段也拼进去：A 网段和 B 网段问到的是不同答案，
+// 合并了就是给 A 的客户端发 B 的就近节点。
+func FlightKey(k CacheKey, dnssec bool, sub *ecsKey) string {
+	buf := make([]byte, 0, len(k.UserID)+len(k.QName)+48)
 	buf = append(buf, k.UserID...)
 	buf = append(buf, '|')
 	buf = append(buf, k.QName...)
@@ -73,6 +76,17 @@ func FlightKey(k CacheKey, dnssec bool) string {
 	}
 	if dnssec {
 		buf = append(buf, '|', 's')
+	}
+	if sub != nil {
+		buf = append(buf, '|')
+		buf = strconv.AppendUint(buf, sub.addr, 10)
+		buf = append(buf, '/')
+		buf = strconv.AppendUint(buf, uint64(sub.bits), 10)
+		if sub.ipv6 {
+			buf = append(buf, '6')
+		} else {
+			buf = append(buf, '4')
+		}
 	}
 	return string(buf)
 }
@@ -139,18 +153,15 @@ func (g *flightGroup) Len() int {
 
 // flightKeyOf 判断这次查询能不能参与合并，能则返回合并键。
 //
-// 两条排除条件：
+// 唯一的排除条件是「缓存键构造失败」（没有 question 等畸形报文）——
+// 不合并它们，否则所有畸形报文会挤在同一个 key 上互相干扰。
 //
-//   - 缓存键构造失败（没有 question 等畸形报文）→ 不合并，让它单独走，
-//     否则所有畸形报文会挤在同一个 key 上互相干扰；
-//   - 请求自带 ECS → 不合并。带 ECS 的应答本来就按「客户端网段」定制，
-//     按既有设计也不进缓存；合并会把 leader 网段的答案发给别的网段。
-func flightKeyOf(k CacheKey, cacheable, dnssec bool, req *dns.Msg) (string, bool) {
+// 网段不再排除：它进了合并键（见 FlightKey）。以前的做法是「带 ECS 的
+// 请求不参与合并」，等于把并发击穿保护一起关掉 —— 手机冷启动会同时发
+// 5~10 条相同查询，那一批全都会各自打上游。
+func flightKeyOf(k CacheKey, cacheable, dnssec bool, sub *ecsKey) (string, bool) {
 	if !cacheable {
 		return "", false
 	}
-	if hasECS(req) {
-		return "", false
-	}
-	return FlightKey(k, dnssec), true
+	return FlightKey(k, dnssec, sub), true
 }

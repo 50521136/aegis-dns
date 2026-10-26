@@ -367,15 +367,50 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// cacheKey 在 Stage 5 的并发合并里还要用（同一域名合并成一次上游查询），
 	// 所以在这里算一次存下来，避免热路径上重复做小写与去尾点。
 	cacheKey, cacheable := CacheKeyFrom(user.UserID, req)
-	injectedECS := false
-	if d.EnableECS && !hasECS(req) && (req.IsEdns0() != nil || d.EnableDNSSEC) {
-		injectedECS = clientSubnet(w) != nil
+
+	// 这条查询的「网段身份」：决定它去网段层的哪一格查/写。
+	//
+	// 三种来源，优先级就是可信度：
+	//  1. 客户端自带的 ECS —— 它自己声明了属于哪个网段，直接采信；
+	//  2. 服务端要注入的 ECS —— 开 EnableECS 且客户端带了 EDNS（或开了
+	//     DNSSEC 会顺带 SetEdns0）时，按来源地址算 /24 或 /56；
+	//  3. 都没有 —— nil，只走主键层。
+	//
+	// 注意 ecsKey 与「要不要真的注入报文」是两件事：这里算出来的是缓存
+	// 维度，注入与否还要看下面 applyECS 的分支。两者必须用同一份网段，
+	// 否则会往错误的格子里写（拿 A 网段的答案存到 B 网段名下）。
+	var (
+		ecsSub   *dns.EDNS0_SUBNET
+		ecsCache *ecsKey
+	)
+	if sub := subnetFromMsg(req); sub != nil {
+		ecsSub = sub
+		if k, ok := ecsKeyFromSUBNET(sub); ok {
+			ecsCache = &k
+		}
+	} else if d.EnableECS && (req.IsEdns0() != nil || d.EnableDNSSEC) {
+		if sub := subnetFromWriter(w); sub != nil {
+			ecsSub = sub
+			if k, ok := ecsKeyFromSUBNET(sub); ok {
+				ecsCache = &k
+			}
+		}
 	}
-	if !cacheRequestEligible(req, injectedECS) {
-		cacheable = false
+	// 发给上游的那份网段：只有管理员开了 ECS 才注入，且不覆盖客户端自带的。
+	// 客户端自带 ECS 时即使 EnableECS 关着，缓存仍需按那个网段分层 ——
+	// 上游照样会按它返回就近答案。
+	if !d.EnableECS {
+		if own := subnetFromMsg(req); own == nil {
+			ecsSub = nil
+		}
 	}
+	// 记进日志：之前 det.ECS 只在 ecsFrom(req) 里填了「客户端自带的」，
+	// 服务端注入的那条从来没回填过，于是 query_log.ecs 永远是空字段，
+	// 谁也没法从面板核实 ECS 到底有没有生效。
+	det.ECS = formatECS(ecsSub)
+
 	if cacheable && cache != nil {
-		msg, hit, allowRule, cachedAction, missReason := cache.GetWithReason(cacheKey, req)
+		msg, hit, allowRule, cachedAction, missReason := cache.GetWithECS(cacheKey, req, ecsCache)
 		if !hit {
 			// 记下未命中的成因（仅当这条请求本来会进缓存时才有意义）。
 			switch missReason {
@@ -480,11 +515,11 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// EDNS / DNSSEC：这两个开关只在「要发出去的报文」上动手，
-	// 不影响缓存键 —— ECS 开了以后缓存仍按域名共享，
-	// 所以严格来说 ECS 的 CDN 就近效果会被缓存削弱（第一个用户的网段
-	// 决定了这次应答，后续用户直接命中）。要彻底生效得把网段并进缓存键，
-	// 那会让命中率再掉一大截，这里选择「先不破坏命中率」。
+	// EDNS / DNSSEC：这两个开关只在「要发出去的报文」上动手。
+	//
+	// 缓存维度（ecsCache / ecsSub）已经在 Stage 3 算好了，这里必须复用
+	// 同一份网段 —— 两处各算一次的话，一旦条件判断有差异（例如 DNSSEC
+	// 分支会先 SetEdns0），就会出现「按 A 网段注入、往 B 网段名下写缓存」。
 	upReq := req
 	if applyDNSSEC || applyECS {
 		upReq = req.Copy()
@@ -494,23 +529,20 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		}
 		if applyECS {
 			// 只在客户端没自带 ECS 时注入，避免覆盖客户端自己的意图。
-			if !hasECS(upReq) {
-				if sub := clientSubnet(w); sub != nil && upReq.IsEdns0() != nil {
-					upReq.IsEdns0().Option = append(upReq.IsEdns0().Option, sub)
-				}
+			if !hasECS(upReq) && ecsSub != nil && upReq.IsEdns0() != nil {
+				upReq.IsEdns0().Option = append(upReq.IsEdns0().Option, ecsSub)
 			}
 		}
 	}
-	// CacheKeyFrom 与上面的 ECS 资格判断已把带 ECS / 将注入 ECS 的请求排除，
-	// 因此它们也不会进入 flight，避免跨网段共享上游答案。
 	// Stage 5 上游解析。
 	//
-	// 并发合并：同一租户 + 同一域名 + 同一类型 + 同一 DO 位的请求只放一条
-	// 去问上游，其余等它的结果（详见 inflight.go 的说明）。
+	// 并发合并：同一租户 + 同一域名 + 同一类型 + 同一 DO 位 + **同一网段**的
+	// 请求只放一条去问上游。
 	//
-	// 只在「这条请求本来就会进缓存」时才合并 —— 带 ECS 的请求不进缓存，
-	// 合并它们会把 leader 网段的答案发给别人，那是错答案而不是性能优化。
-	fkey, mergeable := flightKeyOf(cacheKey, cacheable, applyDNSSEC, req)
+	// 网段必须进合并键：把 A 网段的查询合并到 B 网段那条上，拿回来的是
+	// A 的就近答案 —— 那是错答案而不是性能优化。以前的做法是干脆不合并
+	// 带 ECS 的请求，等于把击穿保护也一起关掉了。
+	fkey, mergeable := flightKeyOf(cacheKey, cacheable, applyDNSSEC, ecsCache)
 	if !mergeable {
 		fkey = "" // 不参与合并，直接问上游
 	}
@@ -550,7 +582,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 
 	// Stage 6 响应后处理：写缓存 + 统计。
 	if cacheable && cache != nil {
-		cache.PutWithStamp(cacheKey, resp, req, allowRule, cacheStamp)
+		cache.PutWithStampECS(cacheKey, resp, req, allowRule, cacheStamp, sharedSubnet(resp, ecsSub, ecsCache))
 	}
 	det.Answer = h.detail(resp)
 	status := actionHandled
@@ -971,31 +1003,6 @@ func protoOf(hint *IdentifyHint, w dns.ResponseWriter) string {
 		return w.RemoteAddr().Network()
 	}
 	return ""
-}
-
-// clientSubnet 按客户端来源 IP 构造 /24（IPv4）或 /56（IPv6）的 ECS 选项。
-//
-// 只给到 /24 而不是精确 IP：ECS 的目的只是让 CDN 判断大致区域，
-// 精确到单 IP 会把用户地址暴露得更细，且缓存分片会碎到几乎没用。
-//
-// 私有地址不注入 —— 上游拿到 192.168.x.x 只会当成无效数据丢掉，
-// 还可能让某些权威服务器返回错误结果。
-func clientSubnet(w dns.ResponseWriter) *dns.EDNS0_SUBNET {
-	ip := remoteIP(w.RemoteAddr())
-	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
-		return nil
-	}
-	sub := &dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceScope: 0}
-	if v4 := ip.To4(); v4 != nil {
-		sub.Family = 1
-		sub.SourceNetmask = 24
-		sub.Address = v4.Mask(net.CIDRMask(24, 32))
-		return sub
-	}
-	sub.Family = 2
-	sub.SourceNetmask = 56
-	sub.Address = ip.Mask(net.CIDRMask(56, 128))
-	return sub
 }
 
 // clientWantsDNSSEC 判断客户端自己是否请求了 DNSSEC。
