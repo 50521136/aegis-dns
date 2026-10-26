@@ -47,7 +47,26 @@ type Parsed struct {
 // ParseLine 解析一行规则文本。
 //
 // 返回 ErrSkip 表示该行应被忽略而不是报错。
+// ParseLine 解析单行规则，返回第一条。
+//
+// 一行可能含多个域名（hosts 写法 `0.0.0.0 a.com b.com`）；需要全部时用
+// ParseLineAll。保留这个签名是为了不动既有调用点（规则编辑器、诊断等
+// 都只关心「这一行给出了什么」）。
 func ParseLine(raw string) (*Parsed, error) {
+	all, err := ParseLineAll(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(all) == 0 {
+		return nil, ErrSkip
+	}
+	return all[0], nil
+}
+
+// ParseLineAll 解析单行规则，返回这一行产生的**全部**条目。
+//
+// 除 hosts 一行多域名外，绝大多数写法只产生一条。
+func ParseLineAll(raw string) ([]*Parsed, error) {
 	line := strings.TrimSpace(raw)
 	if line == "" {
 		return nil, ErrSkip
@@ -69,32 +88,52 @@ func ParseLine(raw string) (*Parsed, error) {
 		}
 		target := strings.TrimSpace(parts[1])
 		if target == "" || target == "0.0.0.0" || target == "::" || target == "127.0.0.1" {
-			return &Parsed{Kind: model.KindBlock, Domain: domain}, nil
+			return []*Parsed{{Kind: model.KindBlock, Domain: domain}}, nil
 		}
 		p := &Parsed{Domain: domain, Value: target}
 		p.Kind = rewriteKindFor(target)
-		return p, nil
+		return []*Parsed{p}, nil
 	}
 
 	// hosts 格式：行首是 IP，后面跟一个或多个域名。
+	//
+	// 一行多个域名是 hosts 文件的常见写法（`0.0.0.0 a.com b.com c.com`，
+	// 或者 `127.0.0.1 a.com  # 注释`）。旧实现只取 fields[1]，后面那些
+	// 域名被**静默丢弃** —— 实测用户那份订阅里有 315 行是这种形态。
+	// 这里全部返回；ParseLine 只取第一条（保持原签名兼容）。
 	if fields := strings.Fields(line); len(fields) >= 2 && net.ParseIP(fields[0]) != nil {
-		domain, err := normalizeDomain(fields[1])
-		if err != nil {
-			return nil, err
-		}
 		ip := net.ParseIP(fields[0])
-		// 0.0.0.0 / :: 是标准的「拦截」写法；其他 IP 视为改写。
-		if ip.IsUnspecified() || ip.Equal(net.IPv4bcast) {
-			return &Parsed{Kind: model.KindBlock, Domain: domain}, nil
-		}
-		if ip.IsLoopback() && (fields[0] == "127.0.0.1" || fields[0] == "::1") {
+		kind := model.KindBlock
+		value := ""
+		switch {
+		case ip.IsUnspecified() || ip.Equal(net.IPv4bcast):
+			// 0.0.0.0 / :: 是标准的「拦截」写法。
+		case ip.IsLoopback() && (fields[0] == "127.0.0.1" || fields[0] == "::1"):
 			// 127.0.0.1 在 hosts 语境下就是「拦到本地」，按 block 处理，
 			// 这与文档 5.1 表格一致。
-			return &Parsed{Kind: model.KindBlock, Domain: domain}, nil
+		default:
+			// 其他 IP 视为改写。
+			value = fields[0]
+			kind = rewriteKindFor(fields[0])
 		}
-		p := &Parsed{Domain: domain, Value: fields[0]}
-		p.Kind = rewriteKindFor(fields[0])
-		return p, nil
+
+		out := make([]*Parsed, 0, len(fields)-1)
+		for _, f := range fields[1:] {
+			// 注释与行内空白：hosts 文件常在域名后面跟 `# 说明`。
+			if strings.HasPrefix(f, "#") {
+				break
+			}
+			domain, err := normalizeDomain(f)
+			if err != nil {
+				// 单个域名非法不该让整行失败：一行里可能有合法域名。
+				continue
+			}
+			out = append(out, &Parsed{Kind: kind, Domain: domain, Value: value})
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("hosts 行里没有可用域名: %q", line)
+		}
+		return out, nil
 	}
 
 	body := line
@@ -180,7 +219,7 @@ func ParseLine(raw string) (*Parsed, error) {
 	if !isRewriteKind(p.Kind) && p.Value != "" {
 		return nil, fmt.Errorf("非改写规则不应带目标值 %q", p.Value)
 	}
-	return p, nil
+	return []*Parsed{p}, nil
 }
 
 // rewriteKindFor 根据改写目标推断具体的 rewrite 类型。

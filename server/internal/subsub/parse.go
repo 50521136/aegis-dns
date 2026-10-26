@@ -41,7 +41,10 @@ type ParseResult struct {
 	Invalid int
 	// Errors 是「看起来是规则但解析失败」的前若干条错误。
 	Errors []error
-	// Detected 是嗅探出的格式（format=auto 时）。
+	// Detected 是嗅探出的**主导**格式（format=auto 时），仅用于日志与展示。
+	//
+	// 解析本身不按它排他筛选：混合格式的列表很常见，按单一格式筛会把
+	// 另一种写法的行整片丢掉（实测一份 32448 行的源因此只剩 6171 条）。
 	Detected Format
 	// RewriteDowngraded 是被降级为拦/放（而非丢弃）的 $dnsrewrite 行数。
 	//
@@ -154,27 +157,19 @@ func Parse(content []byte, format Format, listType string) (*ParseResult, error)
 		lineNo++
 		line := sc.Text()
 
-		// 先按目标格式做一次快速筛选，避免对纯域名列表走完整的 Adblock 解析。
-		switch format {
-		case FormatHosts:
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				res.Skipped++
-				continue
-			}
-			if !looksLikeHostsLine(trimmed) {
-				res.Skipped++
-				continue
-			}
-		case FormatDomain:
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "!") {
-				res.Skipped++
-				continue
-			}
-		}
-
-		p, err := rules.ParseLine(line)
+		// 逐行交给 rules.ParseLine —— 它本身就能识别 adblock / dnsmasq /
+		// hosts / 裸域名四种写法，不需要先按「嗅探出的格式」做排他筛选。
+		//
+		// 这里曾经有一段按 format 的预筛选（FormatHosts 时非 hosts 行直接
+		// Skipped），代价是**混格式的订阅会被砍掉一大半**：用户报障的那份
+		// rules.txt 共 32448 行，前 50 行几乎全是 `0.0.0.0 domain`（判成
+		// hosts），而全文 56% 是 `||domain^`（adblock）—— 排他筛选把 18372 条
+		// adblock 规则全丢了，最终只剩 6171 条，状态还显示 ok，用户完全
+		// 看不出少了什么。
+		//
+		// 现实里的公共列表经常混格式（hosts + adblock 混排很常见），
+		// 所以格式嗅探只能用于**日志展示与优先级提示**，不能用来排他。
+		parsedList, err := rules.ParseLineAll(line)
 		if err != nil {
 			// rules.ErrSkip 表示注释/空行，不计入错误。
 			if err != rules.ErrSkip {
@@ -185,47 +180,50 @@ func Parse(content []byte, format Format, listType string) (*ParseResult, error)
 			res.Skipped++
 			continue
 		}
-		// 域名合法性校验。
-		//
-		// 公共列表里混着外观规则、CSS 片段、统计口径的垃圾行，
-		// 解析出来会变成 "_468x60_"、"192.168" 这种「域名」。
-		// 其中单标签条目（com / net / clicks）最致命：
-		// 后缀匹配下 `com` 会命中**所有 .com 域名**，
-		// 一条 allow 条目就能把整个 TLD 的拦截全部放行 ——
-		// 线上实测 AdGuard Allowlist 里的 `com`/`net` 让拦截率直接归零。
-		if !plausibleDomain(p.Domain) {
-			res.Invalid++
-			res.Skipped++
-			continue
-		}
+		// 一行可能产生多条（hosts 写法 `0.0.0.0 a.com b.com`），逐条入库。
+		for _, p := range parsedList {
+			// 域名合法性校验。
+			//
+			// 公共列表里混着外观规则、CSS 片段、统计口径的垃圾行，
+			// 解析出来会变成 "_468x60_"、"192.168" 这种「域名」。
+			// 其中单标签条目（com / net / clicks）最致命：
+			// 后缀匹配下 `com` 会命中**所有 .com 域名**，
+			// 一条 allow 条目就能把整个 TLD 的拦截全部放行 ——
+			// 线上实测 AdGuard Allowlist 里的 `com`/`net` 让拦截率直接归零。
+			if !plausibleDomain(p.Domain) {
+				res.Invalid++
+				res.Skipped++
+				continue
+			}
 
-		// 订阅只承载「拦/放」两类，不承载改写能力。但带 $dnsrewrite 的行
-		// 不能直接丢：公共列表用它表达「把这个域名解析到黑洞域名」，
-		// 本质上就是拦截。按列表类型降级成对应的类别。
-		kind := "block"
-		if p.Kind == "allow" {
-			kind = "allow"
-		}
-		if p.Value != "" {
-			kind = "block"
-			if listType == "allowlist" {
-				// 白名单源里出现改写，意图是「这条别拦」，按放行处理。
+			// 订阅只承载「拦/放」两类，不承载改写能力。但带 $dnsrewrite 的行
+			// 不能直接丢：公共列表用它表达「把这个域名解析到黑洞域名」，
+			// 本质上就是拦截。按列表类型降级成对应的类别。
+			kind := "block"
+			if p.Kind == "allow" {
 				kind = "allow"
 			}
-			res.RewriteDowngraded++
-		}
-		if prev, ok := seen[p.Domain]; ok {
-			// 已存在：只在「新的这条是 allow 而旧的不是」时升级为白名单。
-			// 白名单语义更强，后出现的 allow 必须能覆盖先出现的 block，
-			// 否则订阅里「先拉黑后放行」的写法会失效。
-			if kind == "allow" && prev != "allow" {
-				seen[p.Domain] = "allow"
+			if p.Value != "" {
+				kind = "block"
+				if listType == "allowlist" {
+					// 白名单源里出现改写，意图是「这条别拦」，按放行处理。
+					kind = "allow"
+				}
+				res.RewriteDowngraded++
 			}
-			res.Skipped++
-			continue
+			if prev, ok := seen[p.Domain]; ok {
+				// 已存在：只在「新的这条是 allow 而旧的不是」时升级为白名单。
+				// 白名单语义更强，后出现的 allow 必须能覆盖先出现的 block，
+				// 否则订阅里「先拉黑后放行」的写法会失效。
+				if kind == "allow" && prev != "allow" {
+					seen[p.Domain] = "allow"
+				}
+				res.Skipped++
+				continue
+			}
+			seen[p.Domain] = kind
+			order = append(order, p.Domain)
 		}
-		seen[p.Domain] = kind
-		order = append(order, p.Domain)
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("读取订阅内容失败: %w", err)
