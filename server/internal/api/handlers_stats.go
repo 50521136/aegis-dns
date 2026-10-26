@@ -210,7 +210,9 @@ func orDefault(s, def string) string {
 func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	since := timeRange(q.Get("range"), time.Now())
-	limit := atoiDefault(q.Get("limit"), 20)
+	// 默认给 100 而不是 20：实例里几十个租户时，TOP 20 会让管理员以为
+	// 「只有 20 个用户在用」。上限仍是 200（store 层也有同样的钳制）。
+	limit := atoiDefault(q.Get("limit"), 100)
 
 	rows, err := s.store.UserTraffic(r.Context(), since.Unix(), limit)
 	if err != nil {
@@ -218,6 +220,9 @@ func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]map[string]any, 0, len(rows))
+	// activeUsers 统计「窗口内真实有流量的租户」，不含未识别来源那个空 user_id 桶。
+	// 必须单独算：items 会被 limit 截断，len(items) 在租户多的实例上会少报。
+	activeUsers := 0
 	for _, it := range rows {
 		// user_id 为空的桶是「识别不出租户」的汇总：全网扫描器、
 		// 直接拿 IP 打端口的探测、没绑来源 IP 的设备。
@@ -229,6 +234,8 @@ func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
 		anonymous := it.UserID == ""
 		if anonymous {
 			name = "未识别来源"
+		} else {
+			activeUsers++
 		}
 		items = append(items, map[string]any{
 			"user_id":    it.UserID,
@@ -245,6 +252,10 @@ func (s *Server) handleAdminStatsUsers(w http.ResponseWriter, r *http.Request) {
 		"range":       orDefault(q.Get("range"), "24h"),
 		"items":       items,
 		"total_users": len(items),
+		// active_users 是「窗口内有流量的租户总数」（不含未识别来源那个桶）。
+		// total_users 其实是本次返回的行数，被 limit 截断过，拿它当「多少人在用」
+		// 会在租户超过 limit 时少报 —— 界面上要显示总量就得用这个字段。
+		"active_users": activeUsers,
 	})
 }
 

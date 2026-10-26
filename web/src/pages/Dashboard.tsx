@@ -26,6 +26,8 @@ import {
   CheckCircle2,
   CalendarCheck,
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 import { flushCache, flushMyCache, getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
 import { getAdminUserTraffic } from '@/api/adminStats'
@@ -65,6 +67,11 @@ const RANGES: { value: StatsRange; label: string }[] = [
   { value: '30d', label: '30 天' },
 ]
 
+/** 排行榜默认渲染的行数。超出的部分靠「显示全部」展开 ——
+ *  默认全铺开会在手机上拖出很长一页，把下面的内容全挤到屏幕外。 */
+const TRAFFIC_PREVIEW = 20
+
+
 export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   const { user, dnsConfig } = useAuth()
   const isAdmin = scope === 'global'
@@ -76,6 +83,10 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   // （总览看「今天的量」，排行常看「这周谁用得最多」），
   // 共用一个下拉会互相干扰。
   const [trafficRange, setTrafficRange] = useState<StatsRange>('today')
+  // 排行榜默认只渲染前 20 行（长榜单在手机上要滚很久），
+  // 「显示全部」展开到接口返回的全部租户。数据层已经取满 200 条，
+  // 截断只发生在渲染这一步，不会悄悄丢数据。
+  const [trafficExpanded, setTrafficExpanded] = useState(false)
 
   // 清除缓存：管理员清全站，普通用户只清自己那份
   const flush = useMutation({
@@ -412,7 +423,7 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                 </SelectContent>
               </Select>
               <Badge variant="secondary" className="tabular-nums">
-                {traffic.data?.total_users ?? 0} 个租户
+                {traffic.data?.active_users ?? 0} 个活跃租户
               </Badge>
             </div>
           </CardHeader>
@@ -429,7 +440,10 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
               <EmptyState icon={<Users className="size-6" />} title="暂无租户流量" className="py-8" />
             ) : (
               <div className="space-y-1">
-                {traffic.data!.items.map((row, i) => (
+                {(trafficExpanded
+                  ? traffic.data!.items
+                  : traffic.data!.items.slice(0, TRAFFIC_PREVIEW)
+                ).map((row, i) => (
                   <div
                     key={row.user_id}
                     className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/50"
@@ -459,6 +473,25 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                     </Badge>
                   </div>
                 ))}
+                {traffic.data!.items.length > TRAFFIC_PREVIEW && (
+                  <button
+                    type="button"
+                    onClick={() => setTrafficExpanded((v) => !v)}
+                    className="mt-1 flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg py-2 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                  >
+                    {trafficExpanded ? (
+                      <>
+                        收起
+                        <ChevronUp className="size-3.5" />
+                      </>
+                    ) : (
+                      <>
+                        显示全部 {traffic.data!.items.length} 个租户
+                        <ChevronDown className="size-3.5" />
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
             )}
           </CardContent>

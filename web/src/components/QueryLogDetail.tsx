@@ -22,7 +22,19 @@ import { cn } from '@/lib/utils'
 /**
  * QueryLogDetail 是单条日志的详情弹窗。
  *
- * 分四块：请求 / 响应 / 客户端 / 操作。
+ * 排布原则（这一版重做的重点）：
+ *
+ * 1. **键值同行，不上下叠。** 旧版每个字段是「标签一行 + 值一行」，
+ *    四组字段就吃掉整屏高度，而值往往只有 "A" / "6 ms" 这么几个字符 ——
+ *    空间全花在标签的独立行上。现在标签固定窄列、值占满右侧，
+ *    一行一对，扫读时眼睛只做水平移动。
+ * 2. **层次靠字号与色阶，不靠边框堆叠。** 旧版每个分组一个圆角边框卡片，
+ *    四个卡片叠在一起只剩一堆等重的线。现在分组的标题用 eyebrow、
+ *    上沿一道极细分隔线，值的字重比标签高一档，层级自然分出来。
+ * 3. **应答单独提亮。** 它是唯一的长文本块，用深色铭牌（m-plate）反底，
+ *    在整片浅色里形成唯一的视觉落点。
+ * 4. 桌面端两列并排（请求 / 响应），弹窗宽度从 2xl 提到 3xl —— 键值布局的
+ *    瓶颈是横向空间，加宽比加高有用。手机端仍是底部抽屉、单列。
  *
  * 操作区只在两种情况下出现：
  *   - 管理员：全局规则层，随时可加；
@@ -106,112 +118,133 @@ export function QueryLogDetail({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && reset()}>
-      {/* 手机上是底部抽屉：内容多时自己滚，别把整屏撑满；
-          桌面居中，宽度用 md:max-w-2xl 显式覆盖基类的 md:max-w-lg
-          （只写 max-w-2xl 在 md 断点会被基类盖掉，看起来像「弹窗大小不对」）。 */}
-      <DialogContent className="max-h-[85dvh] gap-3 p-4 md:max-w-2xl md:gap-4 md:p-6">
-        <DialogHeader>
-          <DialogTitle className="break-all font-mono text-base">{row.domain}</DialogTitle>
-          <DialogDescription className="flex flex-wrap items-center gap-2">
-            <span className="font-mono">{formatDateTimeSec(row.ts)}</span>
-            <Badge variant={meta.actionVariant}>{meta.actionLabel}</Badge>
+      {/* 桌面居中、宽度显式 md:max-w-3xl 覆盖基类的 md:max-w-lg
+          （只写 max-w-* 不带 md: 前缀会被基类在 md 断点盖掉）；
+          手机是底部抽屉，内边距与间距压一档，避免半屏空白。 */}
+      <DialogContent className="max-h-[88dvh] gap-3 p-4 md:max-w-3xl md:gap-3.5 md:p-5">
+        <DialogHeader className="gap-1.5">
+          <DialogTitle className="break-all pr-8 font-mono text-[15px] leading-tight md:text-base">
+            {row.domain}
+          </DialogTitle>
+          <DialogDescription className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <Badge variant={meta.actionVariant} className="shrink-0">
+              {meta.actionLabel}
+            </Badge>
+            <span className="font-mono text-xs tabular-nums">{formatDateTimeSec(row.ts)}</span>
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
-          {/* 追踪器单独拎出来一行：命中时它是这条日志最值得看的信息，
-              塞进「请求」小格里跟 ECS 混在一起等于没显示。 */}
-          {row.tracker && (
-            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3">
-              <Radar className="size-4 shrink-0 text-warning" />
-              <span className="text-sm font-medium text-warning">{row.tracker}</span>
-              <span className="text-xs text-muted-foreground">· 来源 内置追踪器库</span>
-            </div>
+        {/* 追踪器：命中时它是这条日志最值得看的信息。用左侧一道强调竖线，
+            比整块横幅更省高度，也更容易和下面的字段区分开。 */}
+        {row.tracker && (
+          <div className="flex items-center gap-2 rounded-r-md border-l-2 border-warning bg-warning/8 py-1.5 pl-2.5 pr-2">
+            <Radar className="size-3.5 shrink-0 text-warning" />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-warning">
+              {row.tracker}
+            </span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">内置追踪器库</span>
+          </div>
+        )}
+
+        {/* 请求 / 响应并排：桌面两列，手机单列。
+            客户端通常是「一个网段 + 可能为空的备注名」，单独占一行太长、
+            塞进两列又太窄，所以放在请求下面共用左列。 */}
+        <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+          <div className="space-y-3">
+            <Group label="请求">
+              <KV k="类型" v={row.qtype || '—'} mono />
+              <KV k="协议" v={protoLabel(row.proto)} mono />
+              <KV k="缓存" v={row.cache_hit ? '命中' : '未命中'} />
+              <KV k="ECS" v={row.ecs || '—'} mono />
+            </Group>
+            <Group label="客户端">
+              <KV k="IP" v={row.client || '—'} mono />
+              <KV k="名称" v={row.client_name || '—'} />
+            </Group>
+          </div>
+
+          <Group label="响应">
+            <KV k="上游" v={row.upstream || '—'} mono />
+            <KV
+              k="耗时"
+              v={`${row.latency_ms} ms`}
+              mono
+              tone={row.latency_ms >= 100 ? 'danger' : undefined}
+            />
+            <KV k="代码" v={row.rcode || '—'} mono />
+            <KV
+              k="状态"
+              v={meta.actionLabel}
+              tone={meta.blocked ? 'danger' : meta.allowed ? 'success' : undefined}
+            />
+          </Group>
+        </div>
+
+        {/* 应答：用深色铭牌反底，让整片浅色里有一个明确的视觉落点。
+            没有应答内容时不摆空框，直接给一句说明 —— 空框会被当成加载失败。 */}
+        <div>
+          <p className="eyebrow mb-1">应答</p>
+          {row.answer ? (
+            <pre className="m-plate max-h-40 overflow-auto rounded-lg px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+              {row.answer}
+            </pre>
+          ) : (
+            <p className="rounded-lg border border-dashed border-border/70 px-2.5 py-2 text-xs text-muted-foreground">
+              {meta.blocked ? '拦截应答，无上游记录' : '这条记录没有留下应答内容'}
+            </p>
           )}
+        </div>
 
-          <Section title="请求">
-            <Field label="类型" value={row.qtype || '—'} mono />
-            <Field label="协议" value={protoLabel(row.proto)} mono />
-            <Field label="ECS" value={row.ecs || '—'} mono />
-            <Field label="缓存" value={row.cache_hit ? '命中' : '未命中'} />
-          </Section>
-
-          <Section title="响应">
-            <Field label="DNS 服务器" value={row.upstream || '—'} mono />
-            <Field label="耗时" value={`${row.latency_ms} ms`} mono />
-            <Field label="响应代码" value={row.rcode || '—'} mono />
-            <Field label="状态" value={meta.actionLabel} tone={meta.blocked ? 'danger' : 'success'} />
-            <div className="sm:col-span-2">
-              <p className="eyebrow mb-1">应答</p>
-              <pre className="max-h-40 overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
-                {row.answer || '（无应答记录）'}
-              </pre>
-            </div>
-          </Section>
-
-          <Section title="客户端">
-            <Field label="IP" value={row.client || '—'} mono />
-            <Field label="名称" value={row.client_name || '—'} />
-          </Section>
-
-          <Section title="操作">
-            <div className="space-y-2 sm:col-span-2">
-              {added ? (
-                <p className="flex items-center gap-2 text-sm text-success">
-                  <CheckCircle2 className="size-4" />
-                  已添加{added === 'block' ? '拦截' : '放行'}规则，后续查询立即生效
-                </p>
-              ) : hasRoom ? (
-                <div className="flex flex-wrap gap-2">
-                  {/* 已经是这个状态就不再给同一个按钮：
-                      一条已经被拦截的记录旁边摆着「加入拦截」，
-                      只会让人以为没生效、手贱再点一次。 */}
-                  {!meta.blocked && (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      loading={addRule.isPending && addRule.variables === 'block'}
-                      onClick={() => addRule.mutate('block')}
-                    >
-                      <Ban />
-                      加入拦截
-                    </Button>
-                  )}
-                  {!meta.allowed && (
-                    <Button
-                      size="sm"
-                      variant="success"
-                      loading={addRule.isPending && addRule.variables === 'allow'}
-                      onClick={() => addRule.mutate('allow')}
-                    >
-                      <CheckCircle2 />
-                      加入放行
-                    </Button>
-                  )}
-                  {meta.blocked && (
-                    <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Ban className="size-4" />
-                      这条已被拦截，如需放行请点右侧「加入放行」。
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="flex items-start gap-2 text-sm text-muted-foreground">
-                  <ShieldAlert className="mt-0.5 size-4 shrink-0" />
-                  个人规则已用满配额（{used} / {limit}），无法再添加。删除不需要的规则后可以继续。
-                </p>
+        {/* 操作：一行按钮 + 右侧一句说明，不再单独占一个带框分区。 */}
+        <div className="border-t border-border/50 pt-3">
+          {added ? (
+            <p className="flex items-center gap-2 text-[13px] text-success">
+              <CheckCircle2 className="size-4 shrink-0" />
+              已添加{added === 'block' ? '拦截' : '放行'}规则，后续查询立即生效
+            </p>
+          ) : hasRoom ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {/* 已经是这个状态就不再给同一个按钮：
+                  一条已经被拦截的记录旁边摆着「加入拦截」，
+                  只会让人以为没生效、手贱再点一次。 */}
+              {!meta.blocked && (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  loading={addRule.isPending && addRule.variables === 'block'}
+                  onClick={() => addRule.mutate('block')}
+                >
+                  <Ban />
+                  加入拦截
+                </Button>
               )}
-              {!isAdmin && limit > 0 && hasRoom && (
-                <p className="text-xs text-muted-foreground">
-                  个人规则配额：{used} / {limit}
-                </p>
+              {!meta.allowed && (
+                <Button
+                  size="sm"
+                  variant="success"
+                  loading={addRule.isPending && addRule.variables === 'allow'}
+                  onClick={() => addRule.mutate('allow')}
+                >
+                  <CheckCircle2 />
+                  加入放行
+                </Button>
               )}
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Tag className="size-3" />
-                操作会直接写入{isAdmin ? '全局' : '个人'}规则层，按域名精确匹配。
-              </p>
+              <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Tag className="size-3 shrink-0" />
+                写入{isAdmin ? '全局' : '个人'}规则层
+                {!isAdmin && limit > 0 && (
+                  <span className="tabular-nums">
+                    · {used}/{limit}
+                  </span>
+                )}
+              </span>
             </div>
-          </Section>
+          ) : (
+            <p className="flex items-start gap-2 text-[13px] text-muted-foreground">
+              <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+              个人规则已用满配额（{used} / {limit}），无法再添加。删除不需要的规则后可以继续。
+            </p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -225,6 +258,8 @@ function protoLabel(proto: string | undefined): string {
       return 'DNS-over-HTTPS'
     case 'dot':
       return 'DNS-over-TLS'
+    case 'doq':
+      return 'DNS-over-QUIC'
     case 'tcp':
       return 'DNS-over-TCP'
     case 'udp':
@@ -235,41 +270,56 @@ function protoLabel(proto: string | undefined): string {
   }
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * Group 是一组键值行，标题用 eyebrow + 上沿细线分界。
+ *
+ * 刻意不画圆角边框卡片：旧版四个卡片叠在一起，每块等重的边线互相竞争，
+ * 反而看不出主次。分隔线只在上沿画一道，是为了让眼睛知道「这里换了一组」，
+ * 又不至于形成新的框。
+ */
+function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border border-border/60 p-3">
-      <p className="eyebrow mb-2">{title}</p>
-      <div className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">{children}</div>
+    <section>
+      <p className="eyebrow mb-1 border-t border-border/50 pt-1.5">{label}</p>
+      <dl className="space-y-0.5">{children}</dl>
     </section>
   )
 }
 
-function Field({
-  label,
-  value,
+/**
+ * KV 是一行「标签 | 值」。
+ *
+ * 标签固定 3.5rem、右对齐、弱色，值占满剩余并左对齐 —— 让所有值形成一条
+ * 竖直的起跑线，扫读时眼睛只做水平移动，不必在参差的左边界之间来回找。
+ * 值用 break-all 换行而不是 truncate：域名、ECS 网段、应答被截断后就没法核对，
+ * 而核对正是打开这个弹窗的目的。
+ */
+function KV({
+  k,
+  v,
   mono,
   tone,
 }: {
-  label: string
-  value: string
+  k: string
+  v: string
   mono?: boolean
-  tone?: 'danger' | 'success' | 'warning'
+  tone?: 'danger' | 'success'
 }) {
   return (
-    <div className="min-w-0">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p
+    <div className="flex min-w-0 items-baseline gap-2">
+      <dt className="w-14 shrink-0 text-right text-[11px] leading-[1.7] text-muted-foreground">
+        {k}
+      </dt>
+      <dd
         className={cn(
-          'truncate text-sm',
-          mono && 'font-mono text-[13px]',
+          'min-w-0 flex-1 break-all text-[13px] leading-[1.7]',
+          mono && 'font-mono tabular-nums',
           tone === 'danger' && 'text-danger',
           tone === 'success' && 'text-success',
-          tone === 'warning' && 'text-warning',
         )}
-        title={value}
       >
-        {value}
-      </p>
+        {v}
+      </dd>
     </div>
   )
 }

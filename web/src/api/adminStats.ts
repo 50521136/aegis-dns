@@ -19,7 +19,10 @@ export interface UserTrafficRow {
 export interface UserTrafficResponse {
   range: string
   items: UserTrafficRow[]
+  /** 本次返回的行数（被 limit 截断过，不是「有多少人在用」） */
   total_users: number
+  /** 窗口内真实有流量的租户数，不含「未识别来源」那个桶 */
+  active_users: number
 }
 
 // today 是北京时间的「今天 0 点起」，不是滚动 24 小时。
@@ -29,7 +32,10 @@ export type AdminStatsRange = 'today' | '1h' | '24h' | '7d' | '30d'
 
 export async function getAdminUserTraffic(
   range: AdminStatsRange = '24h',
-  limit = 20,
+  // 默认走满上限：旧默认 20 会让管理员以为实例里只有 20 个租户在跑。
+  // 界面上仍然只渲染前 20 行，「显示全部」时才展开 —— 截断由 UI 决定，
+  // 不在数据层悄悄丢掉。
+  limit = 200,
 ): Promise<UserTrafficResponse> {
   const { data } = await api.get<UserTrafficResponse>('/admin/stats/users', {
     params: { range, limit },
