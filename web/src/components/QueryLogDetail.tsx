@@ -118,24 +118,17 @@ export function QueryLogDetail({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && reset()}>
-      {/* 宽度约束（这是「撑满屏幕」的修复点）：
-          基类是 md:w-full + left-1/2 + -translate-x-1/2，视口落在 768~800px
-          区间时 w-full 会把弹窗撑到贴边（实测 800px 下左右边距只有 11px、
-          768px 下左边距 0），看起来就是「超出屏幕」。
+      {/* 宽度（这是「宽度撑满」的修复点）：
+          基类在手机上给的是 `inset-x-0` —— 左右贴边、100% 屏宽，看起来就是
+          「撑满整个屏幕、左右都顶到边」。用户要的是两边留白。
 
-          修法不用 100vw：100vw **含滚动条宽度**（实测 10px），
-          calc(100vw-3rem) 在 768px 视口只剩 19px 边距，仍然贴边。
-          改用 `md:w-[calc(100%-2rem)]` —— 百分比相对定位父级（视口内容区）
-          计算，不把滚动条算进来；再配 max-w-3xl 限上限。
+          改成左右各留 1rem（16px）的浮层：`inset-x-4` 覆盖基类的
+          `inset-x-0`，同时把只圆上角的顶部抽屉（rounded-t-2xl）改成四角
+          全圆 —— 一旦两侧不贴边、底下露出页面，只圆上角会显得像被切断。
 
-          <768px 时基类是手机底部抽屉（inset-x-0），抽屉本来该贴边，
-          所以把左右保底间距限定在 md 断点以上。
-
-          左右边距必须对称：基类的 left-1/2 是相对**含滚动条**的视口算的，
-          而 100% 是相对内容区算的，两者差一个滚动条宽度（实测 10px），
-          结果就是左边窄右边宽（768px 下 16/26）。补半条滚动条的位移把
-          它掰正，左右各 16px。 */}
-      <DialogContent className="max-h-[85dvh] gap-2 p-3.5 md:w-[calc(100%-2rem)] md:max-w-3xl md:translate-x-[calc(-50%+5px)] md:gap-3 md:p-4">
+          md 以上另有约束（见下方写宽度那条），两者不冲突：
+          手机走 inset-x-3 + 100%，桌面走 calc(100%-2rem) + max-w-3xl。 */}
+      <DialogContent className="inset-x-4 max-h-[85dvh] gap-2 rounded-2xl p-3.5 pb-[calc(1rem+env(safe-area-inset-bottom))] md:inset-x-auto md:left-1/2 md:w-[calc(100%-2rem)] md:max-w-3xl md:translate-x-[calc(-50%+5px)] md:gap-3 md:rounded-2xl md:p-4 md:pb-4">
         <DialogHeader className="gap-1">
           <DialogTitle className="break-all pr-8 font-mono text-[14px] leading-tight md:text-[15px]">
             {row.domain}
