@@ -438,6 +438,46 @@ func (s *Server) refreshAllSubs(w http.ResponseWriter, r *http.Request, global b
 	writeJSON(w, http.StatusAccepted, map[string]any{"pending": pending, "queued": true})
 }
 
+// handleAdminRefreshAllTenants 触发**全站所有启用订阅**的重拉，含各用户的订阅。
+//
+// 为什么需要它：现有 /admin/subscriptions/refresh-all 走 ListSubs(u.ID, true)，
+// 只覆盖管理员自己那一层（全局订阅）。而 refreshSub 用 GetSub(u.ID, sid)
+// 按当前用户查，管理员拿别的用户的 sub id 只会得到 404。
+// 结果是管理员**看得见某用户订阅条目数异常，却没有任何入口让它重拉** ——
+// 只能去催用户自己点刷新，或者等 24 小时后的定时刷新。
+//
+// 典型场景：解析器修了一个丢条目的 bug（混合格式订阅 32448 行只剩 6171 条），
+// 代码上线后存量订阅仍是旧数据，全站都需要重拉一次才生效。
+//
+// 同步契约：这里只排队、立刻返回 202；实际拉取在后台任务里跑，
+// 几十份订阅串行拉要好几十分钟，不能挂在请求上。
+func (s *Server) handleAdminRefreshAllTenants(w http.ResponseWriter, r *http.Request) {
+	subs, err := s.store.AllEnabledSubs(r.Context())
+	if err != nil {
+		writeStoreError(w, err, "读取订阅失败")
+		return
+	}
+	force := forceRefresh(r)
+	queued, skipped := 0, 0
+	for _, sub := range subs {
+		if !sub.Enabled {
+			skipped++
+			continue
+		}
+		if err := s.store.SetSubStatus(r.Context(), sub.ID, model.StatusPending); err != nil {
+			s.log.Warn("写入同步中状态失败", "sub", sub.ID, "err", err)
+		}
+		s.refreshSubAsync(sub, force)
+		queued++
+	}
+	s.log.Info("管理员触发全站订阅重拉", "queued", queued, "skipped", skipped, "force", force)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"queued":  queued,
+		"skipped": skipped,
+		"force":   force,
+	})
+}
+
 func (s *Server) handlePresets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"presets": subsub.PresetList()})
 }

@@ -484,6 +484,7 @@ else
   # 报错要打轮询后的真实状态，而不是创建时的响应（那样看不出到底卡在哪）
   bad "订阅拉取异常: 条目=${SUBCOUNT:-0} 状态=${SUBSTAT:-未知} 响应=$(echo "${SROW:-$SUB}" | head -c 240)"
 fi
+
 if [[ -n "$SUBID" ]]; then
   # OISD 的列表里没有 *.doubleclick.net（只有具体子域），所以挑一条确实存在的
   # 通配条目 *.accounts.doubleclick.net 来验证：
@@ -531,6 +532,70 @@ PYEOF
     fi
   fi
   t "订阅拦截子域（x.accounts.doubleclick.net）"   "0.0.0.0" udp 127.0.0.1:15353 x.accounts.doubleclick.net
+
+# 混合格式订阅：hosts 写法与 adblock 写法混排时，两种都必须入库。
+#
+# 曾经 Parse 会按「嗅探出的单一格式」做排他筛选，于是前 50 行是 hosts 的
+# 文件被判成 hosts，全文 56% 的 ||domain^ 行整片丢弃 —— 用户反馈一份
+# 32448 行的订阅只显示 6171 条，状态还是 ok，完全看不出少了什么。
+# 这里用本地静态文件造一份混合列表，断言条目数必须等于总行数。
+MIXDIR="$RUN/mixed-sub"
+mkdir -p "$MIXDIR"
+python3 - "$MIXDIR/rules.txt" <<'PYEOF'
+import sys
+p = sys.argv[1]
+lines = []
+# 60 行 hosts（超过 50 行嗅探窗口，确保被判成 hosts）
+for i in range(60):
+    lines.append("0.0.0.0 mixhosts%d.example" % i)
+# 40 行 adblock
+for i in range(40):
+    lines.append("||mixadblock%d.example^" % i)
+# 一行多域名（hosts 常见写法，旧实现只取第一个）
+lines.append("0.0.0.0 multimulti1.example multimulti2.example multimulti3.example")
+open(p, "w").write("\n".join(lines) + "\n")
+PYEOF
+MIXPORT=18993  # 与 SUBLIST_PORT(18991)、其它本地探针端口错开
+(cd "$MIXDIR" && python3 -m http.server "$MIXPORT" --bind 127.0.0.1 >/tmp/e2e_mix_http.log 2>&1) &
+MIXPID=$!
+# 等端口真的可连，别用固定 sleep（机器忙时 1 秒不够，订阅就会拉空）
+MIXUP=0
+for _ in $(seq 1 30); do
+  if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$MIXPORT/rules.txt" 2>/dev/null | grep -q 200; then
+    MIXUP=1; break
+  fi
+  sleep 0.3
+done
+[[ "$MIXUP" == "1" ]] || bad "混合格式探针的静态服务没起来（端口 $MIXPORT），$(head -c 200 /tmp/e2e_mix_http.log 2>/dev/null)"
+MIXSUB=$(curl -s -X POST "$API/subscriptions" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"混合格式探针\",\"url\":\"http://127.0.0.1:$MIXPORT/rules.txt\",\"list_type\":\"blocklist\",\"format\":\"auto\",\"enabled\":true}")
+MIXID=$(echo "$MIXSUB" | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("id") or "")' 2>/dev/null)
+MIXCNT=$(echo "$MIXSUB" | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("last_count") or 0)' 2>/dev/null)
+[[ -n "$MIXID" ]] || bad "混合格式订阅创建失败: $(echo "$MIXSUB" | head -c 240)"
+# 拉取走后台任务，必须轮询到 pending 结束；单看创建响应永远是 0。
+for _ in $(seq 1 40); do
+  [[ "${MIXCNT:-0}" -ge 100 ]] && break
+  sleep 1
+  MIXCNT=$(curl -s "$API/subscriptions" -H "Authorization: Bearer $ADMTOK" | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+rows = d.get("subscriptions") or d.get("items") or (d if isinstance(d, list) else [])
+for s in rows:
+    if "混合格式探针" in (s.get("name") or ""):
+        print(s.get("last_count") or 0); break
+else:
+    print(0)
+' 2>/dev/null)
+done
+# 60 hosts + 40 adblock + 3 多域名 = 103 条，一条都不能少
+if [[ "${MIXCNT:-0}" -eq 103 ]]; then
+  ok "混合格式订阅全部入库（103 条：hosts 60 + adblock 40 + 一行多域名 3）"
+else
+  bad "混合格式订阅丢条目：期望 103，实际 ${MIXCNT:-0}（hosts 或 adblock 有一半被丢了）"
+fi
+[[ -n "$MIXID" ]] && curl -s -o /dev/null -X DELETE "$API/subscriptions/$MIXID" -H "Authorization: Bearer $ADMTOK"
+kill "$MIXPID" 2>/dev/null
+rm -rf "$MIXDIR"
 fi
 
 hdr "多租户隔离"
@@ -996,6 +1061,24 @@ hdr "订阅强制刷新"
 code=$(curl -s -o /tmp/e2e_force.json -w '%{http_code}' -X POST "$API/admin/subscriptions/refresh-all?force=1" \
   -H "Authorization: Bearer $ADMTOK")
 [[ "$code" == "202" || "$code" == "200" ]] && ok "refresh-all 接受 force 参数（$code）" || bad "force 参数无效：$code"
+
+# 全站重拉（含所有租户的用户订阅）：管理员此前没有任何入口能刷新**别人**的
+# 订阅 —— refreshSub 按当前用户查 sub，跨租户必 404。解析器修 bug 后
+# 存量订阅需要整体重拉一次，缺这个入口就只能去催每个用户自己点刷新。
+code=$(curl -s -o /tmp/e2e_tenants.json -w '%{http_code}' -X POST "$API/admin/subscriptions/refresh-all-tenants?force=1" \
+  -H "Authorization: Bearer $ADMTOK")
+if [[ "$code" == "202" || "$code" == "200" ]]; then
+  Q=$(grep -o '"queued":[0-9]*' /tmp/e2e_tenants.json | cut -d: -f2)
+  [[ "${Q:-0}" -ge 1 ]] && ok "全站重拉排队 $Q 份订阅" || bad "全站重拉没有排队任何订阅: $(head -c 200 /tmp/e2e_tenants.json)"
+else
+  bad "全站重拉失败：$code $(head -c 200 /tmp/e2e_tenants.json)"
+fi
+rm -f /tmp/e2e_tenants.json
+
+# 普通用户不能触发全站重拉（那是放大器：一次请求会让服务器去拉全站所有订阅）
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/admin/subscriptions/refresh-all-tenants" \
+  -H "Authorization: Bearer $UTOK")
+[[ "$code" == "401" || "$code" == "403" ]] && ok "普通用户不能触发全站重拉（$code）" || bad "越权风险：普通用户也能全站重拉 $code"
 # 单个刷新也要支持
 SUBID=$(curl -fsS "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [ -n "$SUBID" ]; then
