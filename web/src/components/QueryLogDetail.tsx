@@ -135,36 +135,34 @@ export function QueryLogDetail({
           而 100% 是相对内容区算的，两者差一个滚动条宽度（实测 10px），
           结果就是左边窄右边宽（768px 下 16/26）。补半条滚动条的位移把
           它掰正，左右各 16px。 */}
-      <DialogContent className="max-h-[88dvh] gap-3 p-4 md:w-[calc(100%-2rem)] md:max-w-3xl md:translate-x-[calc(-50%+5px)] md:gap-3.5 md:p-5">
-        <DialogHeader className="gap-1.5">
-          <DialogTitle className="break-all pr-8 font-mono text-[15px] leading-tight md:text-base">
+      <DialogContent className="max-h-[85dvh] gap-2 p-3.5 md:w-[calc(100%-2rem)] md:max-w-3xl md:translate-x-[calc(-50%+5px)] md:gap-3 md:p-4">
+        <DialogHeader className="gap-1">
+          <DialogTitle className="break-all pr-8 font-mono text-[14px] leading-tight md:text-[15px]">
             {row.domain}
           </DialogTitle>
-          <DialogDescription className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <DialogDescription className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <Badge variant={meta.actionVariant} className="shrink-0">
               {meta.actionLabel}
             </Badge>
-            <span className="font-mono text-xs tabular-nums">{formatDateTimeSec(row.ts)}</span>
+            <span className="font-mono text-[11px] tabular-nums">{formatDateTimeSec(row.ts)}</span>
           </DialogDescription>
         </DialogHeader>
 
         {/* 追踪器：命中时它是这条日志最值得看的信息。用左侧一道强调竖线，
             比整块横幅更省高度，也更容易和下面的字段区分开。 */}
         {row.tracker && (
-          <div className="flex items-center gap-2 rounded-r-md border-l-2 border-warning bg-warning/8 py-1.5 pl-2.5 pr-2">
-            <Radar className="size-3.5 shrink-0 text-warning" />
-            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-warning">
+          <div className="flex items-center gap-1.5 rounded-r border-l-2 border-warning bg-warning/8 py-1 pl-2 pr-1.5">
+            <Radar className="size-3 shrink-0 text-warning" />
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-warning">
               {row.tracker}
             </span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">内置追踪器库</span>
+            <span className="shrink-0 text-[9.5px] text-muted-foreground">内置库</span>
           </div>
         )}
 
-        {/* 请求 / 响应并排：桌面两列，手机单列。
-            客户端通常是「一个网段 + 可能为空的备注名」，单独占一行太长、
-            塞进两列又太窄，所以放在请求下面共用左列。 */}
-        <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-          <div className="space-y-3">
+        {/* 请求 / 响应并排：桌面两列，手机单列。 */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+          <div className="space-y-1.5">
             {/* 配对顺序要紧：手机双列下按 DOM 顺序两两成对。
                 类型+协议 一行、缓存+ECS 一行；ECS 的值是 /24 网段，
                 半栏放不下所以带 span 独占，放最后不打断前面的配对。 */}
@@ -200,22 +198,26 @@ export function QueryLogDetail({
         </div>
 
         {/* 应答：用深色铭牌反底，让整片浅色里有一个明确的视觉落点。
-            没有应答内容时不摆空框，直接给一句说明 —— 空框会被当成加载失败。 */}
+            高度上限手机 96px / 桌面 128px —— 原来 max-h-40（160px）
+            在手机上能吃掉弹窗四分之一高度，而应答里真正要看的是前两三行。
+            超出部分块内滚动，不撑高弹窗。 */}
         <div>
-          <p className="eyebrow mb-1">应答</p>
+          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/80">
+            应答
+          </p>
           {row.answer ? (
-            <pre className="m-plate max-h-40 overflow-auto rounded-lg px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+            <pre className="m-plate max-h-24 overflow-auto rounded-md px-2 py-1.5 font-mono text-[11px] leading-[1.45] md:max-h-32">
               {row.answer}
             </pre>
           ) : (
-            <p className="rounded-lg border border-dashed border-border/70 px-2.5 py-2 text-xs text-muted-foreground">
+            <p className="rounded-md border border-dashed border-border/70 px-2 py-1.5 text-[11.5px] text-muted-foreground">
               {meta.blocked ? '拦截应答，无上游记录' : '这条记录没有留下应答内容'}
             </p>
           )}
         </div>
 
         {/* 操作：一行按钮 + 右侧一句说明，不再单独占一个带框分区。 */}
-        <div className="border-t border-border/50 pt-3">
+        <div className="border-t border-border/50 pt-2.5">
           {added ? (
             <p className="flex items-center gap-2 text-[13px] text-success">
               <CheckCircle2 className="size-4 shrink-0" />
@@ -290,25 +292,26 @@ function protoLabel(proto: string | undefined): string {
 }
 
 /**
- * Group 是一组键值行，标题用 eyebrow + 上沿细线分界。
+ * Group 是一组键值行。
  *
- * 刻意不画圆角边框卡片：旧版四个卡片叠在一起，每块等重的边线互相竞争，
- * 反而看不出主次。分隔线只在上沿画一道，是为了让眼睛知道「这里换了一组」，
- * 又不至于形成新的框。
+ * 分组标题刻意做得很轻：11px 小字、行高压到 1.3、上下几乎不留白。
+ * 它是给人扫读用的路标，不是独立的一层内容 —— 之前 `mb-1 pt-1.5`
+ * 加上 1.4 的行高，光标题就占 21px，三个分组白花 60 多像素，
+ * 在手机上那是整整三行的高度。
  *
  * 列数随断点反转：
  *   - 手机（<sm）：**双列并排**。单列时 10 个字段各占一行，而值多数只有
- *     2~7 个字符（"AAAA"、"命中"、"27 ms"），整行右侧四十多个字符宽全是空的
- *     —— 这就是「没有充分利用空间」的来源。两两配对把 10 行压到 5 行，
- *     横向空间才真正被用上。
- *   - 桌面（≥sm）：单列。此时外层已经左右分了两栏（请求/客户端 ｜ 响应），
- *     每栏内部再分两列会把值挤到折行。
+ *     2~7 个字符（"AAAA"、"命中"、"27 ms"），整行右侧四十多个字符宽全是空的。
+ *     两两配对把行数压掉一半，横向空间才真正被用上。
+ *   - 桌面（≥sm）：单列。此时外层已经左右分了两栏，栏内再分两列会把值挤到折行。
  */
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section>
-      <p className="eyebrow mb-1 border-t border-border/50 pt-1.5">{label}</p>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-1">{children}</dl>
+      <p className="mb-0 border-t border-border/40 pt-0.5 text-[9.5px] font-medium uppercase leading-[1.25] tracking-[0.1em] text-muted-foreground/75">
+        {label}
+      </p>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-0 sm:grid-cols-1">{children}</dl>
     </section>
   )
 }
@@ -319,15 +322,18 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
  * 标签窄列右对齐 + 值左对齐，让同一列里所有值形成一条竖直的起跑线，
  * 扫读时眼睛只做水平移动，不必在参差的左边界之间来回找。
  *
- * 标签宽度取 2.25rem（36px）而不是更宽的 3.5rem：标签全是两三个汉字
- * （类型/协议/缓存/ECS/IP…），11px 下两个字只要 24px，给 56px 会让
- * 「IP」这种短标签左边空出 30px，看起来像标签和值之间隔了一道沟。
+ * 标签宽度取 2.25rem（36px）：标签全是两三个汉字（类型/协议/缓存/ECS/IP…），
+ * 11px 下两个字只要 24px，给更宽会让「IP」这种短标签左侧空出一大截，
+ * 看起来像标签和值之间隔了一道沟。
+ *
+ * 行高取 1.5（19px→17px）：这是手机上 10 行同尺寸内容的累计差别，
+ * 再紧就会挤到不易扫读的程度。
  *
  * 值用 break-all 换行而不是 truncate：域名、ECS 网段、应答被截断后就没法
  * 核对，而核对正是打开这个弹窗的目的。
  *
  * span 让长值在手机双列布局里独占一行（ECS 网段、客户端 IP 这类
- * 16 个字符宽的值，塞进半栏必然折行，还不如直接给整行）。
+ * 16 个字符宽的值，塞进半栏必然折行）。
  */
 function KV({
   k,
@@ -343,13 +349,13 @@ function KV({
   span?: boolean
 }) {
   return (
-    <div className={cn('flex min-w-0 items-baseline gap-1.5', span && 'col-span-2 sm:col-span-1')}>
-      <dt className="w-9 shrink-0 text-right text-[11px] leading-[1.7] text-muted-foreground">
+    <div className={cn('flex min-w-0 items-start gap-1.5', span && 'col-span-2 sm:col-span-1')}>
+      <dt className="w-9 shrink-0 text-right text-[10.5px] leading-[1.5] text-muted-foreground">
         {k}
       </dt>
       <dd
         className={cn(
-          'min-w-0 flex-1 break-all text-[13px] leading-[1.7]',
+          'min-w-0 flex-1 break-all text-[12.5px] leading-[1.5]',
           mono && 'font-mono tabular-nums',
           tone === 'danger' && 'text-danger',
           tone === 'success' && 'text-success',
