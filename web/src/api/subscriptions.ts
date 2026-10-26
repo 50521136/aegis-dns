@@ -5,6 +5,7 @@ import type {
   Scope,
   Subscription,
   SubscriptionInput,
+  SubscriptionDuplicates,
   SubscriptionPreset,
   SubscriptionRefreshResult,
 } from './types'
@@ -69,4 +70,16 @@ export async function refreshAllSubscriptions(scope: Scope = 'user'): Promise<Re
 export async function listPresets(): Promise<SubscriptionPreset[]> {
   const { data } = await api.get<{ presets: SubscriptionPreset[] }>('/subscriptions/presets')
   return data.presets ?? []
+}
+
+/**
+ * 列出内容等价的重复订阅（仅管理员）。
+ *
+ * 只读接口，不改任何数据：识别依据是链接形态（GitHub raw / jsDelivr /
+ * 各类加速前缀的等价关系），**不下载内容比对** —— 为了猜两个源是否
+ * 相同而把两份几十万行列表都拉下来解析，比重复拉取更贵。
+ */
+export async function listDuplicateSubscriptions(): Promise<SubscriptionDuplicates> {
+  const { data } = await api.get<SubscriptionDuplicates>('/admin/subscriptions/duplicates')
+  return data
 }

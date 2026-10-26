@@ -226,6 +226,10 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"enable_dot":              set.EnableDoT,
 		"enable_plain_dns":        set.EnablePlainDNS,
 		"sub_interval_hours":      set.SubIntervalH,
+		"sub_refresh_hour":        set.SubRefreshHour,
+		"sub_refresh_minute":      set.SubRefreshMinute,
+		"sub_spread_minutes":      set.SubSpreadMinutes,
+		"sub_fetch_timeout_sec":   set.SubFetchTimeoutSec,
 		"query_log_retention_min": set.LogRetentionMin,
 		"allow_register":          set.AllowRegister,
 		"invite_code":             set.InviteCode,
@@ -336,15 +340,19 @@ type settingsPatch struct {
 	QueryLogSize   *int      `json:"query_log_size"`
 	EnableQueryLog *bool     `json:"enable_query_log"`
 	// 协议开关用指针：漏传 = 不变，不会因为前端没带字段就把协议关掉
-	EnableDoH       *bool   `json:"enable_doh"`
-	EnableDoT       *bool   `json:"enable_dot"`
-	EnablePlainDNS  *bool   `json:"enable_plain_dns"`
-	SubIntervalH    *int    `json:"sub_interval_hours"`
-	LogRetentionMin *int    `json:"query_log_retention_min"`
-	AllowRegister   *bool   `json:"allow_register"`
-	InviteCode      *string `json:"invite_code"`
-	UpdateRepo      *string `json:"update_repo"`
-	UpdateChannel   *string `json:"update_channel"`
+	EnableDoH          *bool   `json:"enable_doh"`
+	EnableDoT          *bool   `json:"enable_dot"`
+	EnablePlainDNS     *bool   `json:"enable_plain_dns"`
+	SubIntervalH       *int    `json:"sub_interval_hours"`
+	SubRefreshHour     *int    `json:"sub_refresh_hour"`
+	SubRefreshMinute   *int    `json:"sub_refresh_minute"`
+	SubSpreadMinutes   *int    `json:"sub_spread_minutes"`
+	SubFetchTimeoutSec *int    `json:"sub_fetch_timeout_sec"`
+	LogRetentionMin    *int    `json:"query_log_retention_min"`
+	AllowRegister      *bool   `json:"allow_register"`
+	InviteCode         *string `json:"invite_code"`
+	UpdateRepo         *string `json:"update_repo"`
+	UpdateChannel      *string `json:"update_channel"`
 
 	MaxSubEntries      *int   `json:"max_sub_entries"`
 	FreeMaxRules       *int   `json:"free_max_rules"`
@@ -438,6 +446,20 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setInt(&dst.QueryTimeoutMS, p.QueryTimeoutMS)
 	setInt(&dst.QueryLogSize, p.QueryLogSize)
 	setInt(&dst.SubIntervalH, p.SubIntervalH)
+	// 时刻允许 0（0 点刷新是合法需求），所以不能用「非零才覆盖」的 setInt。
+	//
+	// **不要在这里做区间判断后静默丢弃**：那样 validateSettings 永远看不到
+	// 非法值，保存会返回 200，而管理员的 99 点被悄悄忽略 —— 他以为设上了。
+	// 写进去，让 validateSettings 明确回 422。
+	if p.SubRefreshHour != nil {
+		dst.SubRefreshHour = *p.SubRefreshHour
+	}
+	if p.SubRefreshMinute != nil {
+		dst.SubRefreshMinute = *p.SubRefreshMinute
+	}
+	// 摊开窗口与拉取超时：0 不是合法业务值，用 setInt 即可。
+	setInt(&dst.SubSpreadMinutes, p.SubSpreadMinutes)
+	setInt(&dst.SubFetchTimeoutSec, p.SubFetchTimeoutSec)
 	setInt(&dst.LogRetentionMin, p.LogRetentionMin)
 	setInt(&dst.MaxSubEntries, p.MaxSubEntries)
 	setInt(&dst.FreeMaxRules, p.FreeMaxRules)
@@ -856,6 +878,22 @@ func validateSettings(s *model.GlobalSettings) error {
 	}
 	if s.SubIntervalH < 1 || s.SubIntervalH > 720 {
 		return errValidation("sub_interval_hours 需在 1 到 720 之间")
+	}
+	if s.SubRefreshHour < 0 || s.SubRefreshHour > 23 {
+		return errValidation("sub_refresh_hour 需在 0 到 23 之间")
+	}
+	if s.SubRefreshMinute < 0 || s.SubRefreshMinute > 59 {
+		return errValidation("sub_refresh_minute 需在 0 到 59 之间")
+	}
+	// 摊开窗口下限 1 分钟、上限一整天。窗口太小等于没摊开，
+	// 太大会让一部分订阅隔天才轮到。
+	if s.SubSpreadMinutes < 1 || s.SubSpreadMinutes > 1440 {
+		return errValidation("sub_spread_minutes 需在 1 到 1440 之间")
+	}
+	// 拉取超时：下限 5 秒（再短连握手都不够），上限 600 秒。
+	// 上限卡住是必要的 —— 有人填 100000 就等于让一个卡死的源占住整个窗口。
+	if s.SubFetchTimeoutSec < 5 || s.SubFetchTimeoutSec > 600 {
+		return errValidation("sub_fetch_timeout_sec 需在 5 到 600 之间")
 	}
 	// 配额上限：0 = 不限制，其余必须落在合理区间。
 	// 不设上限的话一个管理员把 max_sub_entries 写成 1000 万，

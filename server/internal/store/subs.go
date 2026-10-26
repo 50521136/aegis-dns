@@ -13,14 +13,22 @@ import (
 )
 
 const subCols = `id, user_id, list_type, name, url, format, enabled, is_global, last_etag, last_modified,
-	last_fetched, last_count, last_status, fail_count, created_at`
+	last_fetched, last_count, last_status, fail_count, created_at, timeout_sec`
+
+// subInsertCols 是 INSERT 用的列名。
+//
+// **不能复用 subCols**：给 SELECT 加一个字段就会让 INSERT 变成
+// 「N values for M columns」，后果是建订阅直接失败、apid 起不来。
+// 这两个常量必须各自独立维护 —— 它们碰巧顺序一致，但不是同一个东西。
+const subInsertCols = `id, user_id, list_type, name, url, format, enabled, is_global, last_etag, last_modified,
+	last_fetched, last_count, last_status, fail_count, created_at, timeout_sec`
 
 func scanSub(sc interface{ Scan(...any) error }) (*model.Subscription, error) {
 	var sub model.Subscription
 	var enabled, global int
 	err := sc.Scan(&sub.ID, &sub.UserID, &sub.ListType, &sub.Name, &sub.URL, &sub.Format,
 		&enabled, &global, &sub.LastETag, &sub.LastModified, &sub.LastFetched, &sub.LastCount,
-		&sub.LastStatus, &sub.FailCount, &sub.CreatedAt)
+		&sub.LastStatus, &sub.FailCount, &sub.CreatedAt, &sub.TimeoutSec)
 	if err != nil {
 		return nil, err
 	}
@@ -87,9 +95,10 @@ func (s *Store) CreateSub(ctx context.Context, sub *model.Subscription) error {
 	sub.ID = id.New(id.PrefixSub)
 	sub.CreatedAt = time.Now().Unix()
 	_, err := s.write.ExecContext(ctx,
-		`INSERT INTO subscriptions (`+subCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO subscriptions (`+subInsertCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sub.ID, sub.UserID, sub.ListType, sub.Name, sub.URL, sub.Format, boolInt(sub.Enabled), boolInt(sub.IsGlobal),
-		sub.LastETag, sub.LastModified, sub.LastFetched, sub.LastCount, sub.LastStatus, sub.FailCount, sub.CreatedAt)
+		sub.LastETag, sub.LastModified, sub.LastFetched, sub.LastCount, sub.LastStatus, sub.FailCount, sub.CreatedAt,
+		sub.TimeoutSec)
 	if err != nil {
 		if isUniqueViolation(err, "subscriptions.user_id") || isUniqueViolation(err, "subscriptions.url") {
 			return ErrSubExists

@@ -78,21 +78,29 @@ func validateSub(sub *model.Subscription) error {
 	default:
 		return errValidation("format 只能是 auto / adblock / hosts / dnsmasq / domain")
 	}
+	// 0 = 跟随全局默认；其余必须落在合理区间。
+	// 上限卡住是必要的：填 100000 等于让一个卡死的源占住整个刷新窗口。
+	if sub.TimeoutSec < 0 || sub.TimeoutSec > 600 {
+		return errValidation("timeout_sec 需在 0 到 600 之间（0 = 跟随全局默认）")
+	}
 	return nil
 }
 
 func subToJSON(sub *model.Subscription) map[string]any {
 	return map[string]any{
-		"id":           sub.ID,
-		"name":         sub.Name,
-		"url":          sub.URL,
-		"list_type":    sub.ListType,
-		"format":       sub.Format,
-		"enabled":      sub.Enabled,
-		"is_global":    sub.IsGlobal,
-		"last_count":   sub.LastCount,
-		"last_status":  sub.LastStatus,
-		"fail_count":   sub.FailCount,
+		"id":          sub.ID,
+		"name":        sub.Name,
+		"url":         sub.URL,
+		"list_type":   sub.ListType,
+		"format":      sub.Format,
+		"enabled":     sub.Enabled,
+		"is_global":   sub.IsGlobal,
+		"last_count":  sub.LastCount,
+		"last_status": sub.LastStatus,
+		"fail_count":  sub.FailCount,
+		// 手写 map 必须与 model.Subscription 同步：漏一个字段的表现是
+		// 「存进去了但界面上看不到/改不了」，而库里其实是对的。
+		"timeout_sec":  sub.TimeoutSec,
 		"last_fetched": rfc3339OrEmpty(sub.LastFetched),
 		"created_at":   rfc3339OrEmpty(sub.CreatedAt),
 	}
@@ -200,6 +208,9 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 		ListType string `json:"list_type"`
 		Format   string `json:"format"`
 		Enabled  *bool  `json:"enabled"`
+		// TimeoutSec 是该订阅自己的拉取超时，0 = 跟随全局默认。
+		// 用指针区分「没传」与「显式设为 0」：更新时没传就不该覆盖现有值。
+		TimeoutSec *int `json:"timeout_sec"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -220,6 +231,9 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 	}
 	if req.Enabled != nil {
 		sub.Enabled = *req.Enabled
+	}
+	if req.TimeoutSec != nil {
+		sub.TimeoutSec = *req.TimeoutSec
 	}
 	if err := validateSub(sub); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
@@ -272,6 +286,9 @@ func (s *Server) updateSub(w http.ResponseWriter, r *http.Request, global bool) 
 		ListType string `json:"list_type"`
 		Format   string `json:"format"`
 		Enabled  *bool  `json:"enabled"`
+		// TimeoutSec 是该订阅自己的拉取超时，0 = 跟随全局默认。
+		// 用指针区分「没传」与「显式设为 0」：更新时没传就不该覆盖现有值。
+		TimeoutSec *int `json:"timeout_sec"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -306,6 +323,10 @@ func (s *Server) updateSub(w http.ResponseWriter, r *http.Request, global bool) 
 	}
 	if req.Enabled != nil {
 		sub.Enabled = *req.Enabled
+	}
+	// 没传就保留原值：这是部分更新，不能把已有的超时清成 0。
+	if req.TimeoutSec != nil {
+		sub.TimeoutSec = *req.TimeoutSec
 	}
 	if err := validateSub(sub); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)

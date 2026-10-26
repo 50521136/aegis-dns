@@ -225,6 +225,8 @@ func (s *Server) Handler() http.Handler {
 				// 全站重拉（含所有租户的用户订阅）。刷新单个用户订阅的管理员
 				// 入口不存在（refreshSub 按当前用户查，跨租户必 404），只能整体来。
 				r.Post("/subscriptions/refresh-all-tenants", s.handleAdminRefreshAllTenants)
+				// 订阅链接重复检测：只读，报出内容等价的订阅分组。
+				r.Get("/subscriptions/duplicates", s.handleAdminDuplicateSubs)
 				r.Put("/subscriptions/{id}", s.handleAdminUpdateSub)
 				r.Delete("/subscriptions/{id}", s.handleAdminDeleteSub)
 				r.Post("/subscriptions/{id}/refresh", s.handleAdminRefreshSub)

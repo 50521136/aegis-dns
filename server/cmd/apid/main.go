@@ -156,7 +156,23 @@ func main() {
 		log.Warn("读取全局设置失败，使用默认值", "err", err)
 		settings = ptrSettings()
 	}
-	go subsub.NewScheduler(subsMgr, settings.SubIntervalH, log).Run(ctx)
+	// 订阅拉取的默认超时由设置决定（默认 20 秒）。
+	//
+	// 装到 Manager 的 Fetcher 上而不是固定在常量里：管理员在面板上改
+	// sub_fetch_timeout_sec 之后要能立刻生效，不必等重启。
+	// 订阅自己的 timeout_sec 优先级更高（见 migrations/0021）。
+	subsMgr.SetDefaultTimeout(time.Duration(settings.SubFetchTimeoutSec) * time.Second)
+
+	go subsub.NewSchedulerWithOptions(subsMgr, subsub.SchedulerOptions{
+		IntervalHours: settings.SubIntervalH,
+		// HourSet/MinuteSet 必须一起置 true：0 点是合法刷新时刻，
+		// 只靠值本身区分不了「没配置」和「设为 0 点」。
+		Hour:          settings.SubRefreshHour,
+		HourSet:       true,
+		Minute:        settings.SubRefreshMinute,
+		MinuteSet:     true,
+		SpreadMinutes: settings.SubSpreadMinutes,
+	}, log).Run(ctx)
 
 	// --- API 服务 ---
 	srv := api.New(cfg, st, cd, subsMgr, certs, log)

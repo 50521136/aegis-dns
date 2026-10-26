@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,6 +66,9 @@ type Fetcher struct {
 	// 用 atomic 是因为设置页改完要立刻生效，而拉取跑在后台 goroutine 里 ——
 	// 重建 Fetcher 会丢掉正在进行的下载。
 	proxy atomic.Pointer[string]
+	// mu 护 client.Timeout 的并发读写：SetTimeout 在设置保存时调用，
+	// 而 timeout() 在每次拉取时读，两者会并发。
+	mu sync.Mutex
 }
 
 // SetProxy 设置出口代理；空字符串表示直连。返回错误表示地址不合法（此时不改动）。
@@ -123,10 +127,31 @@ func NewFetcherWithTimeout(d time.Duration) *Fetcher {
 
 // timeout 返回本拉取器的超时，供 ctx 复用。
 func (f *Fetcher) timeout() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.client != nil && f.client.Timeout > 0 {
 		return f.client.Timeout
 	}
 	return FetchTimeout
+}
+
+// SetTimeout 更新默认超时。
+//
+// 同时改 client.Timeout 与 ctx 预算：这两个都要一致，否则
+// 「client 先超时」和「ctx 先超时」会给出不同的错误形态，
+// 排查时很难判断是网络问题还是配置问题。
+func (f *Fetcher) SetTimeout(d time.Duration) {
+	if d <= 0 || f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.client != nil {
+		f.client.Timeout = d
+	}
+	if f.proxyClient != nil {
+		f.proxyClient.Timeout = d
+	}
 }
 
 // fetchAttempts 是网络层失败的重试次数。
@@ -232,13 +257,27 @@ func retryBackoff(n int) time.Duration {
 // 「两个镜像 × 两个分支 × 3 次重试」的嵌套，最坏情况会从 12 次尝试膨胀到 24 次，
 // 直接把 300 秒的 FetchTimeout 耗尽 —— 表现出来就是订阅永远卡在「同步中」。
 func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*FetchResult, error) {
+	return f.FetchTimeout(ctx, url, etag, lastModified, 0)
+}
+
+// FetchTimeout 用指定超时拉取；timeout <= 0 时用 Fetcher 自己的默认值。
+//
+// 为什么要能按次覆盖：默认超时改短（20 秒）之后，几个慢速大源必然失败，
+// 而它们是全局订阅 —— 失败意味着十几万条规则永远停在旧版本。
+// 按订阅单独放宽是这个矛盾的唯一出路（见 migrations/0021）。
+func (f *Fetcher) FetchTimeout(ctx context.Context, url, etag, lastModified string, timeout time.Duration) (*FetchResult, error) {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return nil, fmt.Errorf("订阅地址必须以 http:// 或 https:// 开头")
 	}
 
+	budget := f.timeout()
+	if timeout > 0 {
+		budget = timeout
+	}
+
 	// 与 client.Timeout 保持一致：client 的超时是整轮（含重定向），
 	// ctx 的超时覆盖单次请求，两者取小更安全。
-	ctx, cancel := context.WithTimeout(ctx, f.timeout())
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	// 第一轮用当前客户端；开了代理时它是代理客户端。
@@ -254,7 +293,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (*F
 	proxyCtx := ctx
 	if f.proxyClient != nil {
 		var cancelProxy context.CancelFunc
-		proxyCtx, cancelProxy = context.WithTimeout(ctx, f.timeout()/2)
+		proxyCtx, cancelProxy = context.WithTimeout(ctx, budget/2)
 		defer cancelProxy()
 	}
 

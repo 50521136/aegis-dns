@@ -1046,6 +1046,131 @@ CAPNOKEY=$(curl -s -o /tmp/cap3.json -w "%{http_code}" -X POST "$API/auth/regist
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"geetest_enabled":false,"geetest_id":"","geetest_on_register":false,"geetest_on_forgot":false,"geetest_on_login":false,"geetest_on_feedback":false}' >/dev/null
 
+hdr "订阅刷新调度与去重"
+# 刷新时刻/摊开窗口/超时必须可存可读，且 0 点是合法时刻
+# （只用值本身区分不了「没配置」和「设为 0 点」，这条专门守它）。
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"sub_refresh_hour":0,"sub_refresh_minute":15,"sub_spread_minutes":90,"sub_fetch_timeout_sec":20}' >/dev/null
+SUBSCHED=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SUBSCHED" | grep -q '"sub_refresh_hour":0' && ok "刷新时刻 0 点是合法值且能存住" \
+  || bad "刷新时刻 0 点没存住（会被默认值顶掉）"
+echo "$SUBSCHED" | grep -q '"sub_refresh_minute":15' && ok "刷新分钟可持久化" || bad "刷新分钟没存住"
+echo "$SUBSCHED" | grep -q '"sub_spread_minutes":90' && ok "摊开窗口可持久化" || bad "摊开窗口没存住"
+echo "$SUBSCHED" | grep -q '"sub_fetch_timeout_sec":20' && ok "拉取超时可持久化" || bad "拉取超时没存住"
+
+# 越界要被拒，不能存进一个让调度器行为诡异的数
+for bad in '{"sub_refresh_hour":99}' '{"sub_refresh_minute":99}' '{"sub_spread_minutes":0}' '{"sub_fetch_timeout_sec":1}'; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API/admin/settings" \
+    -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' -d "$bad")
+  [[ "$code" == "422" ]] && ok "非法调度参数被拒（$bad → 422）" \
+    || bad "非法调度参数应 422，实际 $code（$bad）"
+done
+
+# 只改别的字段时，这几个调度参数不能被顺手打回默认值
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"domain":"e2e.example.com"}' >/dev/null
+SUBSCHED2=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$SUBSCHED2" | grep -q '"sub_spread_minutes":90' && ok "部分更新不会重置摊开窗口" \
+  || bad "部分更新把摊开窗口打回默认（settingsPatch 指针语义坏了）"
+
+hdr "订阅链接重复检测"
+# 建两个内容等价但链接形态不同的订阅（同一份 hosts，raw 与 github.com/raw）
+D1=$(curl -fsS -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"dup-a","url":"https://raw.githubusercontent.com/jdlingyu/ad-wars/master/hosts","list_type":"blocklist","format":"auto","enabled":true}')
+D1ID=$(echo "$D1" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
+D2=$(curl -fsS -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"dup-b","url":"https://github.com/jdlingyu/ad-wars/raw/master/hosts","list_type":"blocklist","format":"auto","enabled":true}')
+D2ID=$(echo "$D2" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
+if [[ -n "$D1ID" && -n "$D2ID" ]]; then
+  ok "建两个等价链接的订阅成功"
+  DUPS=$(curl -fsS "$API/admin/subscriptions/duplicates" -H "Authorization: Bearer $ADMTOK")
+  # 必须把这两个判成一组（否则「不重复拉取」就是空话）
+  echo "$DUPS" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+ids=set()
+for g in d.get('groups') or []:
+    ids.update(s['id'] for s in g['subscriptions'])
+assert '$D1ID' in ids and '$D2ID' in ids, '两个等价订阅未被识别为重复'
+" 2>/dev/null && ok "raw 与 github.com/raw 被判为同一份（内容等价）" \
+    || bad "等价链接未被识别为重复: $(echo "$DUPS" | head -c 300)"
+
+  # 不能把不同内容判成同一份 —— 这条比「能识别重复」更重要，
+  # 判错会让一个人的规则套到另一个人身上。
+  D3=$(curl -fsS -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"dup-c","url":"https://no-dup-marker.invalid/rules.txt","list_type":"blocklist","format":"auto","enabled":true}')
+  D3ID=$(echo "$D3" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
+  if [[ -z "$D3ID" ]]; then
+    bad "建第三个订阅失败，无法验证「不误判」: $(echo "$D3" | head -c 160)"
+  else
+    DUPS2=$(curl -fsS "$API/admin/subscriptions/duplicates" -H "Authorization: Bearer $ADMTOK")
+    # 用 python 的退出码判定，且把 D3ID 显式传进去 —— 空 id 会让
+    # "not in ids" 恒真、反向断言假失败。
+    # 目标 id 用环境变量传：`python3 -c "...script..." argv` 里
+    # 脚本后面那个位置参数在部分写法下不会进 sys.argv，
+    # 取不到就变成空串 → 判定恒真 → 反向断言假失败（这就是踩过的坑）。
+    if echo "$DUPS2" | D3ID="$D3ID" python3 -c "
+import json, os, sys
+target = os.environ['D3ID']
+d = json.load(sys.stdin)
+for g in d.get('groups') or []:
+    if target in {s['id'] for s in g['subscriptions']}:
+        sys.exit(1)
+sys.exit(0)
+"; then
+      ok "不同来源不会被误判为重复"
+    else
+      bad "不同来源被误判成重复（会导致规则串内容）"
+    fi
+  fi
+
+  echo "$DUPS2" | grep -q '"auto_saved_fetches"' && ok "接口回传每轮省掉的拉取次数" \
+    || bad "缺少 auto_saved_fetches"
+
+  for id in "$D1ID" "$D2ID" "$D3ID"; do
+    [[ -n "$id" ]] && curl -s -X DELETE "$API/admin/subscriptions/$id" -H "Authorization: Bearer $ADMTOK" -o /dev/null || true
+  done
+else
+  bad "建等价订阅失败，无法验证重复检测: $(echo "$D1" | head -c 160)"
+fi
+
+# 订阅可单独设超时（慢源口子），0 表示跟随全局
+STO=$(curl -fsS -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"slow-src","url":"https://big.oisd.nl/domainswild","list_type":"blocklist","format":"auto","enabled":false,"timeout_sec":120}')
+STOID=$(echo "$STO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
+if [[ -n "$STOID" ]]; then
+  echo "$STO" | grep -q '"timeout_sec":120' && ok "订阅可单独设置拉取超时" \
+    || bad "订阅级超时没存住: $(echo "$STO" | head -c 200)"
+  curl -s -X DELETE "$API/admin/subscriptions/$STOID" -H "Authorization: Bearer $ADMTOK" -o /dev/null
+else
+  bad "建带超时的订阅失败: $(echo "$STO" | head -c 160)"
+fi
+
+hdr "配置不丢失（升级回归）"
+# 一次设置请求只改一个字段时，其余几十个开关必须原样保留。
+# 这是「所有后台配置不要丢失」的机器检查 —— 曾经因为值类型接收
+# 请求体，一次部分更新把五个开关按零值写回去。
+BEFORE=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+keys=[k for k in d if k.startswith(('enable_','allow_','geetest_','feedback_notify','smtp_','email_','sub_','root_domain'))]
+print(json.dumps({k:d[k] for k in sorted(keys)}, ensure_ascii=False, sort_keys=True))
+")
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"custom_ip":"0.0.0.0"}' >/dev/null
+AFTER=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+keys=[k for k in d if k.startswith(('enable_','allow_','geetest_','feedback_notify','smtp_','email_','sub_','root_domain'))]
+print(json.dumps({k:d[k] for k in sorted(keys)}, ensure_ascii=False, sort_keys=True))
+")
+[[ "$BEFORE" == "$AFTER" ]] && ok "部分更新不丢其它开关（$(echo "$BEFORE" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')个字段全保留）" \
+  || bad "部分更新改动了其它开关: $BEFORE -> $AFTER"
+
 hdr "DNS 端口设置"
 # 读取当前端口配置
 DPORTS=$(curl -fsS "$API/admin/dns/ports" -H "Authorization: Bearer $ADMTOK")

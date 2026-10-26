@@ -123,6 +123,13 @@ type Subscription struct {
 	LastStatus   string `json:"last_status"`
 	FailCount    int    `json:"fail_count"`
 	CreatedAt    int64  `json:"-"`
+
+	// TimeoutSec 是该订阅自己的拉取超时（秒），0 表示跟随全局默认。
+	//
+	// 存在的理由：默认超时改短之后，几个慢速大源会必然失败。
+	// 而「慢源就让它失败」意味着全局十几万条规则永远停在旧版本，
+	// 所以给个按源单独放宽的口子，不必为一个源把全站默认调长。
+	TimeoutSec int `json:"timeout_sec"`
 }
 
 // Feedback 是一条用户反馈（通常是误杀申诉）。
@@ -351,6 +358,22 @@ type GlobalSettings struct {
 	QueryLogSize   int    `json:"query_log_size"`
 	EnableQueryLog bool   `json:"enable_query_log"`
 	SubIntervalH   int    `json:"sub_interval_hours"`
+	// SubRefreshHour / SubRefreshMinute 是每日刷新时刻（北京时间）。
+	//
+	// 原来是「启动后 +24h」，apid 每次重启都会让刷新时间漂移到任意时刻。
+	// 改成对齐固定时刻，管理员才能真的把刷新安排在凌晨。
+	SubRefreshHour   int `json:"sub_refresh_hour"`
+	SubRefreshMinute int `json:"sub_refresh_minute"`
+	// SubSpreadMinutes 是这一批订阅摊开的窗口（分钟）。
+	//
+	// 原来 35 个订阅在同一个 tick 里挤着重拉，一小时 64 次拉取 + 47 次
+	// 快照重建（每次 9-14 秒），2 核机器直接被顶满。摊开之后 CPU 平滑。
+	SubSpreadMinutes int `json:"sub_spread_minutes"`
+	// SubFetchTimeoutSec 是单个订阅的单次拉取默认超时（秒）。
+	//
+	// 默认 20 秒：绝大多数源够用，且能快速放弃那些国内根本不通的地址。
+	// 慢速大源靠订阅自己的 timeout_sec 单独放宽，不为此把全站默认调长。
+	SubFetchTimeoutSec int `json:"sub_fetch_timeout_sec"`
 	// LogRetentionMin 是查询日志保留分钟数。
 	//
 	// 原来按「天」保留（默认 7 天），小机器上几百万行日志会把磁盘和
@@ -574,12 +597,18 @@ func DefaultSettings() GlobalSettings {
 		EnableDoT:      true,
 		EnablePlainDNS: true,
 		// 国内可达的两个公共解析器，用于解析 DoH/DoT 上游的主机名。
-		BootstrapDNS:    []string{"223.5.5.5", "119.29.29.29"},
-		SubIntervalH:    24,
-		LogRetentionMin: 60,
-		AllowRegister:   true,
-		InviteCode:      "",
-		UpdateChannel:   "stable",
+		BootstrapDNS: []string{"223.5.5.5", "119.29.29.29"},
+		SubIntervalH: 24,
+		// 默认凌晨 3 点开始、60 分钟摊开、单次拉取 20 秒超时。
+		// 3 点选的是用户最少、公共规则源更新已完成、源站负载最低的时段。
+		SubRefreshHour:     3,
+		SubRefreshMinute:   0,
+		SubSpreadMinutes:   60,
+		SubFetchTimeoutSec: 20,
+		LogRetentionMin:    60,
+		AllowRegister:      true,
+		InviteCode:         "",
+		UpdateChannel:      "stable",
 
 		// AI 诊断默认关闭：需要管理员自己填模型地址与 Key 才会生效。
 		// 触发方式给 manual 而不是 on_submit —— 首次接入时让管理员

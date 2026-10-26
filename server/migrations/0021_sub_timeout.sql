@@ -1,0 +1,11 @@
+-- 订阅可单独设置拉取超时。
+--
+-- 背景：默认超时统一改成 20 秒后，对绝大多数源是够的（实测 33 个源里
+-- 20 个在 20 秒内下完），但有两个全局大源必然超时：
+--   big.oisd.nl           1.3MB @ 29KB/s  → 实测 45s+
+--   adguardteam.github.io 1.5MB @ 33KB/s  → 实测 45s+
+-- 而「慢源就让它失败」对全局规则意味着十几万条规则永远停在旧版本。
+--
+-- 所以做成「默认短、个别源可放宽」：TimeoutSec 为 0 表示跟随全局默认，
+-- 大于 0 时用该值。这样管理员能按源单独调，不用为一个慢源把全站超时调长。
+ALTER TABLE subscriptions ADD COLUMN timeout_sec INTEGER NOT NULL DEFAULT 0;

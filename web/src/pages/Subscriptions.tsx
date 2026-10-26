@@ -36,6 +36,7 @@ import type {
 } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { GlobalLayerBanner, GlobalLayerHint, QuotaReadout } from '@/components/UserLayerHints'
+import { DuplicateSubscriptionsCard } from '@/components/DuplicateSubscriptionsCard'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -70,6 +71,8 @@ const schema = z.object({
   list_type: z.enum(['blocklist', 'allowlist']),
   format: z.enum(['auto', 'adblock', 'hosts', 'dnsmasq', 'domain']),
   enabled: z.boolean(),
+  // 0 = 跟随全局默认超时。上限 600 与后端校验一致。
+  timeout_sec: z.coerce.number().int().min(0).max(600),
 })
 
 type SubForm = z.infer<typeof schema>
@@ -178,7 +181,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
 
   const form = useForm<SubForm>({
     resolver: zodResolver(schema),
-    defaultValues: { name: '', url: '', list_type: 'blocklist', format: 'auto', enabled: true },
+    defaultValues: { name: '', url: '', list_type: 'blocklist', format: 'auto', enabled: true, timeout_sec: 0 },
   })
 
   const openCreate = (preset?: { name: string; url: string; list_type: ListType }) => {
@@ -189,6 +192,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
       list_type: preset?.list_type ?? 'blocklist',
       format: 'auto',
       enabled: true,
+      timeout_sec: 0,
     })
     setEditorOpen(true)
   }
@@ -201,6 +205,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
       list_type: sub.list_type,
       format: sub.format,
       enabled: sub.enabled,
+      timeout_sec: sub.timeout_sec ?? 0,
     })
     setEditorOpen(true)
   }
@@ -308,6 +313,10 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
         {!isGlobal && <GlobalLayerHint />}
         <QuotaReadout used={items.length} limit={limit} unit="个订阅" />
       </div>
+
+      {/* 重复检测只给管理员：它能跨租户看到「谁和谁订了同一份」，
+          这对普通用户没有意义，也不该暴露别人的订阅。 */}
+      {isGlobal && <DuplicateSubscriptionsCard />}
 
       {listQuery.isError ? (
         <ErrorState message={errorMessage(listQuery.error)} onRetry={() => listQuery.refetch()} />
@@ -478,6 +487,26 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                 checked={form.watch('enabled')}
                 onCheckedChange={(v) => form.setValue('enabled', v)}
               />
+            </div>
+
+            {/* 单个订阅的超时。默认跟随全局，慢源可单独放宽。
+                没有这个口子的话，默认 20 秒会让几个 1MB+ / 30KB/s 的
+                公共大源必然失败 —— 而它们是全局规则。 */}
+            <div className="space-y-2">
+              <Label htmlFor="sub-timeout">拉取超时（秒）</Label>
+              <Input
+                id="sub-timeout"
+                type="number"
+                min={0}
+                max={600}
+                className="font-mono"
+                {...form.register('timeout_sec')}
+              />
+              <p className="text-xs text-muted-foreground">
+                填 <span className="text-foreground">0</span> 表示跟随全局默认（在「常规设置 → 订阅刷新时间」里配）。
+                慢速大源（1MB 以上、速度只有几十 KB/s 的公共列表）建议单独给 60–120 秒，
+                否则每次刷新都会超时，规则会一直停在旧版本。
+              </p>
             </div>
 
             <DialogFooter>

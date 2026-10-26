@@ -152,6 +152,14 @@ export interface Subscription {
   last_fetched: number | string | null
   last_status: string
   created_at: string
+  /**
+   * 该订阅自己的拉取超时（秒），0 表示跟随全局默认。
+   *
+   * 存在理由是慢速大源：默认 20 秒超时后，几个 1MB+ 且只有 30KB/s 的
+   * 公共列表会必然失败，而它们是全局规则 —— 失败等于十几万条规则
+   * 永远停在旧版本。给个按源放宽的口子，不必为它把全站默认调长。
+   */
+  timeout_sec?: number
 }
 
 export interface SubscriptionInput {
@@ -160,6 +168,34 @@ export interface SubscriptionInput {
   list_type: ListType
   format: SubFormat
   enabled: boolean
+  /** 0 或不传 = 跟随全局默认超时 */
+  timeout_sec?: number
+}
+
+/**
+ * 订阅链接重复检测的结果。
+ *
+ * 只报「哪些订阅指向同一份内容」，不改任何数据。定时刷新本身已经会
+ * 自动共享同组订阅的下载与解析，所以这些条目不需要人工处理也不会
+ * 重复拉取；报出来是为了让人知道「哪几个人订了同一份」。
+ */
+export interface SubscriptionDuplicates {
+  total_enabled: number
+  /** 每轮刷新因自动共享而省掉的拉取次数 */
+  auto_saved_fetches: number
+  groups: {
+    canonical_key: string
+    /** 这一组里出现过的原始链接（形态不同但内容相同） */
+    urls: string[]
+    entries: number
+    extra_fetches: number
+    subscriptions: {
+      id: string
+      user_id: string
+      username: string
+      name: string
+    }[]
+  }[]
 }
 
 /** 刷新现在走后台任务，接口立刻回 202，只有 pending 与 last_status。 */
@@ -355,6 +391,19 @@ export interface AdminSettings {
   smtp_tls: string
   email_verify_register: boolean
   max_sub_entries: number
+
+  /**
+   * 订阅刷新调度。
+   *
+   * sub_refresh_hour/minute 是每日刷新时刻（本地时区，0 点是合法值），
+   * 按固定时刻对齐而不是「启动后 +24h」—— 后者会被 apid 重启不断漂移。
+   */
+  sub_refresh_hour: number
+  sub_refresh_minute: number
+  /** 把这一批订阅摊开的窗口（分钟），避免同时冲击源站与 CPU */
+  sub_spread_minutes: number
+  /** 单个订阅的单次拉取默认超时（秒）；慢源可在订阅上单独放宽 */
+  sub_fetch_timeout_sec: number
 
   /**
    * 反馈邮件通知。

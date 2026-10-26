@@ -103,6 +103,11 @@ const settingsSchema = z.object({
   query_log_size: z.coerce.number().int().min(0),
   enable_query_log: z.boolean(),
   sub_interval_hours: z.coerce.number().int().min(1),
+  // 订阅刷新时刻与摊开窗口。0 点是合法刷新时刻（不为它设 min）。
+  sub_refresh_hour: z.coerce.number().int().min(0).max(23),
+  sub_refresh_minute: z.coerce.number().int().min(0).max(59),
+  sub_spread_minutes: z.coerce.number().int().min(1).max(1440),
+  sub_fetch_timeout_sec: z.coerce.number().int().min(5).max(600),
   query_log_retention_min: z.coerce.number().int().min(1),
   allow_register: z.boolean(),
   invite_code: z.string(),
@@ -477,8 +482,63 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                 <NumberField form={form} name="query_log_size" label="内存日志缓冲条数" />
                 <NumberField form={form} name="query_log_retention_min" label="日志保留分钟（默认 60）" />
                 <NumberField form={form} name="stats_retention_days" label="统计保留天数（0=不清理）" />
-                <NumberField form={form} name="sub_interval_hours" label="订阅刷新间隔（小时）" />
                 <NumberField form={form} name="max_id_resets" label="自助重置 ID 次数（0=关闭）" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* 订阅刷新：时间、摊开窗口、超时。
+              独立成一张卡是因为这三项是「同一件事的三个参数」——
+              挤在「日志与订阅」里时，改刷新时间的人找不到摊开窗口。 */}
+          <Card>
+            <CardHeader>
+              <CardTitle>订阅刷新时间</CardTitle>
+              <CardDescription>
+                每天固定时刻刷新，并把各订阅错开，避免同时冲击源站和把 CPU 顶满。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <NumberField form={form} name="sub_refresh_hour" label="刷新时刻（时，0-23）" />
+                <NumberField form={form} name="sub_refresh_minute" label="刷新时刻（分，0-59）" />
+                <NumberField form={form} name="sub_interval_hours" label="刷新周期（小时）" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                默认每天 <span className="text-foreground">03:00</span> 开始 —— 用户最少、公共规则源更新已完成。
+                按固定时刻对齐而不是「启动后 +24 小时」：apid 每次重启都会让后者漂移到任意时刻。
+              </p>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <NumberField form={form} name="sub_spread_minutes" label="摊开窗口（分钟）" />
+                <NumberField form={form} name="sub_fetch_timeout_sec" label="单次拉取超时（秒）" />
+              </div>
+              <div className="space-y-1.5 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                <p>
+                  <span className="text-foreground">摊开窗口</span>
+                  ：把这一批订阅分散在这个窗口内陆续刷新。原来是全部挤在同一秒发起，
+                  实测一小时 64 次拉取、47 次快照重建（每次 9–14 秒），2 核机器直接被顶满。
+                  {Number(form.watch('sub_spread_minutes')) > 0 && Number(form.watch('sub_refresh_hour')) >= 0 && (
+                    <>
+                      {' '}当前设置下，第一个订阅在{' '}
+                      <span className="text-foreground">
+                        {String(form.watch('sub_refresh_hour')).padStart(2, '0')}:
+                        {String(form.watch('sub_refresh_minute')).padStart(2, '0')}
+                      </span>{' '}
+                      开始，最后一个约在 {formatSpreadEnd(
+                        Number(form.watch('sub_refresh_hour')),
+                        Number(form.watch('sub_refresh_minute')),
+                        Number(form.watch('sub_spread_minutes')),
+                      )}{' '}
+                      开始。
+                    </>
+                  )}
+                </p>
+                <p className="pt-1">
+                  <span className="text-foreground">单次拉取超时</span>
+                  ：超时就放弃这次拉取，<span className="text-foreground">旧规则保留不变</span>（不会清空，
+                  DNS 不受影响），只累加失败计数。默认 20 秒能快速放弃国内根本不通的地址；
+                  慢速大源请在订阅里单独设超时，不要为了一个源把全站默认调长。
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -784,6 +844,17 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
       </div>
     </form>
   )
+}
+
+/**
+ * formatSpreadEnd 算出「最后一个订阅大约几点开始刷新」。
+ *
+ * 给管理员看的，让他能判断窗口有没有跨过业务高峰 —— 只显示窗口长度
+ * 的话，「60 分钟」到底是 03:00–04:00 还是 23:30–00:30 看不出来。
+ */
+function formatSpreadEnd(hour: number, minute: number, spread: number): string {
+  const total = (hour * 60 + minute + Math.max(1, spread)) % (24 * 60)
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
 /** ToggleRow 是「标题 + 说明 + 开关」的通用行，设置项大多是这个形状。 */

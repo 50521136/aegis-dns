@@ -163,6 +163,10 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.QueryTimeoutMS = intOr(kv["query_timeout_ms"], set.QueryTimeoutMS)
 	set.QueryLogSize = intOr(kv["query_log_size"], set.QueryLogSize)
 	set.SubIntervalH = intOr(kv["sub_interval_hours"], set.SubIntervalH)
+	set.SubRefreshHour = intOr(kv["sub_refresh_hour"], set.SubRefreshHour)
+	set.SubRefreshMinute = intOr(kv["sub_refresh_minute"], set.SubRefreshMinute)
+	set.SubSpreadMinutes = intOr(kv["sub_spread_minutes"], set.SubSpreadMinutes)
+	set.SubFetchTimeoutSec = intOr(kv["sub_fetch_timeout_sec"], set.SubFetchTimeoutSec)
 	// 日志保留改成按分钟。老库里是 query_log_retention_days，按天换算过来。
 	set.LogRetentionMin = intOr(kv["query_log_retention_min"],
 		intOr(kv["query_log_retention_days"], 0)*1440)
@@ -324,6 +328,10 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"update_repo":             set.UpdateRepo,
 		"update_channel":          set.UpdateChannel,
 		"sub_interval_hours":      strconv.Itoa(set.SubIntervalH),
+		"sub_refresh_hour":        strconv.Itoa(set.SubRefreshHour),
+		"sub_refresh_minute":      strconv.Itoa(set.SubRefreshMinute),
+		"sub_spread_minutes":      strconv.Itoa(set.SubSpreadMinutes),
+		"sub_fetch_timeout_sec":   strconv.Itoa(set.SubFetchTimeoutSec),
 
 		// AI 诊断
 		"ai_enabled":       boolStr(set.AIEnabled),
