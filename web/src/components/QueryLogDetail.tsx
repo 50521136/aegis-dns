@@ -165,15 +165,20 @@ export function QueryLogDetail({
             塞进两列又太窄，所以放在请求下面共用左列。 */}
         <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
           <div className="space-y-3">
+            {/* 配对顺序要紧：手机双列下按 DOM 顺序两两成对。
+                类型+协议 一行、缓存+ECS 一行；ECS 的值是 /24 网段，
+                半栏放不下所以带 span 独占，放最后不打断前面的配对。 */}
             <Group label="请求">
               <KV k="类型" v={row.qtype || '—'} mono />
               <KV k="协议" v={protoLabel(row.proto)} mono />
               <KV k="缓存" v={row.cache_hit ? '命中' : '未命中'} />
-              <KV k="ECS" v={row.ecs || '—'} mono />
+              <KV k="ECS" v={row.ecs || '—'} mono span />
             </Group>
+            {/* 客户端两个字段都独占整行：IP 是 /24 网段（16 字符），
+                名称可能被用户设成任意中文名，塞进半栏必然折行。 */}
             <Group label="客户端">
-              <KV k="IP" v={row.client || '—'} mono />
-              <KV k="名称" v={row.client_name || '—'} />
+              <KV k="IP" v={row.client || '—'} mono span />
+              <KV k="名称" v={row.client_name || '—'} span />
             </Group>
           </div>
 
@@ -290,12 +295,20 @@ function protoLabel(proto: string | undefined): string {
  * 刻意不画圆角边框卡片：旧版四个卡片叠在一起，每块等重的边线互相竞争，
  * 反而看不出主次。分隔线只在上沿画一道，是为了让眼睛知道「这里换了一组」，
  * 又不至于形成新的框。
+ *
+ * 列数随断点反转：
+ *   - 手机（<sm）：**双列并排**。单列时 10 个字段各占一行，而值多数只有
+ *     2~7 个字符（"AAAA"、"命中"、"27 ms"），整行右侧四十多个字符宽全是空的
+ *     —— 这就是「没有充分利用空间」的来源。两两配对把 10 行压到 5 行，
+ *     横向空间才真正被用上。
+ *   - 桌面（≥sm）：单列。此时外层已经左右分了两栏（请求/客户端 ｜ 响应），
+ *     每栏内部再分两列会把值挤到折行。
  */
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section>
       <p className="eyebrow mb-1 border-t border-border/50 pt-1.5">{label}</p>
-      <dl className="space-y-0.5">{children}</dl>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-1">{children}</dl>
     </section>
   )
 }
@@ -303,25 +316,35 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 /**
  * KV 是一行「标签 | 值」。
  *
- * 标签固定 3.5rem、右对齐、弱色，值占满剩余并左对齐 —— 让所有值形成一条
- * 竖直的起跑线，扫读时眼睛只做水平移动，不必在参差的左边界之间来回找。
- * 值用 break-all 换行而不是 truncate：域名、ECS 网段、应答被截断后就没法核对，
- * 而核对正是打开这个弹窗的目的。
+ * 标签窄列右对齐 + 值左对齐，让同一列里所有值形成一条竖直的起跑线，
+ * 扫读时眼睛只做水平移动，不必在参差的左边界之间来回找。
+ *
+ * 标签宽度取 2.25rem（36px）而不是更宽的 3.5rem：标签全是两三个汉字
+ * （类型/协议/缓存/ECS/IP…），11px 下两个字只要 24px，给 56px 会让
+ * 「IP」这种短标签左边空出 30px，看起来像标签和值之间隔了一道沟。
+ *
+ * 值用 break-all 换行而不是 truncate：域名、ECS 网段、应答被截断后就没法
+ * 核对，而核对正是打开这个弹窗的目的。
+ *
+ * span 让长值在手机双列布局里独占一行（ECS 网段、客户端 IP 这类
+ * 16 个字符宽的值，塞进半栏必然折行，还不如直接给整行）。
  */
 function KV({
   k,
   v,
   mono,
   tone,
+  span,
 }: {
   k: string
   v: string
   mono?: boolean
   tone?: 'danger' | 'success'
+  span?: boolean
 }) {
   return (
-    <div className="flex min-w-0 items-baseline gap-2">
-      <dt className="w-14 shrink-0 text-right text-[11px] leading-[1.7] text-muted-foreground">
+    <div className={cn('flex min-w-0 items-baseline gap-1.5', span && 'col-span-2 sm:col-span-1')}>
+      <dt className="w-9 shrink-0 text-right text-[11px] leading-[1.7] text-muted-foreground">
         {k}
       </dt>
       <dd
