@@ -16,6 +16,7 @@ import {
   Megaphone,
   Mail,
   Cpu,
+  Bell,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -42,6 +43,10 @@ export const navItems: NavItem[] = [
   { to: '/app/rules', label: '规则', icon: ListFilter, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/subscriptions', label: '订阅', icon: Shield, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/logs', label: '查询日志', icon: ScrollText, userOnly: true, group: 'main' },
+  // 通知：订阅被收录、签到奖励、反馈处理结果。
+  // mobile 打开是因为反馈入口占了底部栏一格之后，通知是用户最需要
+  // 「一眼看到有没有新东西」的入口，红点挂在这里才看得见。
+  { to: '/app/notifications', label: '通知', icon: Bell, mobile: true, userOnly: true, group: 'main' },
   { to: '/app/feedback', label: '反馈', icon: MessageSquareWarning, mobile: true, userOnly: true, group: 'main' },
 
   // ── 账号设置：两边都要（改密码、令牌）──

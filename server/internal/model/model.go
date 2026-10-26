@@ -166,6 +166,22 @@ type Feedback struct {
 	AIEvidence   string `json:"-"`                        // 证据 JSON，仅入库审计，不返回前端
 	AIModel      string `json:"ai_model,omitempty"`
 	AIRanAt      int64  `json:"ai_ran_at,omitempty"`
+
+	// --- AI 自动处理与两端未读水位 ---
+	//
+	// AIAnsweredAt 非零表示这条反馈已被 AI 自动处理并结单（回复已发出）。
+	// 前端据此渲染「AI 自动处理」徽章 —— 与 AIStatus=done 不同：
+	// done 只说明诊断跑完了，结论可能还在等人采纳。
+	AIAnsweredAt int64 `json:"ai_answered_at,omitempty"`
+	// NeedsHumanAt 非零表示 AI 判断处理不了，正在等人工介入。
+	NeedsHumanAt int64 `json:"needs_human_at,omitempty"`
+
+	// UserReadAt / AdminReadAt 是两端的「我看到哪了」水位。
+	//
+	// 用时间戳而不是布尔位：一条反馈可能往返多轮，布尔位在第二轮就
+	// 失效了；水位只要和对方最后一条消息的时间比大小，轮次多少都成立。
+	UserReadAt  int64 `json:"user_read_at,omitempty"`
+	AdminReadAt int64 `json:"admin_read_at,omitempty"`
 }
 
 // FeedbackMessage 是反馈时间线上的一条消息。
@@ -405,6 +421,15 @@ type GlobalSettings struct {
 	AIMaxPerHour int `json:"ai_max_per_hour"`
 	// AITriggerMode 控制什么时候跑：off / on_submit / manual。
 	AITriggerMode string `json:"ai_trigger_mode"`
+	// AIAutoHandle 控制诊断完成后是否**自动处理**这条反馈。
+	//
+	// 开着的时候：核查无问题 → 直接回复并结单；确认误拦截 → 写放行白名单
+	// 再回复结单；判断不了 / 没带域名 / 域名没过安全校验 → 转人工等待处理。
+	// 关掉时只落诊断结论，一切等人工点「采纳」，与旧行为一致。
+	//
+	// 默认关闭：自动写规则会真实改变全站的拦截行为，该由管理员看着
+	// 诊断质量稳定之后再打开。
+	AIAutoHandle bool `json:"ai_auto_handle"`
 
 	// --- 配额：不限制的话单个用户就能把内存打爆 ---
 	//
@@ -617,6 +642,8 @@ func DefaultSettings() GlobalSettings {
 		AITimeoutSec:  30,
 		AIMaxPerHour:  20,
 		AITriggerMode: "manual",
+		// 自动处理默认关闭，理由见 AIAutoHandle 字段注释。
+		AIAutoHandle: false,
 
 		AllowRootDomain: true,
 		StatsRetentionD: 30,

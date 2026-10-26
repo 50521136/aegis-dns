@@ -3,10 +3,18 @@ import { motion } from 'framer-motion'
 import { ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
+import { useUnreadCounts } from '@/hooks/useUnreadCounts'
 import { GROUP_LABEL, navItems, type NavItem } from './navItems'
+import { NavBadge } from './NavBadge'
 
 export function Sidebar() {
   const { user, isAdmin } = useAuth()
+  // 侧栏比底部栏宽，可以显示数字而不是纯圆点。
+  const { notifications, feedback } = useUnreadCounts()
+  const badgeFor = (to: string) =>
+    to === '/app/notifications' ? notifications
+    : to === '/app/feedback' || to === '/admin/feedback' ? feedback
+    : 0
   // 管理员是控制面角色：既看不到租户功能（userOnly），也独占管理功能（adminOnly）
   const items = navItems.filter((i) => (i.adminOnly ? isAdmin : !(i.userOnly && isAdmin)))
   const mainItems = items.filter((i) => i.group === 'main')
@@ -26,7 +34,7 @@ export function Sidebar() {
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
         {mainItems.map((item) => (
-          <SidebarLink key={item.to} item={item} />
+          <SidebarLink key={item.to} item={item} badge={badgeFor(item.to)} />
         ))}
 
         {/* 管理员分区：用一条细线 + 眉标隔开，普通用户看不到这一段 */}
@@ -35,7 +43,7 @@ export function Sidebar() {
             <div className="hairline-t mx-2 my-3" />
             <p className="eyebrow px-3 pb-1">{GROUP_LABEL.admin}</p>
             {adminItems.map((item) => (
-              <SidebarLink key={item.to} item={item} />
+              <SidebarLink key={item.to} item={item} badge={badgeFor(item.to)} />
             ))}
           </>
         )}
@@ -58,7 +66,7 @@ export function Sidebar() {
   )
 }
 
-function SidebarLink({ item }: { item: NavItem }) {
+function SidebarLink({ item, badge = 0 }: { item: NavItem; badge?: number }) {
   const Icon = item.icon
   return (
     <NavLink
@@ -82,8 +90,18 @@ function SidebarLink({ item }: { item: NavItem }) {
               transition={{ type: 'spring', stiffness: 500, damping: 34 }}
             />
           )}
-          <Icon className={cn('size-[18px] shrink-0', isActive && 'text-primary')} />
-          <span>{item.label}</span>
+          <span className="relative inline-flex shrink-0">
+            <Icon className={cn('size-[18px]', isActive && 'text-primary')} />
+            {/* 侧栏空间够，但图标只有 18px —— 数字徽章压在图标右上角
+                会和相邻行贴太近，所以这里用纯圆点，数量在悬停 title 里。 */}
+            <NavBadge count={badge} dot />
+          </span>
+          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+          {badge > 0 && (
+            <span className="shrink-0 text-[10px] font-semibold tabular-nums text-danger">
+              {badge > 99 ? '99+' : badge}
+            </span>
+          )}
         </>
       )}
     </NavLink>

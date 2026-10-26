@@ -125,6 +125,8 @@ type diagnoserIface interface {
 	Enqueue(model.Feedback)
 	ShouldAutoRun() bool
 	Close()
+	// SetOnDone 注册「诊断完成后」的回调（自动处理反馈用）。
+	SetOnDone(func(fb *model.Feedback))
 }
 
 // encryptSecret 供 handler 使用。
@@ -184,6 +186,26 @@ func (s *Server) rebuildDiagnoser(set *model.GlobalSettings) {
 	}
 
 	s.diagnoser = diagnose.NewWorker(storeSource{srv: s}, s.store, s.log, cfg, modeFn)
+
+	// 诊断完成后自动处理：核查无问题就回复结单、确认误拦截就放行白名单，
+	// 其余情况转人工（需求 1）。
+	//
+	// 是否真的自动处理由设置里的 ai_auto_handle 决定 —— 关掉之后这里
+	// 仍然会被调用，但 autoHandleFeedback 内部会直接返回 NeedsHuman，
+	// 效果等于「只诊断不处理」，与旧行为一致。
+	s.diagnoser.SetOnDone(func(fb *model.Feedback) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		cur, err := s.store.GetSettings(ctx)
+		if err != nil || !cur.AIAutoHandle {
+			return
+		}
+		if _, err := s.autoHandleFeedback(ctx, fb); err != nil {
+			s.log.Warn("AI 自动处理反馈失败", "feedback", fb.ID, "err", err)
+		}
+	})
+
 	s.log.Info("AI 诊断已启用", "model", set.AIModel, "base_url", set.AIBaseURL, "mode", set.AITriggerMode)
 }
 

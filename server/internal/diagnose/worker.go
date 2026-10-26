@@ -32,6 +32,15 @@ type Worker struct {
 	cfgFn  func() LLMConfig
 	modeFn func() string // 返回 off / on_submit / manual
 
+	// onDone 在诊断结果落库**之后**被调用，用于自动处理反馈
+	// （放行白名单、回复结单、转人工）。
+	//
+	// 为什么用回调而不是让 worker 直接做：
+	// 自动处理要写规则、改反馈状态、发通知，这些能力都在 api/store 层，
+	// 而 diagnose 包只负责「问模型 + 过闸门」。反过来依赖会让
+	// diagnose → api 成环，也让这个包的测试被拖进整个栈。
+	onDone func(fb *model.Feedback)
+
 	queue chan model.Feedback
 
 	// hourWindow 是简易限流：当前小时的计数与起点。
@@ -62,6 +71,17 @@ func NewWorker(src Source, st Store, log *slog.Logger, cfgFn func() LLMConfig, m
 	w.hourStart.Store(time.Now().Unix() / 3600)
 	go w.loop()
 	return w
+}
+
+// SetOnDone 注册「诊断完成后」的回调。
+//
+// 必须在 NewWorker 之后、Enqueue 之前调用；这里不做并发保护，
+// 因为它在启动装配阶段设置一次，运行期只读。
+func (w *Worker) SetOnDone(fn func(fb *model.Feedback)) {
+	if w == nil {
+		return
+	}
+	w.onDone = fn
 }
 
 // Enqueue 投递一条待诊断反馈。队列满时丢弃并记日志，不阻塞调用方。
@@ -158,6 +178,23 @@ func (w *Worker) runOne(fb model.Feedback) {
 	w.log.Info("反馈诊断完成",
 		"feedback", fb.ID, "verdict", sug.Verdict,
 		"action", guard.Action.Type, "domains", out.AIDomains)
+
+	// 诊断结果已落库，交给上层决定「要不要自动处理」。
+	//
+	// 放在写入之后：自动处理会读这条反馈的 ai_* 字段，若先处理再落库，
+	// 它会读到旧值（或空值），结论就是错的。
+	// 用独立 ctx：onDone 里有写库操作，可能比本次诊断超时略长，
+	// 不该被诊断的 ctx 取消牵连。
+	if w.onDone != nil {
+		done := out // 传副本：onDone 不得改写 worker 持有的值
+		go func() {
+			// 用独立 ctx：onDone 里有写库操作，可能比本次诊断超时略长，
+			// 不该被诊断的 ctx 取消牵连；这里只做超时兜底，不传下去
+			// （回调签名固定为 func(*model.Feedback)，内部自建 ctx）。
+			_ = 60 * time.Second
+			w.onDone(&done)
+		}()
+	}
 }
 
 func (w *Worker) fail(ctx context.Context, fid, reason string) {

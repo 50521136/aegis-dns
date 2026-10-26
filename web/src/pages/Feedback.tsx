@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { MessageSquareWarning, Send } from 'lucide-react'
+import { Bot, MessageSquareWarning, Send } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ import { useToast } from '@/components/ui/toast'
 import { FeedbackThread } from '@/components/FeedbackThread'
 import { errorMessage } from '@/api/client'
 import { createFeedback, listMyFeedback, replyMyFeedback } from '@/api/scope'
+import { markFeedbackRead } from '@/api/notifications'
 import { getPublicConfig } from '@/api/member'
 import { GeetestCaptcha, useCaptchaGate } from '@/components/GeetestCaptcha'
 import type { CaptchaResult, FeedbackKind, FeedbackStatus } from '@/api/types'
@@ -46,6 +47,20 @@ export default function Feedback() {
 
   const listQuery = useQuery({ queryKey: ['feedback', 'mine'], queryFn: () => listMyFeedback() })
   const items = listQuery.data?.items ?? []
+
+  // 进到这个页面就说明用户在看自己的反馈列表了 —— 把「有回复未读」的
+  // 逐条标记为已读，红点随之消失。
+  //
+  // 为什么不是点开某条才标记：用户的习惯是到这一页扫一眼列表就知道
+  // 有没有新回复，逼他逐条点开才能消红点只会让人干脆无视红点。
+  // 只在拿到数据后跑一次（依赖 items 长度），避免每次渲染都发请求。
+  useEffect(() => {
+    const unread = (listQuery.data?.items ?? []).filter(
+      (f) => lastAdminTs(f) > (f.user_read_at ?? 0),
+    )
+    if (unread.length === 0) return
+    void Promise.all(unread.map((f) => markFeedbackRead(f.id).catch(() => undefined)))
+  }, [listQuery.data])
 
   const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
   const gate = useCaptchaGate(cfgQuery.data?.captcha, 'feedback')
@@ -186,6 +201,14 @@ export default function Feedback() {
                       <Badge variant="outline">
                         {KIND_OPTIONS.find((o) => o.value === f.kind)?.label ?? f.kind}
                       </Badge>
+                      {/* AI 自动处理标识：让用户知道这条是机器判的、几秒就回了，
+                          该不该继续追问一眼能看明白（需求 1 的「加个 ai 标识」） */}
+                      {(f.ai_answered_at ?? 0) > 0 && (
+                        <Badge variant="secondary" className="gap-0.5">
+                          <Bot className="size-2.5" />
+                          AI 自动处理
+                        </Badge>
+                      )}
                       <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
                         {f.created_at}
                       </span>
@@ -295,4 +318,21 @@ function FollowUpBox({ pending, onSend }: { pending: boolean; onSend: (text: str
       </div>
     </div>
   )
+}
+
+/**
+ * lastAdminTs 返回时间线上最后一条「非用户发言」的时间戳（秒）。
+ *
+ * 非用户而不是 role==='admin'：AI 自动回复也是以 admin 角色写入的
+ * （前端气泡样式只区分 user/admin），这里按「不是我自己说的」判定，
+ * AI 回复也算进未读。
+ */
+function lastAdminTs(f: { messages?: { role: string; created_at: string }[] }): number {
+  let last = 0
+  for (const m of f.messages ?? []) {
+    if (m.role === 'user') continue
+    const t = Math.floor(new Date(m.created_at).getTime() / 1000)
+    if (t > last) last = t
+  }
+  return last
 }

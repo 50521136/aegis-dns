@@ -2,8 +2,10 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/50521136/aegis-dns/server/internal/bjtime"
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
 
@@ -74,6 +76,41 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	if res.Bonus > 0 {
 		msg = "连续签到奖励触发，额外多得 " + itoa(res.Bonus) + " 天"
 	}
+
+	// 签到奖励发一条站内通知（需求 3）。
+	//
+	// 只在真的拿到天数时发：
+	//   - 普通签到（granted=0）每天都发生，发通知等于把通知页变成打卡流水；
+	//   - 奖励（连签满 N 天、或者按档位发会员）是低频事件，用户值得知道。
+	//
+	// 去重键按「用户 + 北京时间日期」：同一天重复调用接口（并发两次）
+	// 不会发出两条。
+	if res.Bonus > 0 || res.Granted > 0 {
+		title := "签到奖励已到账"
+		body := ""
+		switch {
+		case res.Bonus > 0 && res.Granted > 0:
+			body = "连续签到 " + itoa(res.Streak) + " 天，获得 " + itoa(res.Granted) + " 天会员（含连签奖励 " + itoa(res.Bonus) + " 天）。"
+		case res.Bonus > 0:
+			body = "连续签到 " + itoa(res.Streak) + " 天，额外获得 " + itoa(res.Bonus) + " 天会员。"
+		default:
+			body = "今日签到获得 " + itoa(res.Granted) + " 天会员。"
+		}
+		n := &model.Notification{
+			UserID:    u.ID,
+			Kind:      model.NotifyCheckinBonus,
+			Title:     title,
+			Body:      body,
+			Link:      "/app/account",
+			DedupeKey: "checkin:" + u.ID + ":" + strconv.FormatInt(bjtime.Today(), 10),
+		}
+		if _, err := s.store.CreateNotification(r.Context(), n); err != nil {
+			// 通知失败不该让签到整体失败：天数已经加上了，用户重试会被告知
+			// 「今天已签到」反而更困惑。
+			s.log.Warn("发送签到奖励通知失败", "user", u.ID, "err", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"granted":       res.Granted,
 		"bonus":         res.Bonus,

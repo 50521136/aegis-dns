@@ -207,6 +207,7 @@ func (s *Server) handleAdminGetAISettings(w http.ResponseWriter, r *http.Request
 		"ai_timeout_sec":  set.AITimeoutSec,
 		"ai_max_per_hour": set.AIMaxPerHour,
 		"ai_trigger_mode": set.AITriggerMode,
+		"ai_auto_handle":  set.AIAutoHandle,
 		"ai_key_set":      set.AIKeyEncrypted != "",
 	})
 }
@@ -225,6 +226,7 @@ func (s *Server) handleAdminUpdateAISettings(w http.ResponseWriter, r *http.Requ
 		TimeoutSec  *int    `json:"ai_timeout_sec"`
 		MaxPerHour  *int    `json:"ai_max_per_hour"`
 		TriggerMode *string `json:"ai_trigger_mode"`
+		AutoHandle  *bool   `json:"ai_auto_handle"`
 		ClearKey    bool    `json:"clear_key"`
 	}
 	if !decodeJSON(w, r, &req) {
@@ -259,6 +261,14 @@ func (s *Server) handleAdminUpdateAISettings(w http.ResponseWriter, r *http.Requ
 				"ai_trigger_mode 只能是 off / on_submit / manual", nil)
 			return
 		}
+	}
+	// AI 自动处理开关。
+	//
+	// 打开它会真实改写放行规则并自动结单，所以这里额外记一条日志：
+	// 事后要能查到「是谁、什么时候把这个开关打开的」。
+	if req.AutoHandle != nil && *req.AutoHandle != set.AIAutoHandle {
+		set.AIAutoHandle = *req.AutoHandle
+		s.log.Info("AI 自动处理开关已变更", "auto_handle", set.AIAutoHandle)
 	}
 	if req.ClearKey {
 		set.AIKeyEncrypted = ""

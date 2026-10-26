@@ -45,6 +45,15 @@ func feedbackJSON(f *model.Feedback) map[string]any {
 	m["ai_guard_notes"] = f.AIGuardNotes
 	m["ai_model"] = f.AIModel
 	m["ai_ran_at"] = f.AIRanAt
+	// ai_answered_at 非零表示这条反馈是 **AI 自动处理并结单** 的，
+	// 前端据此渲染「AI 自动处理」徽章（需求 1 的「加个 ai 标识」）。
+	// 和 ai_status=done 的区别：done 只是「诊断跑完了」，结论可能还在等人采纳。
+	m["ai_answered_at"] = f.AIAnsweredAt
+	// needs_human_at 非零表示 AI 判断处理不了，正在等人工。
+	m["needs_human_at"] = f.NeedsHumanAt
+	// 未读水位：前端据此判断这条是否该高亮（两端共用同一份数据）。
+	m["user_read_at"] = f.UserReadAt
+	m["admin_read_at"] = f.AdminReadAt
 	// ai_evidence 是给审计看的原始证据，体积可能几百字节到几 KB，
 	// 列表里不需要，只在需要时通过诊断详情获取，避免把列表撑大。
 
@@ -210,7 +219,39 @@ func (s *Server) handleListMyFeedback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAdminListFeedback 返回全部反馈（管理员）。
+// handleMarkFeedbackRead 把反馈标记为「用户已看过最新回复」（用户端红点用）。
+func (s *Server) handleMarkFeedbackRead(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	fid := chi.URLParam(r, "id")
+	// 先确认归属，否则任何登录用户都能顶别人的水位。
+	f, err := s.store.GetFeedback(r.Context(), fid)
+	if err != nil || f.UserID != u.ID {
+		writeError(w, http.StatusNotFound, CodeNotFound, "反馈不存在", nil)
+		return
+	}
+	if err := s.store.MarkFeedbackReadByUser(r.Context(), u.ID, fid); err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAdminMarkFeedbackRead 把反馈标记为「管理员已看过」（管理端红点用）。
+func (s *Server) handleAdminMarkFeedbackRead(w http.ResponseWriter, r *http.Request) {
+	fid := chi.URLParam(r, "id")
+	if err := s.store.MarkFeedbackReadByAdmin(r.Context(), fid); err != nil {
+		writeStoreError(w, err, "")
+		return
+	}
+	// 一并清掉「需要人工」标记：管理员打开就算处理过了，
+	// 否则这条会一直挂在红点里，直到他手动结单。
+	if err := s.store.ClearNeedsHuman(r.Context(), fid); err != nil {
+		s.log.Warn("清除需人工标记失败", "feedback", fid, "err", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAdminListFeedback 列出全部反馈（管理端）。
 func (s *Server) handleAdminListFeedback(w http.ResponseWriter, r *http.Request) {
 	page, size, offset := pagination(r, 50)
 	status := r.URL.Query().Get("status")

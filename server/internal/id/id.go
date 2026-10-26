@@ -23,6 +23,8 @@ const (
 	PrefixFeedback = "fb_"
 	// PrefixFeedbackMsg 用于反馈时间线上的单条消息。
 	PrefixFeedbackMsg = "fbm_"
+	// PrefixNotification 用于站内通知。
+	PrefixNotification = "ntf_"
 )
 
 var (

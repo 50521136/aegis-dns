@@ -142,6 +142,10 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["ai_trigger_mode"]; ok && v != "" {
 		set.AITriggerMode = v
 	}
+	if v, ok := kv["ai_auto_handle"]; ok {
+		// 用 boolStr 的反向解析：空串视为未配置，保持默认（false）。
+		set.AIAutoHandle = v == "1" || v == "true"
+	}
 	if v, ok := kv["bootstrap_dns"]; ok {
 		// 允许显式清空（空串 → 空切片），此时回退到系统解析器。
 		set.BootstrapDNS = splitList(v)
@@ -341,6 +345,7 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"ai_timeout_sec":   strconv.Itoa(set.AITimeoutSec),
 		"ai_max_per_hour":  strconv.Itoa(set.AIMaxPerHour),
 		"ai_trigger_mode":  set.AITriggerMode,
+		"ai_auto_handle":   boolStr(set.AIAutoHandle),
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
 		"max_sub_entries":      strconv.Itoa(set.MaxSubEntries),

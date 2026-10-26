@@ -533,6 +533,17 @@ export interface Feedback {
   ai_guard_notes?: string
   ai_model?: string
   ai_ran_at?: number
+  /**
+   * 非零表示这条反馈是 **AI 自动处理并结单** 的，前端据此显示「AI 自动处理」徽章。
+   * 和 ai_status='done' 不是一回事：done 只是诊断跑完了，结论可能还在等人采纳。
+   */
+  ai_answered_at?: number
+  /** 非零表示 AI 判断处理不了，正在等人工介入。 */
+  needs_human_at?: number
+  /** 用户已读到哪（时间戳）：管理员回复晚于它就说明用户还没看。 */
+  user_read_at?: number
+  /** 管理员已读到哪（时间戳）：用户追问晚于它就说明管理员还没处理。 */
+  admin_read_at?: number
 
   /**
    * 时间线：用户与管理员往返的全部消息。
@@ -755,4 +766,44 @@ export interface AdminOwnedSub {
   last_status: string
   fail_count: number
   entry_count: number
+}
+
+// ---------------------------------------------------------------------------
+// 站内通知
+// ---------------------------------------------------------------------------
+
+/** 通知类别，前端按它选图标与跳转，不靠解析正文猜。 */
+export type NotificationKind =
+  | 'sub_promoted'
+  | 'checkin_bonus'
+  | 'feedback_ai'
+  | 'feedback_reply'
+  | 'system'
+
+/** 一条站内通知（只属于当前登录用户）。 */
+export interface Notification {
+  id: string
+  kind: NotificationKind
+  title: string
+  body: string
+  /** 点开通知后跳转的前端路由，可能为空 */
+  link?: string
+  /** 关联业务对象 id（订阅、反馈） */
+  ref_id?: string
+  /** 空串表示未读 */
+  read_at: string
+  created_at: string
+}
+
+export interface NotificationListResponse {
+  items: Notification[]
+  total: number
+  /** 未读总数（导航红点用） */
+  unread: number
+}
+
+/** 导航红点需要的各项未读数，一次请求拿全。 */
+export interface UnreadCounts {
+  notifications: number
+  feedback: number
 }

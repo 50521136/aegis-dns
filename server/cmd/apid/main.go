@@ -177,6 +177,20 @@ func main() {
 	// --- API 服务 ---
 	srv := api.New(cfg, st, cd, subsMgr, certs, log)
 
+	// 订阅收录需要判定「两个链接是不是同一份内容」。
+	//
+	// store 不能直接 import subsub（subsub 已经依赖 store，反向会成环），
+	// 所以把归一实现注入进去。不注入时 store 退化成「只认完全相同的链接」，
+	// 不会出错，但 GitHub raw / jsDelivr 变体会漏判。
+	store.SetCanonicalURL(subsub.CanonicalURL)
+
+	// 同一份订阅被 >= 3 个用户订阅 → 自动收录为全局规则（需求 2）。
+	//
+	// 放在订阅调度器之外单独一个循环：收录是「事后整理」，与拉取节奏无关；
+	// 挂在一起会让收录跟着 24 小时一次的刷新窗口走，用户订阅了三天
+	// 才被发现重复。
+	go srv.StartPromotionLoop(ctx)
+
 	// 后台维护任务。
 	go maintenanceLoop(ctx, st, settings, log)
 	go updateCheckLoop(ctx, st, cfg, log)

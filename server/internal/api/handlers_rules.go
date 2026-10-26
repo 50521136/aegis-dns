@@ -102,7 +102,15 @@ func (s *Server) checkRuleQuota(ctx context.Context, uid string, global bool, ad
 //
 // 个人层改动只需要重建该用户；**全局层改动必须全量重建** —— 全局规则对所有
 // 开启全局的用户生效，只把创建者标记为变更会让其他人的规则集停留在旧版本。
+//
+// coord 为 nil 时直接返回 nil（不 panic）：
+// apid 在某些只读部署/单测装配里不创建协调器，此时规则照样可以写库，
+// 只是没有快照可重建。让 touched 在这里崩掉会把「写完规则」的整个请求
+// 变成 500，而规则其实已经落库了 —— 用户重试会撞唯一约束，问题被放大。
 func (s *Server) touched(ctx context.Context, uid string, global bool) error {
+	if s.coord == nil {
+		return nil
+	}
 	if global {
 		_, err := s.coord.Changed(ctx)
 		return err

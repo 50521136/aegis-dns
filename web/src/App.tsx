@@ -43,6 +43,7 @@ const Subscriptions = lazy(() => import('@/pages/Subscriptions'))
 const QueryLog = lazy(() => import('@/pages/QueryLog'))
 const Settings = lazy(() => import('@/pages/Settings'))
 const Feedback = lazy(() => import('@/pages/Feedback'))
+const Notifications = lazy(() => import('@/pages/Notifications'))
 const Admin = lazy(() => import('@/pages/Admin'))
 const AdminLogs = lazy(() => import('@/pages/AdminLogs'))
 const AdminFeedback = lazy(() => import('@/pages/AdminFeedback'))
@@ -147,6 +148,7 @@ export default function App() {
                       <Route path="/app/subscriptions" element={<Subscriptions />} />
                       <Route path="/app/logs" element={<QueryLog />} />
                       <Route path="/app/feedback" element={<Feedback />} />
+                      <Route path="/app/notifications" element={<Notifications />} />
                     </Route>
 
                     {/* 账号设置两边都要：管理员也要改密码、管令牌 */}

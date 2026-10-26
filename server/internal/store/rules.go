@@ -181,6 +181,36 @@ func (s *Store) CreateRule(ctx context.Context, r *model.Rule) error {
 	return nil
 }
 
+// RuleExists 判断是否已存在完全相同（同归属层、同类型、同 pattern）的规则。
+//
+// 自动放行前用它避免重复写入：AI 对同一个域名的误拦截反馈可能来自多个用户、
+// 或同一个人反复提交，没有这个检查规则表会越堆越多，而生效行为完全一样。
+//
+// **全局层不看 user_id**：全局规则记录的是「谁创建的」（user_id = 创建者），
+// 但生效范围是全站。同一个 pattern 已经被另一个管理员建过，就该算已存在 ——
+// 按 uid 过滤会漏判，然后写出第二条一模一样的全局放行。
+//
+// 只看 enabled 的规则：用户手动禁用的那条等于不存在，该重写一条新的。
+func (s *Store) RuleExists(ctx context.Context, uid, kind, pattern string, global bool) (bool, error) {
+	var n int
+	var err error
+	if global {
+		err = s.read.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM rules
+			 WHERE kind = ? AND pattern = ? AND is_global = 1 AND enabled = 1`,
+			kind, pattern).Scan(&n)
+	} else {
+		err = s.read.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM rules
+			 WHERE user_id = ? AND kind = ? AND pattern = ? AND is_global = 0 AND enabled = 1`,
+			uid, kind, pattern).Scan(&n)
+	}
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // BulkCreateRules 在单个事务里批量插入规则，返回成功条数。
 //
 // 大批量导入（如几万条 hosts）时逐条 INSERT 会因为每次一个隐式事务而极慢，

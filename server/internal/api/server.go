@@ -134,6 +134,16 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/feedback", s.handleListMyFeedback)
 			// 追问追加到同一条时间线，而不是再提交一条新反馈。
 			r.Post("/feedback/{id}/reply", s.handleReplyMyFeedback)
+			// 把这条反馈标记为「我已看过回复」（用户端红点用）。
+			r.Post("/feedback/{id}/read", s.handleMarkFeedbackRead)
+
+			// 站内通知（订阅被收录、签到奖励、反馈处理结果）。
+			r.Get("/notifications", s.handleListMyNotifications)
+			r.Post("/notifications/read-all", s.handleMarkAllNotificationsRead)
+			r.Post("/notifications/{id}/read", s.handleMarkNotificationRead)
+			r.Delete("/notifications/{id}", s.handleDeleteNotification)
+			// 导航红点：一次返回通知与反馈两边的未读数。
+			r.Get("/unread-counts", s.handleUnreadCounts)
 			r.Put("/me/password", s.handleChangePassword)
 			r.Get("/me/dns-config", s.handleDNSConfig)
 			// 全局层规模：规则/订阅页据此提示「管理员已内置，一般无需自己添加」。
@@ -263,6 +273,11 @@ func (s *Server) Handler() http.Handler {
 				// AI 诊断：模型先给出「是否误杀 + 建议动作」，管理员一键采纳
 				r.Post("/feedback/{id}/diagnose", s.handleAdminDiagnoseFeedback)
 				r.Post("/feedback/{id}/apply", s.handleAdminApplyDiagnosis)
+				// 管理员看过这条反馈（管理端红点用）。
+				r.Post("/feedback/{id}/read", s.handleAdminMarkFeedbackRead)
+				// 订阅自动收录：被 >= 3 人订阅的同一份内容转为全局规则。
+				r.Get("/subscriptions/promotion/preview", s.handleAdminPromotionPreview)
+				r.Post("/subscriptions/promotion/run", s.handleAdminRunPromotion)
 				r.Get("/ai/settings", s.handleAdminGetAISettings)
 				r.Put("/ai/settings", s.handleAdminUpdateAISettings)
 				// 用 1 次真实调用验证模型连通性，避免「保存了但一跑就失败」
