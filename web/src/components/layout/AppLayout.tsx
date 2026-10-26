@@ -5,6 +5,7 @@ import { ShieldCheck, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
+import { UnreadCountsProvider } from '@/hooks/useUnreadCounts'
 import { Sidebar } from './Sidebar'
 import { BottomTabBar } from './BottomTabBar'
 import { TopBar } from './TopBar'
@@ -136,6 +137,11 @@ export function AppLayout() {
   const title = navItems.find((i) => location.pathname === i.to)?.label
 
   return (
+    // UnreadCountsProvider 必须包住 Sidebar / BottomTabBar 和页面本身：
+    // 红点显示在导航栏，而「消红点」的动作发生在页面里 —— 两边必须读
+    // 同一份状态。各自调 hook 会各持一份 useState，页面刷新了导航栏不知道
+    // （实测：POST /read 与 GET /unread-counts 都 200，徽章依旧显示 1）。
+    <UnreadCountsProvider>
     <div className="flex min-h-[100dvh] bg-background">
       <Sidebar />
 
@@ -158,5 +164,6 @@ export function AppLayout() {
       <BottomTabBar />
       <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
+    </UnreadCountsProvider>
   )
 }
