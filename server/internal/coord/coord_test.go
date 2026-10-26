@@ -219,25 +219,31 @@ func TestSingleChangeStillWorks(t *testing.T) {
 }
 
 // TestFullRebuildDominates 断言全量请求会压过增量请求（合并时必须取并集的上界）。
+//
+// 必须**确定性**地让两个请求落进同一批，否则这条断言本身就是竞态的：
+// 两个 goroutine 同时起跑时，增量那次可能先独自重建完（合法），
+// 随后全量再单独重建一次 —— 最后一次快照是增量的，看起来像「全量被吞」，
+// 其实是两批而不是一批。用 debounce 窗口把两者钉在同一批里。
 func TestFullRebuildDominates(t *testing.T) {
 	c, st, path := newTestCoord(t)
 	ids := seedUsers(t, st, 4)
 
+	// 合并窗口放大到 400ms：先到的增量还在 pending 里等窗口，
+	// 后到的全量必然并进同一批。
+	c.debounce = 400 * time.Millisecond
+
 	var wg sync.WaitGroup
-	start := make(chan struct{})
 	wg.Add(2)
-	go func() { defer wg.Done(); <-start; _, _ = c.Changed(context.Background(), ids[0]) }()
-	go func() { defer wg.Done(); <-start; _, _ = c.Changed(context.Background()) }() // 全量
-	close(start)
+	go func() { defer wg.Done(); _, _ = c.Changed(context.Background(), ids[0]) }()
+	// 等增量进入 pending（builder 仍在 debounce 窗口内，不会取走）
+	time.Sleep(120 * time.Millisecond)
+	go func() { defer wg.Done(); _, _ = c.Changed(context.Background()) }() // 全量
 	wg.Wait()
 
-	// 合并后的这一次如果是全量，changed_users 缺席。
-	// 若发生两次重建，最后一次可能是增量的 —— 这里只断言「至少有一次全量」
-	// 太难，所以放宽为：快照里不能出现「只有用户级 changed_users」而全量请求
-	// 被吞掉的情况。用版本号判断次数，再逐次看不可能，所以断言最紧的一条：
+	// 两者同批 → 全量压过增量 → changed_users 必须缺席。
 	changed, absent := snapshotChangedUsers(t, path)
-	if !absent && len(changed) == 1 && changed[0] == ids[0] {
-		t.Fatalf("全量请求被吞掉了：最后一次重建只有用户级 changed_users=%v", changed)
+	if !absent {
+		t.Fatalf("全量请求被增量吞掉了：同批合并后 changed_users 应为空，实际 %v", changed)
 	}
 }
 

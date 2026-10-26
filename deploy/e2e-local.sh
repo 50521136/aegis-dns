@@ -553,6 +553,8 @@ for i in range(40):
     lines.append("||mixadblock%d.example^" % i)
 # 一行多域名（hosts 常见写法，旧实现只取第一个）
 lines.append("0.0.0.0 multimulti1.example multimulti2.example multimulti3.example")
+# @@ 放行例外（旧实现按单一 kind 整批写入，这类条目被静默丢弃）
+lines.append("@@||mixallow.example^")
 open(p, "w").write("\n".join(lines) + "\n")
 PYEOF
 MIXPORT=18993  # 与 SUBLIST_PORT(18991)、其它本地探针端口错开
@@ -587,11 +589,27 @@ else:
     print(0)
 ' 2>/dev/null)
 done
-# 60 hosts + 40 adblock + 3 多域名 = 103 条，一条都不能少
-if [[ "${MIXCNT:-0}" -eq 103 ]]; then
-  ok "混合格式订阅全部入库（103 条：hosts 60 + adblock 40 + 一行多域名 3）"
+# 60 hosts + 40 adblock + 3 多域名 + 1 放行 = 104 条，一条都不能少
+if [[ "${MIXCNT:-0}" -eq 104 ]]; then
+  ok "混合格式订阅全部入库（104 条：hosts 60 + adblock 40 + 一行多域名 3 + 放行 1）"
 else
-  bad "混合格式订阅丢条目：期望 103，实际 ${MIXCNT:-0}（hosts 或 adblock 有一半被丢了）"
+  bad "混合格式订阅丢条目：期望 104，实际 ${MIXCNT:-0}（hosts/adblock/放行 有被丢的）"
+fi
+
+# 同一份订阅里的 @@ 放行条目必须真的落库并生效 —— 不能只进 block。
+# 旧实现一份订阅只能承载一个 kind，@@ 条目被静默丢弃，
+# 用户写了放行却仍被拦，而订阅状态显示 ok。
+MIXALLOW=$(python3 - "$RUN/data/aegis.db" "$MIXID" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+rows = db.execute("select kind, count(*) from sub_entries where sub_id=? group by kind", (sys.argv[2],)).fetchall()
+print(dict(rows))
+PYEOF
+)
+if echo "$MIXALLOW" | grep -q "'allow'"; then
+  ok "订阅里的 @@ 放行条目已落库（$MIXALLOW）"
+else
+  bad "@@ 放行条目被丢弃（$MIXALLOW）—— 用户写了放行却仍会被拦"
 fi
 [[ -n "$MIXID" ]] && curl -s -o /dev/null -X DELETE "$API/subscriptions/$MIXID" -H "Authorization: Bearer $ADMTOK"
 kill "$MIXPID" 2>/dev/null

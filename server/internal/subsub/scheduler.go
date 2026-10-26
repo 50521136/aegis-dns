@@ -149,6 +149,10 @@ func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bo
 	// 条目上限：一次订阅拉进来 23 万条是常态，而这些条目会被**按用户压平**进
 	// 快照，几个用户订同一份就成倍膨胀。超限时截断并告警，而不是拒绝整份订阅 ——
 	// 截断至少还能提供前 N 条防护，拒绝等于用户什么都没得到。
+	//
+	// 截断只作用在「主导类别」上；例外条目（另一种类别）全部保留 ——
+	// 例外通常只有几十上百条，砍掉它们会让本该放行的域名被拦，
+	// 比多占几 KB 严重得多。
 	if set, serr := m.st.GetSettings(ctx); serr == nil && set.MaxSubEntries > 0 && len(domains) > set.MaxSubEntries {
 		m.log.Warn("订阅条目超过上限，已截断",
 			"sub", sub.ID, "url", sub.URL,
@@ -156,7 +160,25 @@ func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bo
 		domains = domains[:set.MaxSubEntries]
 	}
 
-	if err := m.st.ReplaceSubEntries(ctx, sub.ID, kind, domains); err != nil {
+	// 一份订阅里可以同时有 block 与 allow：AdBlock 语法用 `@@||domain^`
+	// 表达白名单例外，公共列表里很常见（报障的那份有 3002 条）。
+	// 旧实现按单一 kind 整批写入，`@@` 条目被静默丢弃 —— 用户写了放行却
+	// 仍被拦，而状态显示 ok。这里改成混合写入，两种类别都保留。
+	primary, secondary := domains, allow
+	primaryKind, secondaryKind := "block", "allow"
+	if kind == "allow" {
+		primary, secondary = domains, block
+		primaryKind, secondaryKind = "allow", "block"
+	}
+	mixed := make([]store.SubEntry, 0, len(primary)+len(secondary))
+	for _, d := range primary {
+		mixed = append(mixed, store.SubEntry{Domain: d, Kind: primaryKind})
+	}
+	for _, d := range secondary {
+		mixed = append(mixed, store.SubEntry{Domain: d, Kind: secondaryKind})
+	}
+
+	if err := m.st.ReplaceSubEntriesMixed(ctx, sub.ID, mixed); err != nil {
 		res.LastStatus = DescribeStatus(err)
 		res.DurationMS = time.Since(start).Milliseconds()
 		return res, fmt.Errorf("写入订阅条目失败: %w", err)

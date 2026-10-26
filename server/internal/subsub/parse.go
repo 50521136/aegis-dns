@@ -199,7 +199,17 @@ func Parse(content []byte, format Format, listType string) (*ParseResult, error)
 			// 订阅只承载「拦/放」两类，不承载改写能力。但带 $dnsrewrite 的行
 			// 不能直接丢：公共列表用它表达「把这个域名解析到黑洞域名」，
 			// 本质上就是拦截。按列表类型降级成对应的类别。
+			//
+			// 默认类别由 **列表类型** 决定，不是恒为 block：
+			// allowlist 源的裸域名就是「放行」（用户加一份白名单，列表里
+			// 当然不会有 @@ 前缀）。此前恒按 block 判，于是 allowlist 订阅
+			// 解析出 block=全部、allow=0，而 scheduler 对 allowlist 只取
+			// allow —— 整份订阅入库 0 条，状态还是 ok，静默失效。
 			kind := "block"
+			if listType == "allowlist" {
+				kind = "allow"
+			}
+			// 显式的 @@ 永远表示放行，与列表类型无关。
 			if p.Kind == "allow" {
 				kind = "allow"
 			}

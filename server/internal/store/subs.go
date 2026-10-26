@@ -157,6 +157,78 @@ func (s *Store) UpdateSubStatus(ctx context.Context, sid, etag, lastMod, status 
 	return nil
 }
 
+// SubEntry 是一条订阅条目的最小描述：域名 + 类别（block / allow）。
+type SubEntry struct {
+	Domain string
+	Kind   string
+}
+
+// ReplaceSubEntriesMixed 用一批**可混合类别**的条目替换某订阅的全部条目。
+//
+// 为什么需要它：一份订阅里 block 与 allow 可以同时存在，而且很常见 ——
+// AdGuard/AdBlock 语法的列表用 `@@||domain^` 表达白名单例外，
+// 用户报障的那份 rules.txt 里就有 3002 条 `@@` 放行条目。
+//
+// 旧的 ReplaceSubEntries 只接受**一个** kind，于是 blocklist 订阅里的
+// `@@` 条目被整批丢弃：白名单例外静默失效，而订阅状态照样显示 ok ——
+// 用户完全看不出「我明明写了放行，为什么还是被拦」。
+//
+// 读侧（AllSubEntries / AllGlobalSubEntries / SubEntriesByUser）本来就是
+// 按行读 kind 的，快照也分 block/allow 两个数组，所以只需把写侧放开。
+func (s *Store) ReplaceSubEntriesMixed(ctx context.Context, sid string, entries []SubEntry) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS new_entries2 (domain TEXT PRIMARY KEY, kind TEXT NOT NULL) WITHOUT ROWID`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM new_entries2`); err != nil {
+			return err
+		}
+		// 同一个域名出现两次时以**最后一条**为准：列表里「先拉黑后放行」的
+		// 写法要靠后面的 allow 覆盖前面的 block（解析层已经做过这层去重，
+		// 这里再兜一次，避免上游顺序变化导致放行失效）。
+		stmt, err := tx.PrepareContext(ctx,
+			`INSERT INTO new_entries2 (domain, kind) VALUES (?, ?)
+			 ON CONFLICT(domain) DO UPDATE SET kind = excluded.kind`)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.Domain == "" {
+				continue
+			}
+			k := e.Kind
+			if k != "allow" {
+				k = "block"
+			}
+			if _, err := stmt.ExecContext(ctx, e.Domain, k); err != nil {
+				stmt.Close()
+				return err
+			}
+		}
+		stmt.Close()
+
+		// 先删掉这次没出现的（含类别变化后要重写的），再插入。
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM sub_entries WHERE sub_id = ? AND domain NOT IN (SELECT domain FROM new_entries2)`, sid); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO sub_entries (sub_id, domain, kind)
+			 SELECT ?, domain, kind FROM new_entries2
+			 WHERE domain NOT IN (SELECT domain FROM sub_entries WHERE sub_id = ?)`,
+			sid, sid); err != nil {
+			return err
+		}
+		// 类别可能变了（同一域名从 block 变 allow），统一刷一遍。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sub_entries SET kind = (SELECT kind FROM new_entries2 n WHERE n.domain = sub_entries.domain)
+			 WHERE sub_id = ? AND domain IN (SELECT domain FROM new_entries2)`, sid); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // ReplaceSubEntries 用新解析出的域名集合替换某订阅的全部条目。
 //
 // 用临时表做集合差运算，而不是「DELETE 全部再 INSERT」：
