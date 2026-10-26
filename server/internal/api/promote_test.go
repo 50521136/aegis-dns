@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
@@ -19,6 +20,20 @@ func init() {
 	// 不注入时只认完全相同的字符串，GitHub raw / jsDelivr 变体会漏判
 	// （TestPromotionGroupsEquivalentURLs 正是钉这一点）。
 	store.SetCanonicalURL(subsub.CanonicalURL)
+}
+
+// seedPromotionUsers 建 n 个用户，名字带统一前缀 + 序号。
+//
+// 收录测试的用例人数必须跟着 promoteThreshold 走：阈值是可配置的
+// 产品决策（从「>3」改成「>4」只需要改一行），测试钉的应该是
+// 「达到阈值就收录 / 差一个人就不收」这个**关系**，而不是某个具体数字。
+func seedPromotionUsers(t *testing.T, s *Server, prefix string, n int) []string {
+	t.Helper()
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, seedUser(t, s, prefix+strconv.Itoa(i)))
+	}
+	return out
 }
 
 // globalSubs 返回全部全局订阅（is_global = 1）。
@@ -61,14 +76,13 @@ func makeSub(t *testing.T, s *Server, uid, url, listType string) *model.Subscrip
 func TestPromotionTriggersAtThreshold(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "p1")
-	u2 := seedUser(t, s, "p2")
-	u3 := seedUser(t, s, "p3")
-
+	// 人数按阈值走，不写死 3：阈值是可配置的产品决策，
+	// 测试要钉的是「达到阈值就收录」，不是「3 这个数字」。
+	users := seedPromotionUsers(t, s, "p", promoteThreshold)
 	url := "https://raw.githubusercontent.com/x/y/main/rules.txt"
-	makeSub(t, s, u1, url, model.ListBlock)
-	makeSub(t, s, u2, url, model.ListBlock)
-	makeSub(t, s, u3, url, model.ListBlock)
+	for _, uid := range users {
+		makeSub(t, s, uid, url, model.ListBlock)
+	}
 
 	res, err := s.RunSubscriptionPromotion(ctx)
 	if err != nil {
@@ -78,8 +92,8 @@ func TestPromotionTriggersAtThreshold(t *testing.T) {
 		t.Fatalf("应收录 1 组，实际 %d", res.Promoted)
 	}
 
-	// 三个人的私有订阅都该没了。
-	for _, uid := range []string{u1, u2, u3} {
+	// 所有被收录者的私有订阅都该没了。
+	for _, uid := range users {
 		subs, err := s.store.ListSubs(ctx, uid, false)
 		if err != nil {
 			t.Fatalf("读订阅失败: %v", err)
@@ -101,8 +115,8 @@ func TestPromotionTriggersAtThreshold(t *testing.T) {
 	}
 	// user_id 保留原创建者：它是 NOT NULL + 外键，不能清空；
 	// 「全局」的判据是 is_global，不是 user_id 为空。
-	if global[0].UserID != u1 {
-		t.Fatalf("收录后的全局订阅应保留模板订阅的创建者 %s，实际 %q", u1, global[0].UserID)
+	if global[0].UserID != users[0] {
+		t.Fatalf("收录后的全局订阅应保留模板订阅的创建者 %s，实际 %q", users[0], global[0].UserID)
 	}
 }
 
@@ -110,22 +124,22 @@ func TestPromotionTriggersAtThreshold(t *testing.T) {
 func TestPromotionBelowThresholdDoesNothing(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "q1")
-	u2 := seedUser(t, s, "q2")
-
+	// 阈值 - 1 个人：差一个就不该收录。
+	users := seedPromotionUsers(t, s, "q", promoteThreshold-1)
 	url := "https://example.com/two-users.txt"
-	makeSub(t, s, u1, url, model.ListBlock)
-	makeSub(t, s, u2, url, model.ListBlock)
+	for _, uid := range users {
+		makeSub(t, s, uid, url, model.ListBlock)
+	}
 
 	res, err := s.RunSubscriptionPromotion(ctx)
 	if err != nil {
 		t.Fatalf("收录失败: %v", err)
 	}
 	if res.Promoted != 0 {
-		t.Fatalf("2 个用户不该触发收录，实际收录 %d 组", res.Promoted)
+		t.Fatalf("%d 个用户不该触发收录，实际收录 %d 组", promoteThreshold-1, res.Promoted)
 	}
 
-	subs, _ := s.store.ListSubs(ctx, u1, false)
+	subs, _ := s.store.ListSubs(ctx, users[0], false)
 	if len(subs) != 1 {
 		t.Fatalf("不该删除任何订阅，用户 1 还剩 %d 条", len(subs))
 	}
@@ -164,14 +178,16 @@ func TestPromotionCountsUsersNotSubscriptions(t *testing.T) {
 func TestPromotionRefusesMixedListTypes(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "m1")
-	u2 := seedUser(t, s, "m2")
-	u3 := seedUser(t, s, "m3")
-
+	users := seedPromotionUsers(t, s, "m", promoteThreshold)
 	url := "https://example.com/mixed.txt"
-	makeSub(t, s, u1, url, model.ListBlock)
-	makeSub(t, s, u2, url, model.ListBlock)
-	makeSub(t, s, u3, url, model.ListAllow) // 类别不一致
+	// 前 n-1 个人当拦截列表，最后一个人当放行列表 —— 类别不一致。
+	for i, uid := range users {
+		lt := model.ListBlock
+		if i == len(users)-1 {
+			lt = model.ListAllow
+		}
+		makeSub(t, s, uid, url, lt)
+	}
 
 	res, err := s.RunSubscriptionPromotion(ctx)
 	if err != nil {
@@ -181,7 +197,7 @@ func TestPromotionRefusesMixedListTypes(t *testing.T) {
 		t.Fatalf("类别混杂不该收录，实际收录 %d 组", res.Promoted)
 	}
 	// 一份都不能删。
-	subs, _ := s.store.ListSubs(ctx, u1, false)
+	subs, _ := s.store.ListSubs(ctx, users[0], false)
 	if len(subs) != 1 {
 		t.Fatal("类别混杂时不该删除任何订阅")
 	}
@@ -191,23 +207,20 @@ func TestPromotionRefusesMixedListTypes(t *testing.T) {
 func TestPromotionNotifiesAffectedUsers(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "n1")
-	u2 := seedUser(t, s, "n2")
-	u3 := seedUser(t, s, "n3")
-
+	users := seedPromotionUsers(t, s, "n", promoteThreshold)
 	url := "https://example.com/notify.txt"
-	makeSub(t, s, u1, url, model.ListBlock)
-	makeSub(t, s, u2, url, model.ListBlock)
-	makeSub(t, s, u3, url, model.ListBlock)
+	for _, uid := range users {
+		makeSub(t, s, uid, url, model.ListBlock)
+	}
 
 	res, err := s.RunSubscriptionPromotion(ctx)
 	if err != nil {
 		t.Fatalf("收录失败: %v", err)
 	}
-	if res.Notified != 3 {
-		t.Fatalf("应通知 3 个人，实际 %d", res.Notified)
+	if res.Notified != promoteThreshold {
+		t.Fatalf("应通知 %d 个人，实际 %d", promoteThreshold, res.Notified)
 	}
-	for _, uid := range []string{u1, u2, u3} {
+	for _, uid := range users {
 		list, unread, err := s.store.ListNotifications(ctx, uid, 10, 0)
 		if err != nil {
 			t.Fatalf("读通知失败: %v", err)
@@ -228,14 +241,11 @@ func TestPromotionNotifiesAffectedUsers(t *testing.T) {
 func TestPromotionIsIdempotent(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "i1")
-	u2 := seedUser(t, s, "i2")
-	u3 := seedUser(t, s, "i3")
-
+	users := seedPromotionUsers(t, s, "i", promoteThreshold)
 	url := "https://example.com/idem.txt"
-	makeSub(t, s, u1, url, model.ListBlock)
-	makeSub(t, s, u2, url, model.ListBlock)
-	makeSub(t, s, u3, url, model.ListBlock)
+	for _, uid := range users {
+		makeSub(t, s, uid, url, model.ListBlock)
+	}
 
 	if _, err := s.RunSubscriptionPromotion(ctx); err != nil {
 		t.Fatalf("第一次收录失败: %v", err)
@@ -249,7 +259,7 @@ func TestPromotionIsIdempotent(t *testing.T) {
 		t.Fatalf("全局层应始终只有 1 条订阅，实际 %d", len(global))
 	}
 	// 通知也不该重复。
-	list, _, _ := s.store.ListNotifications(ctx, u1, 10, 0)
+	list, _, _ := s.store.ListNotifications(ctx, users[0], 10, 0)
 	if len(list) != 1 {
 		t.Fatalf("重复执行不该产生重复通知，实际 %d 条", len(list))
 	}
@@ -262,18 +272,16 @@ func TestPromotionIsIdempotent(t *testing.T) {
 func TestPromotionIgnoresDisabledSubs(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "d1")
-	u2 := seedUser(t, s, "d2")
-	u3 := seedUser(t, s, "d3")
-
+	// 恰好达到阈值的人数，但最后一个人把订阅关掉了 → 有效人数差一个。
+	users := seedPromotionUsers(t, s, "d", promoteThreshold)
 	url := "https://example.com/disabled.txt"
-	makeSub(t, s, u1, url, model.ListBlock)
-	makeSub(t, s, u2, url, model.ListBlock)
-	sub3 := makeSub(t, s, u3, url, model.ListBlock)
-	// 关掉第三个人的。
+	var last *model.Subscription
+	for _, uid := range users {
+		last = makeSub(t, s, uid, url, model.ListBlock)
+	}
 	if err := s.store.UpdateSub(ctx, &model.Subscription{
-		ID: sub3.ID, UserID: u3, ListType: model.ListBlock, Name: sub3.Name,
-		URL: sub3.URL, Format: sub3.Format, Enabled: false,
+		ID: last.ID, UserID: last.UserID, ListType: model.ListBlock, Name: last.Name,
+		URL: last.URL, Format: last.Format, Enabled: false,
 	}); err != nil {
 		t.Fatalf("停用订阅失败: %v", err)
 	}
@@ -295,13 +303,16 @@ func TestPromotionIgnoresDisabledSubs(t *testing.T) {
 func TestPromotionGroupsEquivalentURLs(t *testing.T) {
 	s := newAutoTestServer(t)
 	ctx := context.Background()
-	u1 := seedUser(t, s, "e1")
-	u2 := seedUser(t, s, "e2")
-	u3 := seedUser(t, s, "e3")
-
-	makeSub(t, s, u1, "https://raw.githubusercontent.com/owner/repo/main/list.txt", model.ListBlock)
-	makeSub(t, s, u2, "https://cdn.jsdelivr.net/gh/owner/repo@main/list.txt", model.ListBlock)
-	makeSub(t, s, u3, "https://github.com/owner/repo/raw/main/list.txt", model.ListBlock)
+	users := seedPromotionUsers(t, s, "e", promoteThreshold)
+	// 三种等价链接形态轮流分配给不同用户，凑满阈值人数。
+	forms := []string{
+		"https://raw.githubusercontent.com/owner/repo/main/list.txt",
+		"https://cdn.jsdelivr.net/gh/owner/repo@main/list.txt",
+		"https://github.com/owner/repo/raw/main/list.txt",
+	}
+	for i, uid := range users {
+		makeSub(t, s, uid, forms[i%len(forms)], model.ListBlock)
+	}
 
 	res, err := s.RunSubscriptionPromotion(ctx)
 	if err != nil {
