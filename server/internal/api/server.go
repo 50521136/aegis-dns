@@ -132,6 +132,8 @@ func (s *Server) Handler() http.Handler {
 			// 用户反馈（误杀申诉）。管理员在 /admin/feedback 处理。
 			r.Post("/feedback", s.handleCreateFeedback)
 			r.Get("/feedback", s.handleListMyFeedback)
+			// 追问追加到同一条时间线，而不是再提交一条新反馈。
+			r.Post("/feedback/{id}/reply", s.handleReplyMyFeedback)
 			r.Put("/me/password", s.handleChangePassword)
 			r.Get("/me/dns-config", s.handleDNSConfig)
 			// 全局层规模：规则/订阅页据此提示「管理员已内置，一般无需自己添加」。

@@ -273,6 +273,20 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"email_domain_whitelist": set.EmailDomainWhitelist,
 		"allow_email_change":     set.AllowEmailChange,
 
+		// 反馈邮件通知。
+		"feedback_notify_enabled":    set.FeedbackNotifyEnabled,
+		"feedback_notify_email":      set.FeedbackNotifyEmail,
+		"feedback_notify_user_reply": set.FeedbackNotifyUserReply,
+
+		// 极验 v4：私钥只回「是否已配置」，永不回显明文。
+		"geetest_enabled":     set.GeetestEnabled,
+		"geetest_id":          set.GeetestID,
+		"geetest_key_set":     set.GeetestKeyEncrypted != "",
+		"geetest_on_register": set.GeetestOnRegister,
+		"geetest_on_login":    set.GeetestOnLogin,
+		"geetest_on_forgot":   set.GeetestOnForgot,
+		"geetest_on_feedback": set.GeetestOnFeedback,
+
 		// 主域名开关、清理周期、自助重置上限、租户侧总开关。
 		// 这个 map 是手写的，加字段时这里必须同步 —— 漏了的话设置存进去了
 		// 但前端读不到，表现为「改了没生效」。
@@ -361,6 +375,19 @@ type settingsPatch struct {
 	EmailDomainWhitelist *string `json:"email_domain_whitelist"`
 	AllowEmailChange     *bool   `json:"allow_email_change"`
 
+	FeedbackNotifyEnabled   *bool   `json:"feedback_notify_enabled"`
+	FeedbackNotifyEmail     *string `json:"feedback_notify_email"`
+	FeedbackNotifyUserReply *bool   `json:"feedback_notify_user_reply"`
+
+	GeetestEnabled    *bool   `json:"geetest_enabled"`
+	GeetestID         *string `json:"geetest_id"`
+	GeetestKey        *string `json:"geetest_key"`
+	GeetestKeyClear   *bool   `json:"geetest_key_clear"`
+	GeetestOnRegister *bool   `json:"geetest_on_register"`
+	GeetestOnLogin    *bool   `json:"geetest_on_login"`
+	GeetestOnForgot   *bool   `json:"geetest_on_forgot"`
+	GeetestOnFeedback *bool   `json:"geetest_on_feedback"`
+
 	SMTPEnabled         *bool   `json:"smtp_enabled"`
 	SMTPHost            *string `json:"smtp_host"`
 	SMTPPort            *int    `json:"smtp_port"`
@@ -444,6 +471,20 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setBool(&dst.EnableECS, p.EnableECS)
 	setBool(&dst.EnableDNSSEC, p.EnableDNSSEC)
 	setBool(&dst.AllowEmailChange, p.AllowEmailChange)
+
+	setBool(&dst.FeedbackNotifyEnabled, p.FeedbackNotifyEnabled)
+	setStr(&dst.FeedbackNotifyEmail, p.FeedbackNotifyEmail)
+	setBool(&dst.FeedbackNotifyUserReply, p.FeedbackNotifyUserReply)
+
+	setBool(&dst.GeetestEnabled, p.GeetestEnabled)
+	setStr(&dst.GeetestID, p.GeetestID)
+	setBool(&dst.GeetestOnRegister, p.GeetestOnRegister)
+	setBool(&dst.GeetestOnLogin, p.GeetestOnLogin)
+	setBool(&dst.GeetestOnForgot, p.GeetestOnForgot)
+	setBool(&dst.GeetestOnFeedback, p.GeetestOnFeedback)
+	// 极验私钥不在这里处理：applySettingsPatch 是纯函数，拿不到加密器。
+	// 由调用方（handleUpdateSettings）在保存前用 s.encryptSecret 写入，
+	// 见 geetestKeyAction 的用法。
 	if p.EmailDomainWhitelist != nil {
 		dst.EmailDomainWhitelist = normalizeDomainList(*p.EmailDomainWhitelist)
 	}
@@ -529,6 +570,21 @@ func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	applySettingsPatch(cur, &req)
+
+	// 极验私钥：与 SMTPPass 同样「留空表示不修改」，否则改任何别的设置
+	// 都会把它清空；显式 geetest_key_clear=true 才清空。
+	// 加密必须在保存之前完成 —— 存进去的只能是密文。
+	if req.GeetestKeyClear != nil && *req.GeetestKeyClear {
+		cur.GeetestKeyEncrypted = ""
+	} else if req.GeetestKey != nil && strings.TrimSpace(*req.GeetestKey) != "" {
+		enc, encErr := s.encryptSecret(strings.TrimSpace(*req.GeetestKey))
+		if encErr != nil {
+			writeError(w, http.StatusInternalServerError, CodeInternal,
+				"保存极验私钥失败: "+encErr.Error(), nil)
+			return
+		}
+		cur.GeetestKeyEncrypted = enc
+	}
 
 	// 奖励发放的会员种类必须指向真实存在的档位。放行的话发放时会静默
 	// 回落到默认会员档 —— 管理员以为配了「签到送超级会员」，实际发的是 vip。

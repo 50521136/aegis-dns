@@ -1,5 +1,6 @@
 import { api } from './client'
 import type {
+  CaptchaResult,
   Feedback,
   FeedbackKind,
   FeedbackListResponse,
@@ -60,6 +61,8 @@ export interface FeedbackQuery {
 }
 
 export async function createFeedback(input: {
+  /** 开启人机验证时必填 */
+  captcha?: CaptchaResult
   domain: string
   kind: FeedbackKind
   message: string
@@ -69,6 +72,17 @@ export async function createFeedback(input: {
 }
 
 /** 普通用户看自己的反馈。 */
+/**
+ * 用户在自己的反馈下追问。
+ *
+ * 走这个接口而不是再 POST /feedback —— 后者会在列表里长出一条新记录，
+ * 同一个问题散成好几条，管理员结单时还得挨个翻。
+ */
+export async function replyMyFeedback(id: string, message: string): Promise<Feedback> {
+  const { data } = await api.post<Feedback>(`/feedback/${id}/reply`, { message })
+  return data
+}
+
 export async function listMyFeedback(params: FeedbackQuery = {}): Promise<FeedbackListResponse> {
   const { data } = await api.get<FeedbackListResponse>('/feedback', { params })
   return data

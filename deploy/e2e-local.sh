@@ -928,6 +928,124 @@ else
   ok "无反馈可测，跳过采纳断言"
 fi
 
+hdr "反馈时间线（一条反馈一串消息）"
+# 用户追问此前只能「再提交一条新反馈」，列表里同一个问题散成好几条。
+# 这组断言守的是：追问走 /feedback/{id}/reply 追加到同一条，而不是新开一条。
+if [[ -n "$FBTOK" ]]; then
+  TLINE=$(curl -fsS -X POST "$API/feedback" -H "Authorization: Bearer $FBTOK" -H 'Content-Type: application/json' \
+    -d '{"domain":"thread-e2e.example.com","kind":"wrong_block","message":"时间线首条"}')
+  TLID=$(echo "$TLINE" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
+  if [[ -n "$TLID" ]]; then
+    ok "建临时反馈成功（$TLID）"
+    # 管理员回复 + 用户追问，两条都该进同一条时间线
+    curl -fsS -X PUT "$API/admin/feedback/$TLID" -H "Authorization: Bearer $ADMTOK" \
+      -H 'Content-Type: application/json' -d '{"reply":"管理员回复正文"}' >/dev/null
+    curl -fsS -X POST "$API/feedback/$TLID/reply" -H "Authorization: Bearer $FBTOK" \
+      -H 'Content-Type: application/json' -d '{"message":"用户追问正文"}' >/dev/null
+    TLLIST=$(curl -fsS "$API/feedback" -H "Authorization: Bearer $FBTOK")
+    TCOUNT=$(echo "$TLLIST" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for f in d.get('items') or []:
+    if f.get('id')=='$TLID':
+        print(len(f.get('messages') or [])); break
+else: print(0)" 2>/dev/null)
+    [[ "$TCOUNT" == "3" ]] && ok "一条反馈里 3 条消息（首条+回复+追问）" \
+      || bad "时间线条数应为 3，实际 $TCOUNT"
+
+    # 追问后用户侧不应多出一条新反馈：这正是「回复又是一条」的原始症状
+    DUP=$(echo "$TLLIST" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(sum(1 for f in (d.get('items') or []) if f.get('domain')=='thread-e2e.example.com'))" 2>/dev/null)
+    [[ "$DUP" == "1" ]] && ok "追问不会长出第二条反馈（同域名仍 1 条）" \
+      || bad "追问后同域名有 $DUP 条反馈（应为 1）"
+
+    # 追问必须把状态改回 open，否则管理员按「待处理」筛不到，追问等于石沉大海
+    TSTATUS=$(echo "$TLLIST" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for f in d.get('items') or []:
+    if f.get('id')=='$TLID': print(f.get('status')); break" 2>/dev/null)
+    [[ "$TSTATUS" == "open" ]] && ok "用户追问后状态回到 open" \
+      || bad "追问后状态应为 open，实际 $TSTATUS"
+  else
+    bad "建临时反馈失败，无法验证时间线: $(echo "$TLINE" | head -c 160)"
+  fi
+else
+  bad "拿不到用户令牌，无法验证反馈时间线"
+fi
+
+hdr "反馈邮件通知"
+# 两个开关必须能存能读；真正的发信在本地 e2e 里不测（没有 SMTP），
+# 但配置读写漏任何一处都会表现成「开了开关没反应」。
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"feedback_notify_enabled":true,"feedback_notify_email":"ops@example.com","feedback_notify_user_reply":false}' >/dev/null
+FNSET=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$FNSET" | grep -q '"feedback_notify_enabled":true' && ok "反馈通知总开关可持久化" \
+  || bad "反馈通知总开关没存住"
+echo "$FNSET" | grep -q '"feedback_notify_email":"ops@example.com"' && ok "通知收件地址可持久化" \
+  || bad "通知收件地址没存住"
+echo "$FNSET" | grep -q '"feedback_notify_user_reply":false' && ok "「回复时通知用户」可单独关闭" \
+  || bad "回复通知开关没生效"
+
+# 只改一个字符串字段时，别把这两个开关顺手打回默认值（settingsPatch 的指针语义）
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"feedback_notify_email":"ops2@example.com"}' >/dev/null
+FNPART=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$FNPART" | grep -q '"feedback_notify_enabled":true' && ok "部分更新不会关掉通知总开关" \
+  || bad "部分更新把通知总开关打回 false（settingsPatch 指针语义坏了）"
+
+hdr "人机验证（极验 v4）"
+# 三个层次：参数可存、私钥不回显、没配参数时按「未启用」处理。
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"geetest_enabled":true,"geetest_id":"e2e-captcha-id","geetest_key":"e2e-captcha-key","geetest_on_register":true,"geetest_on_login":false,"geetest_on_forgot":true,"geetest_on_feedback":false}' >/dev/null
+GSET=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$GSET" | grep -q '"geetest_id":"e2e-captcha-id"' && ok "极验 captcha_id 可持久化" || bad "captcha_id 没存住"
+echo "$GSET" | grep -q '"geetest_key_set":true' && ok "私钥只回「已配置」标记" || bad "缺 geetest_key_set"
+echo "$GSET" | grep -q 'e2e-captcha-key' && bad "响应里出现了极验私钥明文" || ok "响应里没有极验私钥明文"
+echo "$GSET" | grep -q '"geetest_on_register":true' && ok "注册场景开关可持久化" || bad "注册场景开关没存住"
+echo "$GSET" | grep -q '"geetest_on_login":false' && ok "登录场景开关可单独关闭" || bad "登录场景开关没生效"
+
+# 公开配置必须下发 captcha_id 与场景表，但绝不能带私钥
+GCAP=$(curl -fsS "$API/public/config")
+echo "$GCAP" | grep -q '"captcha_id":"e2e-captcha-id"' && ok "公开配置下发 captcha_id" || bad "公开配置缺 captcha_id"
+echo "$GCAP" | grep -q '"captcha"' && ok "公开配置带 captcha 段" || bad "公开配置缺 captcha 段"
+echo "$GCAP" | grep -q 'e2e-captcha-key' && bad "公开配置泄露了极验私钥" || ok "公开配置不含极验私钥"
+
+# 开了注册验证但请求不带验证参数 → 必须 422。
+# 这条是整条链路的唯一硬证据：只断言「配置存住了」的话，handler 里漏判也能过。
+CAPREG=$(curl -s -o /tmp/cap1.json -w "%{http_code}" -X POST "$API/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"capnocaptcha1","password":"Str0ngPass123","email":"cap1@example.com"}')
+[[ "$CAPREG" == "422" ]] && ok "开了注册验证但未带参数被拒（422）" \
+  || bad "注册未带验证参数应 422，实际 $CAPREG: $(head -c 120 /tmp/cap1.json)"
+
+# 关掉场景开关后，同样的请求应当放行到业务层（不再因为缺验证被拒）。
+# 注意：这里不要求注册成功（可能撞邮箱验证/白名单），只要求「不再 422 缺验证」。
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"geetest_on_register":false}' >/dev/null
+CAPOFF=$(curl -s -o /tmp/cap2.json -w "%{http_code}" -X POST "$API/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"capnocaptcha2","password":"Str0ngPass123","email":"cap2@example.com"}')
+[[ "$CAPOFF" != "422" ]] && ok "关掉注册验证后不再因缺验证被拒（$CAPOFF）" \
+  || bad "关掉注册验证后仍返回 422: $(head -c 120 /tmp/cap2.json)"
+
+# 没配参数（私钥清空）时必须按「未启用」处理，不能把注册登录锁死。
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"geetest_key_clear":true,"geetest_on_register":true}' >/dev/null
+GCLEAR=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK")
+echo "$GCLEAR" | grep -q '"geetest_key_set":false' && ok "私钥可显式清空" || bad "私钥清除没生效"
+CAPNOKEY=$(curl -s -o /tmp/cap3.json -w "%{http_code}" -X POST "$API/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"capnocaptcha3","password":"Str0ngPass123","email":"cap3@example.com"}')
+[[ "$CAPNOKEY" != "422" ]] && ok "没填私钥时不当验证开启（不锁死注册，$CAPNOKEY）" \
+  || bad "私钥清空后仍要求验证（会把自己锁在门外）: $(head -c 120 /tmp/cap3.json)"
+
+# 收尾：把验证关掉，避免影响后面的用例（它会让所有注册入口 422）
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"geetest_enabled":false,"geetest_id":"","geetest_on_register":false,"geetest_on_forgot":false,"geetest_on_login":false,"geetest_on_feedback":false}' >/dev/null
+
 hdr "DNS 端口设置"
 # 读取当前端口配置
 DPORTS=$(curl -fsS "$API/admin/dns/ports" -H "Authorization: Bearer $ADMTOK")

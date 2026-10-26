@@ -138,6 +138,12 @@ type Feedback struct {
 	CreatedAt  int64  `json:"created_at"`
 	UpdatedAt  int64  `json:"updated_at"`
 
+	// Messages 是这条反馈的完整时间线（用户与管理员往返）。
+	//
+	// 只有详情/列表带 messages 时才有值：列表默认也带（一屏就几十条，
+	// 每条的消息数不多），避免前端为每条反馈再发一次请求。
+	Messages []FeedbackMessage `json:"messages,omitempty"`
+
 	// --- AI 诊断（异步，独立于 Status）---
 	//
 	// 单独维护一套字段而不是塞进 AdminReply：诊断结论要保留
@@ -154,6 +160,25 @@ type Feedback struct {
 	AIModel      string `json:"ai_model,omitempty"`
 	AIRanAt      int64  `json:"ai_ran_at,omitempty"`
 }
+
+// FeedbackMessage 是反馈时间线上的一条消息。
+//
+// Role 只有 user / admin 两种。Author 是提交时的用户名快照 ——
+// 用户改名或注销后，时间线仍然读得懂「这是谁说的」。
+type FeedbackMessage struct {
+	ID         string `json:"id"`
+	FeedbackID string `json:"feedback_id"`
+	Role       string `json:"role"`
+	Author     string `json:"author"`
+	Content    string `json:"content"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+// 反馈消息角色。
+const (
+	FeedbackRoleUser  = "user"
+	FeedbackRoleAdmin = "admin"
+)
 
 // 诊断状态与动作枚举。
 const (
@@ -452,6 +477,37 @@ type GlobalSettings struct {
 	// AllowEmailChange 允许用户自己更换邮箱（需新邮箱验证码）。
 	AllowEmailChange bool `json:"allow_email_change"`
 
+	// --- 反馈邮件通知 ---
+	//
+	// 反馈是「用户报障」的唯一入口，但管理员不会一直盯着面板；
+	// 没有邮件提醒的话，一条误杀申诉可能压一整天。
+	FeedbackNotifyEnabled bool `json:"feedback_notify_enabled"`
+	// FeedbackNotifyEmail 是新反馈提醒的收件地址，多个用逗号分隔。
+	// 留空时自动用所有 role=admin 账号的邮箱 —— 多数部署只有一个管理员，
+	// 让他再去填一遍自己的邮箱纯属多余。
+	FeedbackNotifyEmail string `json:"feedback_notify_email"`
+	// FeedbackNotifyUserReply 为真时，管理员回复也会给提交者发一封邮件。
+	// 单独一个开关：有人只想要「来新工单」提醒，不想给用户发信。
+	FeedbackNotifyUserReply bool `json:"feedback_notify_user_reply"`
+
+	// --- 极验 v4 行为验证 ---
+	//
+	// 只作用于「会被人脚本化刷」的入口：注册、登录、找回密码、提交反馈。
+	// 解析请求（53/853/443）绝不加验证 —— 那是每毫秒都在跑的路径，
+	// 加一层验证等于把整个 DNS 服务废掉。
+	//
+	// GeetestKeyEncrypted 与 AIKeyEncrypted 同样处理：AES-GCM 密文，
+	// 密钥由 AEGIS_SECRET 派生，接口只回「已配置」，永不回显明文。
+	GeetestEnabled      bool   `json:"geetest_enabled"`
+	GeetestID           string `json:"geetest_id"`
+	GeetestKeyEncrypted string `json:"-"`
+	// 每个入口单独开关：管理员可能只担心注册被刷，而不想让老用户
+	// 每次登录都过一遍验证 —— 一刀切会把人赶走。
+	GeetestOnRegister bool `json:"geetest_on_register"`
+	GeetestOnLogin    bool `json:"geetest_on_login"`
+	GeetestOnForgot   bool `json:"geetest_on_forgot"`
+	GeetestOnFeedback bool `json:"geetest_on_feedback"`
+
 	// EnableECS 为真时把客户端的 /24 网段通过 EDNS Client Subnet 传给上游，
 	// 让 CDN 返回离用户更近的节点。
 	//
@@ -562,10 +618,17 @@ func DefaultSettings() GlobalSettings {
 		CheckinBonusDays:  7,
 
 		// 邮件默认关闭：没配 SMTP 就打开验证会让所有人都注册不了。
-		SMTPEnabled:          false,
-		SMTPPort:             465,
-		SMTPTLS:              "tls",
-		EmailVerifyRegister:  false,
+		SMTPEnabled:             false,
+		SMTPPort:                465,
+		SMTPTLS:                 "tls",
+		EmailVerifyRegister:     false,
+		FeedbackNotifyEnabled:   true,
+		FeedbackNotifyUserReply: true,
+		// 验证默认：注册与找回密码开（这两处最容易被脚本刷），
+		// 登录与反馈关（登录每次都验证会把老用户赶走，反馈量本来就小）。
+		// 注意总开关 GeetestEnabled 默认 false，没填参数时这些都不生效。
+		GeetestOnRegister:    true,
+		GeetestOnForgot:      true,
 		EmailDomainWhitelist: "",
 		AllowEmailChange:     true,
 	}

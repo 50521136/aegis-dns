@@ -30,12 +30,23 @@ func mailConfig(set *model.GlobalSettings) mail.Config {
 // 否则这个接口就成了「批量探测哪些邮箱在本站注册过」的工具。
 func (s *Server) handleSendEmailCode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email   string `json:"email"`
-		Purpose string `json:"purpose"`
+		Email   string       `json:"email"`
+		Purpose string       `json:"purpose"`
+		Captcha *captchaBody `json:"captcha"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+
+	// 找回密码的发码接口是真正的滥用入口：它能给任意邮箱发信。
+	// 注册的发码不在这里挡 —— 注册本身已经有验证，重复验两道只会劝退用户。
+	if strings.TrimSpace(req.Purpose) == store.EmailPurposeReset {
+		if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneForgot, req.Captcha); !ok {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
+			return
+		}
+	}
+
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	if !looksLikeEmail(email) {
 		writeError(w, http.StatusBadRequest, CodeValidationFailed, "邮箱格式不正确", nil)

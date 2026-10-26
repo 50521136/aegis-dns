@@ -355,6 +355,41 @@ export interface AdminSettings {
   smtp_tls: string
   email_verify_register: boolean
   max_sub_entries: number
+
+  /**
+   * 反馈邮件通知。
+   *
+   * 反馈是「用户报障」的唯一入口，而管理员不会一直盯着面板 ——
+   * 没有邮件提醒，一条误杀申诉可能压一整天。
+   */
+  feedback_notify_enabled: boolean
+  /** 新反馈提醒的收件地址，多个用逗号分隔；留空自动取所有管理员账号的邮箱 */
+  feedback_notify_email: string
+  /** 管理员回复时是否也给提交者发一封 */
+  feedback_notify_user_reply: boolean
+
+  /**
+   * 极验 v4 行为验证。
+   *
+   * 只作用于会被脚本刷的入口（注册 / 登录 / 找回密码 / 提交反馈），
+   * 解析请求绝不加 —— 那是每毫秒都在跑的路径。
+   */
+  geetest_enabled: boolean
+  geetest_id: string
+  /** 只读：私钥只回「是否已配置」，永不回显明文 */
+  geetest_key_set: boolean
+  geetest_on_register: boolean
+  geetest_on_login: boolean
+  geetest_on_forgot: boolean
+  geetest_on_feedback: boolean
+}
+
+/** PUT /admin/settings 里只写不读的极验私钥字段。 */
+export interface GeetestKeyPatch {
+  /** 留空表示不修改 */
+  geetest_key?: string
+  /** 显式清空已保存的私钥 */
+  geetest_key_clear?: boolean
 }
 
 export interface SystemInfo {
@@ -449,7 +484,28 @@ export interface Feedback {
   ai_guard_notes?: string
   ai_model?: string
   ai_ran_at?: number
+
+  /**
+   * 时间线：用户与管理员往返的全部消息。
+   *
+   * 此前只有单个 admin_reply，用户追问只能再提交一条新反馈，
+   * 列表里于是出现「同一个问题的第 2 条、第 3 条」。
+   */
+  messages?: FeedbackMessage[]
 }
+
+/** 反馈时间线上的一条消息。 */
+export interface FeedbackMessage {
+  id: string
+  feedback_id: string
+  role: FeedbackRole
+  /** 提交时的用户名快照 */
+  author: string
+  content: string
+  created_at: string
+}
+
+export type FeedbackRole = 'user' | 'admin'
 
 export type AIDiagStatus = '' | 'pending' | 'done' | 'failed'
 export type AIVerdict = 'wrong_block' | 'correct' | 'unclear'
@@ -479,6 +535,24 @@ export interface AITestResult {
     action: { type: string; domains?: string[] }
     reply: string
   }
+}
+
+/** 极验 v4 的公开配置（私钥永不出后端）。 */
+export interface CaptchaConfig {
+  enabled: boolean
+  captcha_id: string
+  /** 每个入口是否要求验证 */
+  scenes: Partial<Record<CaptchaScene, boolean>>
+}
+
+export type CaptchaScene = 'register' | 'login' | 'forgot' | 'feedback'
+
+/** 前端 getValidate() 返回的四个字段。 */
+export interface CaptchaResult {
+  lot_number: string
+  captcha_output: string
+  pass_token: string
+  gen_time: string
 }
 
 export type FeedbackKind = 'wrong_block' | 'wrong_allow' | 'other'

@@ -14,6 +14,7 @@ import { getPublicConfig, sendEmailCode } from '@/api/member'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
+import { GeetestCaptcha, useCaptchaGate } from '@/components/GeetestCaptcha'
 import type { DnsConfig } from '@/api/types'
 
 const schema = z.object({
@@ -62,6 +63,7 @@ export default function Register() {
   const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
   const cfg = cfgQuery.data
   const allowedDomains = cfg?.email_domains ?? []
+  const gate = useCaptchaGate(cfg?.captcha, 'register')
 
   // 后缀列表拿到后默认选中第一个，用户只需要填用户名
   useEffect(() => {
@@ -100,13 +102,18 @@ export default function Register() {
 
   const onSubmit = async (values: FormValues) => {
     try {
-      const res = await registerUser({
-        username: values.username,
-        email: values.email,
-        password: values.password,
-        invite_code: values.invite_code?.trim() || undefined,
-        email_code: values.email_code?.trim() || undefined,
-      })
+      // 人机验证在真正提交前弹：需要在最前面挡住脚本批量注册，
+      // 又不想让用户填完表单才发现要验证两次。
+      const res = await gate.run((captcha) =>
+        registerUser({
+          username: values.username,
+          email: values.email,
+          password: values.password,
+          invite_code: values.invite_code?.trim() || undefined,
+          email_code: values.email_code?.trim() || undefined,
+          captcha,
+        }),
+      )
       toast.success('注册成功', '你的专属 DNS 地址已生成')
       if (res.dns_config) {
         setDnsConfig(res.dns_config)
@@ -312,6 +319,11 @@ export default function Register() {
         <Button type="submit" className="w-full" size="lg" loading={isSubmitting}>
           注册
         </Button>
+        <GeetestCaptcha
+          config={cfg?.captcha}
+          handleRef={gate.handleRef}
+          onError={(m) => toast.error('验证组件异常', m)}
+        />
       </form>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">

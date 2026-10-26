@@ -257,12 +257,20 @@
   html {
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+    /* 横向溢出的最后一道防线。
+       用 clip 而不是 hidden：hidden 会让 html/body 变成滚动容器，
+       从而静默失效所有 position: sticky 的后代（侧栏、页头都会跟着坏）。
+       真正的溢出仍要逐处修（min-w-0 / break-all），这一层只是兜底 ——
+       它能把「整页可以左右滑」降级成「个别块被裁一点」。 */
+    overflow-x: clip;
   }
 
   body {
     @apply bg-background text-foreground antialiased;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
     min-height: 100dvh;
+    /* body 也要写一遍：只写 html 时，body 自己的溢出仍会撑出滚动条 */
+    overflow-x: clip;
     /* 画布上两团极淡的静态漫射光 */
     background-image: radial-gradient(1200px 700px at 12% -8%, var(--ambient-a), transparent 62%),
       radial-gradient(1000px 620px at 92% 4%, var(--ambient-b), transparent 58%);

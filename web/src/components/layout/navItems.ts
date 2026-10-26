@@ -8,6 +8,7 @@ import {
   ScrollText,
   Settings,
   Crown,
+  KeyRound,
   Shield,
   SlidersHorizontal,
   Users,
@@ -58,6 +59,8 @@ export const navItems: NavItem[] = [
   { to: '/admin/email', label: '邮箱', icon: Mail, adminOnly: true, group: 'admin' },
   { to: '/admin/dns', label: 'DNS 设置', icon: Activity, adminOnly: true, group: 'admin' },
   { to: '/admin/general', label: '常规设置', icon: SlidersHorizontal, adminOnly: true, group: 'admin' },
+  // 安全验证单独一项：它是出事时才去找的开关，混在四十多个设置项里找不到
+  { to: '/admin/security', label: '安全验证', icon: KeyRound, adminOnly: true, group: 'admin' },
   { to: '/admin/system', label: '系统状态', icon: Cpu, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/logs', label: '全局日志', icon: ScrollText, adminOnly: true, mobile: true, group: 'admin' },
   { to: '/admin/rules', label: '全局规则', icon: ListFilter, adminOnly: true, mobile: true, group: 'admin' },

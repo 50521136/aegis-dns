@@ -366,6 +366,10 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		// 允许的邮箱后缀：注册页据此把后缀做成下拉，只能选不能填。
 		// 后台没配就返回空数组，注册页退化成自由输入。
 		"email_domains": splitDomainList(set.EmailDomainWhitelist),
+		// 极验验证配置：登录/注册/找回密码页据此决定要不要初始化验证组件。
+		// 并进这个接口而不是单开一个，省掉首屏一次额外往返。
+		// 只暴露 captcha_id，私钥永不出后端。
+		"captcha": s.captchaPublicConfig(set),
 	})
 }
 

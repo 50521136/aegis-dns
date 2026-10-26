@@ -19,6 +19,8 @@ type registerRequest struct {
 	InviteCode string `json:"invite_code"`
 	// EmailCode 在开启「注册邮箱验证」时必填。
 	EmailCode string `json:"email_code"`
+	// Captcha 是极验验证参数；后台开了注册验证时必填。
+	Captcha *captchaBody `json:"captcha"`
 }
 
 // authResponse 是注册/登录的统一响应（文档 9.2）。
@@ -38,6 +40,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	req.Email = strings.TrimSpace(req.Email)
+
+	// 人机验证放在最前面：脚本刷注册时不该消耗后面的任何资源
+	// （bcrypt 一次就是几十毫秒，还带内存）。
+	if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneRegister, req.Captcha); !ok {
+		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
+		return
+	}
 
 	if err := validateUsername(req.Username); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
@@ -183,10 +192,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username string       `json:"username"`
+		Password string       `json:"password"`
+		Captcha  *captchaBody `json:"captcha"`
 	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneLogin, req.Captcha); !ok {
+		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
 		return
 	}
 

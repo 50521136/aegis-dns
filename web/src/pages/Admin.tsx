@@ -47,6 +47,7 @@ import type { AdminSettings, User } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
 import { AiSettingsCard } from '@/components/AiSettingsCard'
+import { CaptchaSettingsCard } from '@/components/CaptchaSettingsCard'
 import { DnsPortCard } from '@/components/DnsPortCard'
 import { downloadBackup, testUpstream, testProxy, type ProxyTestResult, type UpstreamTestResult } from '@/api/admin'
 import { PasswordCard, UpdateCard } from './Settings'
@@ -134,6 +135,11 @@ const settingsSchema = z.object({
   email_verify_register: z.boolean(),
   email_domain_whitelist: z.string(),
   allow_email_change: z.boolean(),
+  // 反馈邮件通知：反馈是用户报障的唯一入口，没有提醒的话一条误杀申诉
+  // 可能压一整天 —— 管理员不会一直盯着面板。
+  feedback_notify_enabled: z.boolean(),
+  feedback_notify_email: z.string(),
+  feedback_notify_user_reply: z.boolean(),
   enable_ecs: z.boolean(),
   enable_dnssec: z.boolean(),
   enable_doh: z.boolean(),
@@ -724,6 +730,49 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
               </div>
             </CardContent>
           </Card>
+
+          {/* 反馈提醒：反馈是报障的唯一入口，没有邮件的话用户提交完就没人知道。
+              与「邮箱策略」分开成一张卡，是因为它属于运营通知，不是注册策略。 */}
+          <Card>
+            <CardHeader>
+              <CardTitle>反馈邮件通知</CardTitle>
+              <CardDescription>
+                用户提交反馈时提醒管理员，管理员回复时通知提交者。
+                只在「邮件服务」已启用时生效，发信失败不影响反馈本身。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <ToggleRow
+                title="启用反馈邮件通知"
+                desc={
+                  form.watch('smtp_enabled')
+                    ? '总开关。关掉后两条通知都不发'
+                    : '邮件服务未启用，打开这个开关也不会有信发出 —— 请先在上面的「邮件服务」里配置 SMTP'
+                }
+                checked={Boolean(form.watch('feedback_notify_enabled'))}
+                onChange={(v) => form.setValue('feedback_notify_enabled', v)}
+              />
+              <div className="space-y-2">
+                <Label htmlFor="feedback_notify_email">新反馈提醒发给谁</Label>
+                <Input
+                  id="feedback_notify_email"
+                  className="font-mono"
+                  placeholder="留空 = 自动发给所有管理员账号的邮箱"
+                  {...form.register('feedback_notify_email')}
+                />
+                <p className="text-xs text-muted-foreground">
+                  多个地址用逗号分隔。留空时自动取本站所有管理员账号绑定的邮箱 ——
+                  多数部署只有一个管理员，让他再去填一遍自己的邮箱纯属多余。
+                </p>
+              </div>
+              <ToggleRow
+                title="回复时也通知提交者"
+                desc="给用户的邮箱发一封「你的反馈已回复」。有人只想要来新工单的提醒，不想主动给用户发信，所以拆成单独开关"
+                checked={Boolean(form.watch('feedback_notify_user_reply'))}
+                onChange={(v) => form.setValue('feedback_notify_user_reply', v)}
+              />
+            </CardContent>
+          </Card>
         </>
       )}
 
@@ -981,6 +1030,37 @@ export function AdminDnsPage() {
       icon={<Activity className="size-5" />}
     >
       <SettingsPanel section="dns" />
+    </AdminPage>
+  )
+}
+
+/**
+ * 安全验证：极验 v4 与各入口开关。
+ *
+ * 单独成一个页面而不是塞进「常规设置」：常规设置里已经有访问注册、租户开关、
+ * 日志、更新、代理四张卡，再加一张只会让「验证开没开」这件事更难被找到 ——
+ * 而它恰恰是出事时才去找的东西。
+ */
+export function AdminSecurityPage() {
+  return (
+    <AdminPage
+      title="安全验证"
+      description="极验 v4 人机验证：注册、登录、找回密码、提交反馈的独立开关"
+      icon={<ShieldCheck className="size-5" />}
+    >
+      <div className="min-w-0 space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>哪些地方需要验证</CardTitle>
+            <CardDescription>
+              被脚本刷的入口才需要验证；解析请求永远不加，那是每毫秒都在跑的路径。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <CaptchaSettingsCard />
+          </CardContent>
+        </Card>
+      </div>
     </AdminPage>
   )
 }

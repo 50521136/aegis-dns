@@ -318,3 +318,60 @@ func htmlEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;")
 	return r.Replace(s)
 }
+
+// FeedbackNotice 是一封反馈通知邮件的内容。
+//
+// 反馈正文是用户原文，可能很长、可能带换行 —— 这里保留换行
+// （white-space:pre-wrap），否则一整段挤成一行完全没法读。
+type FeedbackNotice struct {
+	Title   string // 「新反馈」/「你的反馈已回复」
+	Domain  string // 站点域名，用于页脚与标题
+	Kind    string // 问题类型或「反馈回复」
+	Author  string // 谁说的
+	Target  string // 相关域名，可空
+	Time    string
+	Content string
+	Hint    string // 给收件人的下一步提示
+}
+
+// FeedbackEmail 生成反馈通知邮件（HTML 版）。
+func FeedbackEmail(n FeedbackNotice) string {
+	var b strings.Builder
+
+	b.WriteString(`<h2 style="margin:0 0 4px;font-size:18px;color:` + colorInk + `;">` + htmlEscape(n.Title) + `</h2>`)
+	b.WriteString(`<p style="margin:0 0 16px;color:` + colorMute + `;font-size:13px;">` + htmlEscape(n.Domain) + `</p>`)
+
+	// 元信息表：类型 / 提交者 / 域名 / 时间
+	b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 16px;font-size:13px;">`)
+	meta := [][2]string{
+		{"类型", n.Kind},
+		{"来自", n.Author},
+	}
+	if n.Target != "" {
+		meta = append(meta, [2]string{"域名", n.Target})
+	}
+	if n.Time != "" {
+		meta = append(meta, [2]string{"时间", n.Time})
+	}
+	for _, kv := range meta {
+		if kv[1] == "" {
+			continue
+		}
+		b.WriteString(`<tr>`)
+		b.WriteString(`<td style="padding:3px 0;color:` + colorMute + `;width:64px;vertical-align:top;">` + htmlEscape(kv[0]) + `</td>`)
+		b.WriteString(`<td style="padding:3px 0;color:` + colorInk + `;">` + htmlEscape(kv[1]) + `</td>`)
+		b.WriteString(`</tr>`)
+	}
+	b.WriteString(`</table>`)
+
+	// 正文块
+	b.WriteString(`<div style="background:` + colorBg + `;border-left:3px solid ` + colorBrand + `;border-radius:8px;padding:14px 16px;margin:0 0 16px;">`)
+	b.WriteString(`<p style="margin:0;color:` + colorInk + `;font-size:14px;line-height:1.75;white-space:pre-wrap;">` + htmlEscape(n.Content) + `</p>`)
+	b.WriteString(`</div>`)
+
+	if n.Hint != "" {
+		b.WriteString(`<p style="margin:0;color:` + colorMute + `;font-size:13px;line-height:1.7;">` + htmlEscape(n.Hint) + `</p>`)
+	}
+
+	return wrapEmail(n.Title, b.String())
+}

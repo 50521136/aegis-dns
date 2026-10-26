@@ -10,6 +10,9 @@ import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
+import { getPublicConfig } from '@/api/member'
+import { useQuery } from '@tanstack/react-query'
+import { GeetestCaptcha, useCaptchaGate } from '@/components/GeetestCaptcha'
 
 const schema = z.object({
   username: z.string().min(1, '请输入用户名'),
@@ -21,6 +24,9 @@ type FormValues = z.infer<typeof schema>
 export default function Login() {
   const { login } = useAuth()
   const toast = useToast()
+  // 极验配置：并进 /public/config，与注册页共用同一份缓存。
+  const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
+  const gate = useCaptchaGate(cfgQuery.data?.captcha, 'login')
   const navigate = useNavigate()
   const location = useLocation()
   const [showPassword, setShowPassword] = useState(false)
@@ -35,7 +41,9 @@ export default function Login() {
 
   const onSubmit = async (values: FormValues) => {
     try {
-      const u = await login(values.username, values.password)
+      // 验证通过后才真正发登录请求：不需要验证时 gate.run 直接放行，
+      // 不额外打扰用户。
+      const u = await gate.run((captcha) => login(values.username, values.password, captcha))
       toast.success('登录成功', `欢迎回来，${values.username}`)
       // 管理员默认进管理后台：他没有租户侧功能，落到 /app 会被 UserOnlyRoute 再弹一次
       const fallback = u.role === 'admin' ? '/admin' : '/app'
@@ -92,6 +100,12 @@ export default function Login() {
           {!isSubmitting && <LogIn />}
           登录
         </Button>
+        {/* 极验宿主：bind 模式下不可见，提交时由 gate.run 触发弹窗 */}
+        <GeetestCaptcha
+          config={cfgQuery.data?.captcha}
+          handleRef={gate.handleRef}
+          onError={(m) => toast.error('验证组件异常', m)}
+        />
       </form>
 
       <div className="mt-4 text-center">

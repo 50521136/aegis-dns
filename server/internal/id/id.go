@@ -21,6 +21,8 @@ const (
 	PrefixSub  = "sub_"
 	// PrefixFeedback 用于用户反馈。
 	PrefixFeedback = "fb_"
+	// PrefixFeedbackMsg 用于反馈时间线上的单条消息。
+	PrefixFeedbackMsg = "fbm_"
 )
 
 var (

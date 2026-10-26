@@ -238,6 +238,13 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 		{"checkin_enabled", &set.CheckinEnabled},
 		{"email_verify_register", &set.EmailVerifyRegister},
 		{"allow_email_change", &set.AllowEmailChange},
+		{"feedback_notify_enabled", &set.FeedbackNotifyEnabled},
+		{"feedback_notify_user_reply", &set.FeedbackNotifyUserReply},
+		{"geetest_enabled", &set.GeetestEnabled},
+		{"geetest_on_register", &set.GeetestOnRegister},
+		{"geetest_on_login", &set.GeetestOnLogin},
+		{"geetest_on_forgot", &set.GeetestOnForgot},
+		{"geetest_on_feedback", &set.GeetestOnFeedback},
 		{"enable_ecs", &set.EnableECS},
 		{"enable_dnssec", &set.EnableDNSSEC},
 	} {
@@ -251,6 +258,9 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	set.SMTPPort = intOr(kv["smtp_port"], set.SMTPPort)
 	set.SMTPUser = strOr(kv["smtp_user"], set.SMTPUser)
 	set.SMTPPass = strOr(kv["smtp_pass"], set.SMTPPass)
+	set.FeedbackNotifyEmail = strOr(kv["feedback_notify_email"], set.FeedbackNotifyEmail)
+	set.GeetestID = strOr(kv["geetest_id"], set.GeetestID)
+	set.GeetestKeyEncrypted = strOr(kv["geetest_key"], set.GeetestKeyEncrypted)
 	set.SMTPFrom = strOr(kv["smtp_from"], set.SMTPFrom)
 	set.SMTPFromName = strOr(kv["smtp_from_name"], set.SMTPFromName)
 	set.SMTPTLS = strOr(kv["smtp_tls"], set.SMTPTLS)
@@ -349,19 +359,29 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"allow_user_invite":     boolStr(set.AllowUserInvite),
 		"user_invite_max_codes": strconv.Itoa(set.UserInviteMaxCodes),
 
-		"smtp_enabled":           boolStr(set.SMTPEnabled),
-		"smtp_host":              set.SMTPHost,
-		"smtp_port":              strconv.Itoa(set.SMTPPort),
-		"smtp_user":              set.SMTPUser,
-		"smtp_pass":              set.SMTPPass,
-		"smtp_from":              set.SMTPFrom,
-		"smtp_from_name":         set.SMTPFromName,
-		"smtp_tls":               set.SMTPTLS,
-		"email_verify_register":  boolStr(set.EmailVerifyRegister),
-		"email_domain_whitelist": set.EmailDomainWhitelist,
-		"allow_email_change":     boolStr(set.AllowEmailChange),
-		"enable_ecs":             boolStr(set.EnableECS),
-		"enable_dnssec":          boolStr(set.EnableDNSSEC),
+		"smtp_enabled":               boolStr(set.SMTPEnabled),
+		"smtp_host":                  set.SMTPHost,
+		"smtp_port":                  strconv.Itoa(set.SMTPPort),
+		"smtp_user":                  set.SMTPUser,
+		"smtp_pass":                  set.SMTPPass,
+		"smtp_from":                  set.SMTPFrom,
+		"smtp_from_name":             set.SMTPFromName,
+		"smtp_tls":                   set.SMTPTLS,
+		"email_verify_register":      boolStr(set.EmailVerifyRegister),
+		"email_domain_whitelist":     set.EmailDomainWhitelist,
+		"allow_email_change":         boolStr(set.AllowEmailChange),
+		"feedback_notify_enabled":    boolStr(set.FeedbackNotifyEnabled),
+		"feedback_notify_email":      set.FeedbackNotifyEmail,
+		"feedback_notify_user_reply": boolStr(set.FeedbackNotifyUserReply),
+		"geetest_enabled":            boolStr(set.GeetestEnabled),
+		"geetest_id":                 set.GeetestID,
+		"geetest_key":                set.GeetestKeyEncrypted,
+		"geetest_on_register":        boolStr(set.GeetestOnRegister),
+		"geetest_on_login":           boolStr(set.GeetestOnLogin),
+		"geetest_on_forgot":          boolStr(set.GeetestOnForgot),
+		"geetest_on_feedback":        boolStr(set.GeetestOnFeedback),
+		"enable_ecs":                 boolStr(set.EnableECS),
+		"enable_dnssec":              boolStr(set.EnableDNSSEC),
 
 		"stats_retention_days": strconv.Itoa(set.StatsRetentionD),
 		"max_id_resets":        strconv.Itoa(set.MaxIDResets),

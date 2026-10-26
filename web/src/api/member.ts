@@ -1,5 +1,12 @@
 import { api } from './client'
-import type { Announcement, AnnouncementList, InviteCode, MyMembership } from './types'
+import type {
+  Announcement,
+  AnnouncementList,
+  CaptchaConfig,
+  CaptchaResult,
+  InviteCode,
+  MyMembership,
+} from './types'
 
 // === 会员 ===
 
@@ -116,11 +123,15 @@ export async function deleteAnnouncement(id: number): Promise<void> {
 // === 邮件 ===
 
 /** 发送邮箱验证码（注册验证 / 找回密码） */
-export async function sendEmailCode(email: string, purpose: 'register' | 'reset' | 'change') {
+export async function sendEmailCode(
+  email: string,
+  purpose: 'register' | 'reset' | 'change',
+  captcha?: CaptchaResult,
+) {
   // 换邮箱必须走带登录态的接口：/auth/email/send-code 是公开路由，
   // 服务端拿不到 currentUser，会一律回「请先登录」。
   const url = purpose === 'change' ? '/me/email/send-code' : '/auth/email/send-code'
-  const { data } = await api.post(url, { email, purpose })
+  const { data } = await api.post(url, { email, purpose, captcha })
   return data as { sent: boolean; message: string }
 }
 
@@ -153,6 +164,11 @@ export interface PublicConfig {
   allow_email_change: boolean
   /** 后台允许的邮箱后缀（空数组 = 不限制）。注册页据此把后缀锁成下拉。 */
   email_domains: string[]
+  /**
+   * 极验验证配置。登录/注册/找回密码页据此决定要不要初始化验证组件。
+   * 并进这个接口而不是单开一个，省掉首屏一次额外往返。
+   */
+  captcha?: CaptchaConfig
 }
 
 export async function getPublicConfig(): Promise<PublicConfig> {

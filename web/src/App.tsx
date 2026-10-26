@@ -55,6 +55,7 @@ const AdminMemberPage = lazyNamed(() => import('@/pages/Admin'), 'AdminMemberPag
 const AdminAnnouncePage = lazyNamed(() => import('@/pages/Admin'), 'AdminAnnouncePage')
 const AdminDnsPage = lazyNamed(() => import('@/pages/Admin'), 'AdminDnsPage')
 const AdminGeneralPage = lazyNamed(() => import('@/pages/Admin'), 'AdminGeneralPage')
+const AdminSecurityPage = lazyNamed(() => import('@/pages/Admin'), 'AdminSecurityPage')
 const AdminEmailPage = lazyNamed(() => import('@/pages/Admin'), 'AdminEmailPage')
 const AdminSystemPage = lazyNamed(() => import('@/pages/Admin'), 'AdminSystemPage')
 const AdminRulesPage = lazyNamed(() => import('@/pages/AdminAssetsPages'), 'AdminRulesPage')
@@ -166,6 +167,7 @@ export default function App() {
                       <Route path="/admin/announcements" element={<AdminAnnouncePage />} />
                       <Route path="/admin/dns" element={<AdminDnsPage />} />
                       <Route path="/admin/general" element={<AdminGeneralPage />} />
+                      <Route path="/admin/security" element={<AdminSecurityPage />} />
                       <Route path="/admin/email" element={<AdminEmailPage />} />
                       <Route path="/admin/system" element={<AdminSystemPage />} />
                       {/* 全局层与个人层共用同一份页面组件，只换 scope */}

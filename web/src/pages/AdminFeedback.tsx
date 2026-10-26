@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, MessageSquare, MessageSquareWarning, Send } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { AiDiagnosisPanel } from '@/components/AiDiagnosisPanel'
+import { FeedbackThread } from '@/components/FeedbackThread'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -68,7 +69,7 @@ export default function AdminFeedback() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       <PageHeader
         title="反馈处理"
         description="用户提交的误拦 / 漏拦申诉；回复后用户可在「反馈」页看到"
@@ -115,25 +116,57 @@ export default function AdminFeedback() {
               description="这个状态下暂时没有需要处理的内容"
             />
           ) : (
-            <ul className="space-y-3">
+            <ul className="min-w-0 space-y-3">
               {items.map((f) => {
                 const meta = STATUS_META[f.status] ?? STATUS_META.open
                 const editing = replyingId === f.id
                 return (
-                  <li key={f.id} className="rounded-xl border border-border p-3">
-                    <div className="flex flex-wrap items-center gap-2">
+                  <li key={f.id} className="min-w-0 rounded-xl border border-border p-3">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <Badge variant={meta.variant}>{meta.label}</Badge>
                       <Badge variant="outline">{KIND_LABEL[f.kind] ?? f.kind}</Badge>
-                      <span className="text-sm font-medium">{f.username}</span>
-                      {f.domain && (
-                        <code className="mono-addr text-xs text-muted-foreground">{f.domain}</code>
-                      )}
-                      <span className="ml-auto font-mono text-xs text-muted-foreground">
+                      <span className="min-w-0 truncate text-sm font-medium">{f.username}</span>
+                      <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
                         {f.created_at}
                       </span>
                     </div>
+                    {/* 域名单独一行并 break-all：挤在头部 flex 里时，
+                        长域名会把时间挤出屏幕（手机端整页横向滚动）。 */}
+                    {f.domain && (
+                      <code className="mono-addr mt-2 block break-all text-xs text-muted-foreground">
+                        {f.domain}
+                      </code>
+                    )}
 
-                    <p className="mt-2 whitespace-pre-wrap text-sm">{f.message}</p>
+                    {/* 时间线：一条反馈一串消息。
+                        此前正文与回复分成两块显示，用户追问又会变成新的一条反馈，
+                        列表里同一个问题散成好几条，结单时只能挨个翻。 */}
+                    <FeedbackThread
+                      messages={f.messages ?? []}
+                      fallback={
+                        f.messages?.length
+                          ? undefined
+                          : [
+                              {
+                                role: 'user' as const,
+                                content: f.message,
+                                created_at: f.created_at,
+                                author: f.username,
+                              },
+                              ...(f.admin_reply
+                                ? [
+                                    {
+                                      role: 'admin' as const,
+                                      content: f.admin_reply,
+                                      created_at: f.updated_at,
+                                      author: '管理员',
+                                    },
+                                  ]
+                                : []),
+                            ]
+                      }
+                      className="mt-2"
+                    />
 
                     {editing ? (
                       <div className="mt-3 space-y-2">
@@ -173,13 +206,6 @@ export default function AdminFeedback() {
                             结单
                           </Button>
                         )}
-                      </div>
-                    )}
-
-                    {!editing && f.admin_reply && (
-                      <div className="mt-2 rounded-lg border-l-2 border-primary bg-primary/8 p-2.5 text-sm">
-                        <p className="eyebrow mb-1">我的回复</p>
-                        <p className="whitespace-pre-wrap">{f.admin_reply}</p>
                       </div>
                     )}
 

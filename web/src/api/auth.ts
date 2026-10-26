@@ -1,6 +1,6 @@
 import { api } from './client'
 import { tokenStore } from './tokenStore'
-import type { AuthResponse, RefreshResponse } from './types'
+import type { AuthResponse, CaptchaResult, RefreshResponse } from './types'
 
 export interface RegisterPayload {
   username: string
@@ -10,11 +10,15 @@ export interface RegisterPayload {
   invite_code?: string
   /** 开启注册邮箱验证时必填 */
   email_code?: string
+  /** 开启人机验证时必填 */
+  captcha?: CaptchaResult
 }
 
 export interface LoginPayload {
   username: string
   password: string
+  /** 开启人机验证时必填 */
+  captcha?: CaptchaResult
 }
 
 export async function register(payload: RegisterPayload): Promise<AuthResponse> {

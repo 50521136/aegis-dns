@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { ArrowLeft, KeyRound, Mail } from 'lucide-react'
 
-import { forgotPassword, sendEmailCode } from '@/api/member'
+import { forgotPassword, getPublicConfig, sendEmailCode } from '@/api/member'
+import { GeetestCaptcha, useCaptchaGate } from '@/components/GeetestCaptcha'
 import { errorMessage } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -36,6 +38,9 @@ export default function ForgotPassword() {
   const navigate = useNavigate()
   const [sending, setSending] = useState(false)
   const [countdown, setCountdown] = useState(0)
+  // 极验配置：与登录/注册页共用同一份 /public/config 缓存。
+  const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
+  const gate = useCaptchaGate(cfgQuery.data?.captcha, 'forgot')
 
   const {
     register,
@@ -62,7 +67,9 @@ export default function ForgotPassword() {
     }
     setSending(true)
     try {
-      const res = await sendEmailCode(email, 'reset')
+      // 发码是真正的滥用入口（能给任意邮箱发信），所以验证挂在这一步，
+      // 而不是最后的重置动作 —— 重置本来就要邮箱验证码。
+      const res = await gate.run((captcha) => sendEmailCode(email, 'reset', captcha))
       toast.success('如果该邮箱已注册', res.message ?? '验证码已发出')
       setCountdown(60)
     } catch (err) {
@@ -155,6 +162,11 @@ export default function ForgotPassword() {
               <ArrowLeft className="size-4" />
               返回登录
             </Link>
+            <GeetestCaptcha
+              config={cfgQuery.data?.captcha}
+              handleRef={gate.handleRef}
+              onError={(m) => toast.error('验证组件异常', m)}
+            />
           </form>
         </CardContent>
       </Card>

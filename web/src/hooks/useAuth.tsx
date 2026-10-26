@@ -5,7 +5,7 @@ import * as authApi from '@/api/auth'
 import { getMe } from '@/api/me'
 import { setUnauthorizedHandler } from '@/api/client'
 import { tokenStore } from '@/api/tokenStore'
-import type { AuthResponse, DnsConfig, User } from '@/api/types'
+import type { AuthResponse, CaptchaResult, DnsConfig, User } from '@/api/types'
 
 interface AuthContextValue {
   user: User | null
@@ -14,13 +14,14 @@ interface AuthContextValue {
   initializing: boolean
   isAuthenticated: boolean
   isAdmin: boolean
-  login: (username: string, password: string) => Promise<User>
+  login: (username: string, password: string, captcha?: CaptchaResult) => Promise<User>
   register: (payload: {
     username: string
     email: string
     password: string
     invite_code?: string
     email_code?: string
+    captcha?: CaptchaResult
   }) => Promise<AuthResponse>
   logout: () => Promise<void>
   refreshUser: () => Promise<User | null>
@@ -79,8 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadMe, clearSession])
 
   const login = useCallback(
-    async (username: string, password: string) => {
-      const res = await authApi.login({ username, password })
+    async (username: string, password: string, captcha?: CaptchaResult) => {
+      const res = await authApi.login({ username, password, captcha })
       setUser(res.user)
       setDnsConfig(res.dns_config ?? null)
       queryClient.clear()
@@ -96,6 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: string
       invite_code?: string
       email_code?: string
+      captcha?: CaptchaResult
     }) => {
       const res = await authApi.register(payload)
       setUser(res.user)
