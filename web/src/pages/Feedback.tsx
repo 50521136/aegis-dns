@@ -21,6 +21,7 @@ import { FeedbackThread } from '@/components/FeedbackThread'
 import { errorMessage } from '@/api/client'
 import { createFeedback, listMyFeedback, replyMyFeedback } from '@/api/scope'
 import { markFeedbackRead } from '@/api/notifications'
+import { useUnreadCounts } from '@/hooks/useUnreadCounts'
 import { getPublicConfig } from '@/api/member'
 import { GeetestCaptcha, useCaptchaGate } from '@/components/GeetestCaptcha'
 import type { CaptchaResult, FeedbackKind, FeedbackStatus } from '@/api/types'
@@ -45,6 +46,9 @@ export default function Feedback() {
   const [kind, setKind] = useState<FeedbackKind>('wrong_block')
   const [message, setMessage] = useState('')
 
+  // 标记已读后要立刻刷新底部红点（见下方 effect）。
+  const { refresh: refreshUnread } = useUnreadCounts()
+
   const listQuery = useQuery({ queryKey: ['feedback', 'mine'], queryFn: () => listMyFeedback() })
   const items = listQuery.data?.items ?? []
 
@@ -60,7 +64,10 @@ export default function Feedback() {
     )
     if (unread.length === 0) return
     void Promise.all(unread.map((f) => markFeedbackRead(f.id).catch(() => undefined)))
-  }, [listQuery.data])
+      // 标记完要立刻刷新未读数：不刷的话底部红点会在这个页面停着不动，
+      // 看着像「进了页面也没消」，用户会反复点。
+      .then(() => refreshUnread())
+  }, [listQuery.data, refreshUnread])
 
   const cfgQuery = useQuery({ queryKey: ['public', 'config'], queryFn: getPublicConfig, staleTime: 60000 })
   const gate = useCaptchaGate(cfgQuery.data?.captcha, 'feedback')

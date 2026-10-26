@@ -26,6 +26,7 @@ import {
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
 import { adminMarkFeedbackRead } from '@/api/notifications'
+import { useUnreadCounts } from '@/hooks/useUnreadCounts'
 import { listAllFeedback, replyFeedback } from '@/api/scope'
 import type { Feedback, FeedbackStatus } from '@/api/types'
 import { cn } from '@/lib/utils'
@@ -69,6 +70,9 @@ export default function AdminFeedback() {
 
   const [status, setStatus] = useState<FeedbackStatus | ''>('open')
   const [activeId, setActiveId] = useState<string | null>(null)
+  // 打开一条反馈就把它的红点消掉 —— 要当场刷一次，
+  // 不然徽章会一直显示旧数字，直到用户切到别的路由才变。
+  const { refresh: refreshUnread } = useUnreadCounts()
 
   const listQuery = useQuery({
     queryKey: ['admin', 'feedback', status],
@@ -84,8 +88,11 @@ export default function AdminFeedback() {
   const openDetail = (f: Feedback) => {
     setActiveId(f.id)
     // 打开即视为「管理员已看过」：消掉管理端红点。
-    // 失败不打扰（红点下次刷新还会在，不是数据损坏）。
-    void adminMarkFeedbackRead(f.id).catch(() => undefined)
+    // 标记成功后立刻刷新未读数，否则徽章要等到下次路由切换才更新，
+    // 用户会以为「点了没用」。失败不打扰（下次刷新还在，不是数据损坏）。
+    void adminMarkFeedbackRead(f.id)
+      .then(() => refreshUnread())
+      .catch(() => undefined)
   }
 
   return (
