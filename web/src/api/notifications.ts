@@ -55,3 +55,33 @@ export async function markFeedbackRead(id: string): Promise<void> {
 export async function adminMarkFeedbackRead(id: string): Promise<void> {
   await api.post(`/admin/feedback/${id}/read`)
 }
+
+// ---------------------------------------------------------------------------
+// 订阅合并 / 全局订阅查重
+// ---------------------------------------------------------------------------
+
+/** 合并一组等价订阅（保留 keepID，其余删除）。 */
+export async function mergeDuplicateSubs(
+  subIds: string[],
+  keepId?: string,
+): Promise<{ keep_id: string; removed: number; affected_users: number }> {
+  const { data } = await api.post('/admin/subscriptions/merge', {
+    sub_ids: subIds,
+    keep_id: keepId,
+  })
+  return data
+}
+
+/** 查这条链接是否已有全局订阅（含内容等价的形态）。 */
+export async function lookupGlobalSubByURL(url: string): Promise<{
+  exists: boolean
+  sub_id?: string
+  name?: string
+  url?: string
+  entries?: number
+}> {
+  const { data } = await api.get('/admin/subscriptions/global-lookup', {
+    params: { url },
+  })
+  return data
+}

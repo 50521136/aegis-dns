@@ -27,6 +27,7 @@ import {
   updateSubscription,
 } from '@/api/subscriptions'
 import { errorMessage } from '@/api/client'
+import { lookupGlobalSubByURL } from '@/api/notifications'
 import type {
   ListType,
   Scope,
@@ -176,6 +177,14 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
   // 把订阅列表撑得看不出重点，而用户点下去之前是不知道的。
   const existingUrls = new Set((listQuery.data?.items ?? []).map((s) => s.url))
 
+  // 全局订阅查重（需求）：用户填完 URL 就查一次，命中就明确告诉他
+  // 「全局订阅已有此规则，无需重复添加」，并禁用提交按钮。
+  //
+  // 这只是**提示**，真正的拦截在服务端（createSub 里再查一次）：
+  // 光靠前端挡不住直接调 API，而重复添加会让用户的快照里同一份域名翻倍。
+  const [globalHit, setGlobalHit] = useState<{ name: string; entries?: number } | null>(null)
+  const [checkingGlobal, setCheckingGlobal] = useState(false)
+
   const items = listQuery.data?.items ?? []
   const limit = listQuery.data?.limit ?? 0
 
@@ -194,6 +203,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
       enabled: true,
       timeout_sec: 0,
     })
+    setGlobalHit(null)
     setEditorOpen(true)
   }
 
@@ -207,6 +217,7 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
       enabled: sub.enabled,
       timeout_sec: sub.timeout_sec ?? 0,
     })
+    setGlobalHit(null)
     setEditorOpen(true)
   }
 
@@ -435,10 +446,50 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                 id="url"
                 placeholder="https://example.com/filter.txt"
                 className="font-mono text-sm"
-                {...form.register('url')}
+                {...form.register('url', {
+                  // 离开输入框时查一次全局订阅。放在 blur 而不是 onChange：
+                  // 每敲一个字发一次请求既浪费也没意义（半截 URL 查不到东西）。
+                  onBlur: (e) => {
+                    const v = String((e.target as HTMLInputElement).value || '').trim()
+                    if (!v || !/^https?:\/\//i.test(v)) {
+                      setGlobalHit(null)
+                      return
+                    }
+                    setCheckingGlobal(true)
+                    lookupGlobalSubByURL(v)
+                      .then((r) => {
+                        setGlobalHit(r.exists ? { name: r.name || '', entries: r.entries } : null)
+                      })
+                      .catch(() => setGlobalHit(null))
+                      .finally(() => setCheckingGlobal(false))
+                  },
+                })}
               />
               {form.formState.errors.url && (
                 <p className="text-xs text-danger">{form.formState.errors.url.message}</p>
+              )}
+              {checkingGlobal && (
+                <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" />
+                  正在检查是否已有全局订阅…
+                </p>
+              )}
+              {/* 命中就明确说清楚「已经生效了」并给出规模 ——
+                  只说「已存在」，用户会以为是自己列表里的重复项。 */}
+              {globalHit && (
+                <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/8 px-3 py-2">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-warning">全局订阅已存在此规则</p>
+                    <p className="mt-0.5 break-words text-[11.5px] leading-relaxed text-muted-foreground">
+                      管理员已内置《{globalHit.name || '同名规则'}》
+                      {typeof globalHit.entries === 'number'
+                        ? `（${globalHit.entries.toLocaleString()} 条）`
+                        : ''}
+                      ，对所有用户生效，无需重复添加。重复添加只会占用你的订阅配额。
+                    </p>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -513,7 +564,13 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
               <Button type="button" variant="outline" onClick={() => setEditorOpen(false)}>
                 取消
               </Button>
-              <Button type="submit" loading={saveMutation.isPending}>
+              <Button
+              type="submit"
+              loading={saveMutation.isPending}
+              // 命中全局订阅时禁用：服务端也会拒（409），
+              // 这里先挡住是为了让用户不必提交一次才看到失败。
+              disabled={scope === 'user' && !!globalHit}
+            >
                 {editing ? '保存' : '添加'}
               </Button>
             </DialogFooter>

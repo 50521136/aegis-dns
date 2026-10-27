@@ -278,6 +278,10 @@ func (s *Server) Handler() http.Handler {
 				// 订阅自动收录：被 >= 3 人订阅的同一份内容转为全局规则。
 				r.Get("/subscriptions/promotion/preview", s.handleAdminPromotionPreview)
 				r.Post("/subscriptions/promotion/run", s.handleAdminRunPromotion)
+				// 手动合并一组重复订阅（保留一条，其余删除）。
+				r.Post("/subscriptions/merge", s.handleAdminMergeDuplicateSubs)
+				// 按 URL 查这条内容是否已有全局订阅（用户添加前提示用）。
+				r.Get("/subscriptions/global-lookup", s.handleAdminGlobalSubByURL)
 				r.Get("/ai/settings", s.handleAdminGetAISettings)
 				r.Put("/ai/settings", s.handleAdminUpdateAISettings)
 				// 用 1 次真实调用验证模型连通性，避免「保存了但一跑就失败」

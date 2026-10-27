@@ -425,10 +425,14 @@ type GlobalSettings struct {
 	//
 	// 开着的时候：核查无问题 → 直接回复并结单；确认误拦截 → 写放行白名单
 	// 再回复结单；判断不了 / 没带域名 / 域名没过安全校验 → 转人工等待处理。
-	// 关掉时只落诊断结论，一切等人工点「采纳」，与旧行为一致。
+	// 关掉时只落诊断结论，一切等人工点「采纳」。
 	//
-	// 默认关闭：自动写规则会真实改变全站的拦截行为，该由管理员看着
-	// 诊断质量稳定之后再打开。
+	// **默认开启**：这是产品要求的行为 —— 用户提反馈是希望「AI 能判就直接
+	// 回」，而不是每次都等人工。关掉之后 AI 只写结论不回复，用户能看到的
+	// 反馈列表长期停在「待处理」，看起来像功能没做。
+	//
+	// 安全由 diagnose.Guard 兜底（挡公共后缀、非法域名、证据里没被拦的域名），
+	// 而不是靠默认关闭 —— 挡不住的那部分本来就不该交给模型决定。
 	AIAutoHandle bool `json:"ai_auto_handle"`
 
 	// --- 配额：不限制的话单个用户就能把内存打爆 ---
@@ -642,8 +646,8 @@ func DefaultSettings() GlobalSettings {
 		AITimeoutSec:  30,
 		AIMaxPerHour:  20,
 		AITriggerMode: "manual",
-		// 自动处理默认关闭，理由见 AIAutoHandle 字段注释。
-		AIAutoHandle: false,
+		// 自动处理默认开启，理由见 AIAutoHandle 字段注释。
+		AIAutoHandle: true,
 
 		AllowRootDomain: true,
 		StatsRetentionD: 30,

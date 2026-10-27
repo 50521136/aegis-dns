@@ -194,6 +194,8 @@ export interface SubscriptionDuplicates {
       user_id: string
       username: string
       name: string
+      /** 这条订阅自己的条目数（合并时默认保留最多的一份） */
+      entries: number
     }[]
   }[]
 }

@@ -35,6 +35,7 @@ func (s *Server) handleAdminDuplicateSubs(w http.ResponseWriter, r *http.Request
 	refs := make([]*subsub.DupInput, 0, len(subs))
 	// 顺手建索引，下面补名字时就不用逐条再查库（那是 N+1）。
 	bySub := make(map[string]string, len(subs)) // subID -> name
+	byCount := make(map[string]int, len(subs))  // subID -> 条目数
 	byUser := make(map[string]string, len(subs))
 	for _, sub := range subs {
 		refs = append(refs, &subsub.DupInput{
@@ -44,6 +45,7 @@ func (s *Server) handleAdminDuplicateSubs(w http.ResponseWriter, r *http.Request
 			LastCount: sub.LastCount,
 		})
 		bySub[sub.ID] = sub.Name
+		byCount[sub.ID] = sub.LastCount
 	}
 	// 用户名单独取一次，按需填充。
 	for _, sub := range subs {
@@ -71,6 +73,9 @@ func (s *Server) handleAdminDuplicateSubs(w http.ResponseWriter, r *http.Request
 				"user_id":  uid,
 				"username": byUser[uid],
 				"name":     bySub[sid],
+				// entries 让前端能默认保留「最完整的一份」并显示给管理员看。
+				// 取自库里记录的 LastCount，不重新统计（几百万行 COUNT 不可接受）。
+				"entries": byCount[sid],
 			})
 		}
 		savedFetches += g.ExtraFetches

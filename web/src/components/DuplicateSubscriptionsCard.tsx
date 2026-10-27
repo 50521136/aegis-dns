@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { CopyX, Layers, RefreshCw } from 'lucide-react'
+import { CopyX, GitMerge, Layers, RefreshCw } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { errorMessage } from '@/api/client'
 import { listDuplicateSubscriptions } from '@/api/subscriptions'
+import { mergeDuplicateSubs } from '@/api/notifications'
 import type { SubscriptionDuplicates } from '@/api/types'
 
 /**
@@ -26,6 +27,10 @@ export function DuplicateSubscriptionsCard() {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [data, setData] = useState<SubscriptionDuplicates | null>(null)
+  // 手动合并：记录每一组选中的保留项（key = canonical_key）。
+  const [keepByGroup, setKeepByGroup] = useState<Record<string, string>>({})
+  const [mergingKey, setMergingKey] = useState<string | null>(null)
+  const [mergeMsg, setMergeMsg] = useState('')
 
   const scan = async () => {
     setLoading(true)
@@ -36,6 +41,29 @@ export function DuplicateSubscriptionsCard() {
       setErr(errorMessage(e))
     } finally {
       setLoading(false)
+    }
+  }
+
+  /** mergeGroup 合并一组：保留 keepId，其余删除。 */
+  const mergeGroup = async (g: SubscriptionDuplicates['groups'][number]) => {
+    const ids = g.subscriptions.map((x) => x.id)
+    // 默认保留条目数最多的那条（最完整的一份）。管理员可以用下面的
+    // 单选切换成别的 —— 比如他想保留自己账号名下的那条。
+    const keep =
+      keepByGroup[g.canonical_key] ??
+      g.subscriptions.reduce((a, b) => (b.entries > a.entries ? b : a)).id
+
+    setMergingKey(g.canonical_key)
+    setErr('')
+    setMergeMsg('')
+    try {
+      const res = await mergeDuplicateSubs(ids, keep)
+      setMergeMsg(`已合并：删除 ${res.removed} 条重复订阅，影响 ${res.affected_users} 个用户`)
+      await scan()
+    } catch (e) {
+      setErr(errorMessage(e))
+    } finally {
+      setMergingKey(null)
     }
   }
 
@@ -87,6 +115,9 @@ export function DuplicateSubscriptionsCard() {
             </div>
           )}
           {err && <p className="break-words text-xs text-danger">{err}</p>}
+          {mergeMsg && (
+            <p className="rounded-lg bg-success/10 px-3 py-2 text-xs text-success">{mergeMsg}</p>
+          )}
 
           {data && (
             <>
@@ -136,10 +167,53 @@ export function DuplicateSubscriptionsCard() {
                           </li>
                         ))}
                       </ul>
-                      <p className="mt-1.5 break-words text-[11px] text-muted-foreground">
-                        归属：
-                        {g.subscriptions.map((s) => s.username || s.user_id.slice(0, 12)).join('、')}
-                      </p>
+                      {/* 逐条列出订阅并允许选「保留哪一条」：
+                          合并要删掉其余的，删错就是用户真实丢了规则集，
+                          所以保留项必须让人看见并可选，不能静默挑一条。 */}
+                      <ul className="mt-2 min-w-0 space-y-1">
+                        {g.subscriptions.map((sub) => {
+                          const keepId =
+                            keepByGroup[g.canonical_key] ??
+                            g.subscriptions.reduce((a, b) => (b.entries > a.entries ? b : a)).id
+                          return (
+                            <li key={sub.id} className="flex min-w-0 items-center gap-2">
+                              <input
+                                type="radio"
+                                name={`keep-${g.canonical_key}`}
+                                checked={keepId === sub.id}
+                                onChange={() =>
+                                  setKeepByGroup((p) => ({ ...p, [g.canonical_key]: sub.id }))
+                                }
+                                className="size-3.5 shrink-0 accent-[var(--primary)]"
+                              />
+                              <span className="shrink-0 text-[11.5px] font-medium">
+                                {sub.username || sub.user_id.slice(0, 10)}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                                {sub.name}
+                              </span>
+                              <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-muted-foreground/70">
+                                {sub.entries.toLocaleString()} 条
+                              </span>
+                            </li>
+                          )
+                        })}
+                      </ul>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          loading={mergingKey === g.canonical_key}
+                          onClick={() => void mergeGroup(g)}
+                        >
+                          <GitMerge />
+                          合并为一条
+                        </Button>
+                        <span className="text-[11px] text-muted-foreground">
+                          保留选中的那条，其余 {g.subscriptions.length - 1} 条删除
+                        </span>
+                      </div>
                     </li>
                   ))}
                 </ul>

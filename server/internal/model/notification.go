@@ -35,6 +35,8 @@ const (
 	NotifyFeedbackAI = "feedback_ai"
 	// NotifyFeedbackReply 管理员回复了反馈。
 	NotifyFeedbackReply = "feedback_reply"
+	// NotifySubMerged 重复订阅被管理员手动合并。
+	NotifySubMerged = "sub_merged"
 	// NotifySystem 系统通知（兜底类别）。
 	NotifySystem = "system"
 )

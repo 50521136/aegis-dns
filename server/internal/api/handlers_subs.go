@@ -239,6 +239,29 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
 		return
 	}
+
+	// 需求：全局订阅里已有的内容，用户再添加时直接拒绝。
+	//
+	// **必须在服务端拦**，不能只靠前端提示：提示可以被绕过（直接调 API、
+	// 旧客户端缓存、脚本），而不拦的后果是用户挂了一份与全局层完全相同的
+	// 订阅 —— 既占他自己的订阅配额，也让订阅条目在他的快照里翻倍
+	// （条目是按用户压平的，同一份域名会被写两遍）。
+	//
+	// 用归一键比对而不是字符串相等：用户抄的链接形态不同
+	// （GitHub raw / jsDelivr / github.com raw），内容却是同一份。
+	if !global {
+		if hit := s.lookupGlobalSubByURL(r.Context(), sub.URL); hit != nil {
+			writeError(w, http.StatusConflict, CodeValidationFailed,
+				"全局订阅已存在此规则：「"+hit.Name+"」。它已对所有用户生效，无需重复添加。",
+				map[string]any{
+					"global_sub_id":   hit.ID,
+					"global_sub_name": hit.Name,
+					"entries":         hit.LastCount,
+				})
+			return
+		}
+	}
+
 	if !global {
 		if err := s.checkUserFeature(r.Context(), u, "subs"); err != nil {
 			writeFeatureError(w, err)
