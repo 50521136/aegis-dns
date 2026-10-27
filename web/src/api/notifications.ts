@@ -68,8 +68,10 @@ export async function mergeDuplicateSubs(
   keep_id: string
   removed: number
   affected_users: number
-  /** 实际发出通知的人数（含保留者） */
+  /** 实际发出通知的人数（含保留者）。异步发送时此字段不返回 */
   notified?: number
+  /** true 表示通知在后台发送，接口返回时还没发完 */
+  notify_async?: boolean
   /** 保留的那份是否已转为全局订阅 */
   global?: boolean
 }> {

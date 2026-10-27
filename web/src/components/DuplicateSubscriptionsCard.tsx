@@ -58,9 +58,11 @@ export function DuplicateSubscriptionsCard() {
     setMergeMsg('')
     try {
       const res = await mergeDuplicateSubs(ids, keep)
+      // 通知是后台发的（重建快照要十几秒，同步发会被请求超时打断），
+      // 所以这里不能说「已通知 N 位」，只能说「已安排」。
       setMergeMsg(
-        `已合并为全局订阅：删除 ${res.removed} 条重复订阅，通知 ${res.notified ?? res.affected_users} 位用户` +
-          `（保留的那份已移到「全局订阅」，对所有人生效）`,
+        `已合并为全局订阅：删除 ${res.removed} 条重复订阅，涉及 ${res.affected_users} 位用户。` +
+          `保留的那份已移到「全局订阅」并对所有人生效，相关用户稍后会收到通知。`,
       )
       await scan()
     } catch (e) {

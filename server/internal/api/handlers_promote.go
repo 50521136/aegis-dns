@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
 	"github.com/50521136/aegis-dns/server/internal/store"
@@ -96,6 +97,15 @@ func (s *Server) RunSubscriptionPromotion(ctx context.Context) (*PromoteResult, 
 			continue
 		}
 
+		// 留痕：删了谁的订阅必须可反查。
+		// 库里被删的订阅行就没了，通知又可能发送失败 —— 日志是唯一的兜底。
+		deleted := make([]string, 0, len(affected))
+		for _, a := range affected {
+			deleted = append(deleted, a.UserID+"/"+a.SubID)
+		}
+		s.log.Info("收录订阅为全局规则",
+			"sub", subID, "urls", c.URLs, "users", len(c.UserIDs), "deleted", deleted)
+
 		res.Promoted++
 		res.RemovedSubs += len(affected)
 		res.Groups = append(res.Groups, PromoteGroupInfo{
@@ -163,13 +173,29 @@ func (s *Server) recheckPromotionCandidate(ctx context.Context, c *store.Promote
 }
 
 // handleAdminRunPromotion 手动触发一次自动收录（管理端按钮）。
+//
+// **异步执行**，理由与合并相同：收录会删用户订阅并重建全量快照，
+// 实测一次重建要十几秒，浏览器/反代先断开就会把 r.Context() 取消 ——
+// 收录本身已落库，但快照没重建、通知全都没发出去，表现为「报错但数据变了」。
 func (s *Server) handleAdminRunPromotion(w http.ResponseWriter, r *http.Request) {
-	res, err := s.RunSubscriptionPromotion(r.Context())
-	if err != nil {
-		writeStoreError(w, err, "")
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		res, err := s.RunSubscriptionPromotion(bg)
+		if err != nil {
+			s.log.Warn("手动收录订阅失败", "err", err)
+			return
+		}
+		s.log.Info("手动收录订阅完成",
+			"组数", res.Promoted, "删除私有订阅", res.RemovedSubs, "通知用户", res.Notified)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		// 说明为什么不是 200 + 结果：收录要下载/删数据/重建快照，
+		// 同步跑必然又被请求超时打断。
+		"message": "已开始收录，完成后会通过通知告知受影响用户",
+	})
 }
 
 // handleAdminPromotionPreview 预览「如果现在执行，会收录哪些」。

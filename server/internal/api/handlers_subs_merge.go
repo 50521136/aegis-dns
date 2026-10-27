@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -120,13 +121,61 @@ func (s *Server) handleAdminMergeDuplicateSubs(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 规则集变了：受影响用户的快照都要重建。
+	// 留痕：把「删了谁、留了谁」写进日志。
 	//
-	// 这里必须传 global=true 走全量重建，而不是逐个 uid 增量：
-	// 合并把保留项转成了全局订阅，它现在对**所有**启用全局层的用户生效，
-	// 只重建这几个人的快照，其余用户会一直停留在旧规则上直到下次变更。
+	// 这是本次线上问题暴露出来的缺口：当时合并成功但通知全失败，而库里
+	// 被删的订阅行已经不存在了，事后**无法反查那几个用户是谁**，
+	// 也就没法补发通知。
+	// 日志是唯一不随数据删除而消失的记录，必须在提交后立刻写。
+	deleted := make([]string, 0, len(res.RemovedSubs))
+	for _, a := range res.RemovedSubs {
+		deleted = append(deleted, a.UserID+"/"+a.SubID)
+	}
+	s.log.Info("合并重复订阅",
+		"keep", res.KeepID, "keep_owner", res.KeepOwnerID,
+		"deleted", deleted, "affected_users", len(res.AffectedUsers))
+
+	// --- 后续动作必须脱离请求上下文（这是本次线上故障的根因）---
+	//
+	// 实测：合并本身 200 成功、数据也对，但重建快照跑了 19 秒，浏览器/代理
+	// 先断开连接，r.Context() 被取消 —— 于是建快照失败、**所有通知一条都
+	// 没发出去**，日志里是 context canceled。
+	//
+	// 后果是「静默半成功」：用户看到报错，管理员看到合并成功但没人收到通知，
+	// 而且没有任何东西会在事后补上。
+	//
+	// 所以合并事务提交之后就与请求解耦：后台用独立 ctx 做完重建与通知，
+	// 接口立刻返回。合并已经落库，这两件事失败也不该让接口报错。
+	merged := res
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		s.finishMerge(bg, merged, len(req.SubIDs))
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"keep_id":        res.KeepID,
+		"removed":        len(res.RemovedSubs),
+		"affected_users": len(res.AffectedUsers),
+		// 通知是后台发的，此刻还没发完，所以这里不报具体人数，
+		// 只说明「已安排」。前端文案据此调整，避免显示一个恒为 0 的数。
+		"notify_async": true,
+		// global=true 让前端能明确提示「已转为全局订阅」，
+		// 而不是含糊地说「已合并」。
+		"global": true,
+	})
+}
+
+// finishMerge 在合并提交之后做两件事：全量重建快照、给所有受影响用户发通知。
+//
+// 独立于 HTTP 请求运行，理由见 handleAdminMergeDuplicateSubs 里的注释。
+// 每一步独立成败，失败只记日志 —— 合并本身已经落库，不能因为发通知失败
+// 就让管理员以为整次操作失败（他重试会得到「已经是全局订阅」的报错）。
+func (s *Server) finishMerge(ctx context.Context, res *store.MergeResult, total int) {
+	// 全量重建：合并后的订阅对所有启用全局层的用户生效，
+	// 只重建这几个人会让其余用户停在旧规则上。
 	if err := s.touched(ctx, "", true); err != nil {
-		s.log.Warn("合并订阅后重建快照失败", "err", err)
+		s.log.Warn("合并订阅后重建快照失败", "sub", res.KeepID, "err", err)
 	}
 
 	// 通知所有受影响的人（含保留者）。
@@ -147,7 +196,7 @@ func (s *Server) handleAdminMergeDuplicateSubs(w http.ResponseWriter, r *http.Re
 			Body: fmt.Sprintf(
 				"您的订阅《%s》与另外几位用户订阅的是同一份内容（共 %d 份重复），已合并收录为全站共享的全局规则。"+
 					"您这份私有订阅已被删除，但拦截/放行效果由全局规则继续提供，无需重新添加。",
-				a.Name, len(req.SubIDs)),
+				a.Name, total),
 			Link:      "/app/subscriptions",
 			RefID:     res.KeepID,
 			DedupeKey: "merge-removed:" + a.SubID,
@@ -160,36 +209,28 @@ func (s *Server) handleAdminMergeDuplicateSubs(w http.ResponseWriter, r *http.Re
 	}
 
 	// 保留者单独一条：他不是「被删」，是「自己的订阅变成了全局规则」。
-	keepOwner := res.KeepOwnerID
-	if keepOwner != "" {
+	if res.KeepOwnerID != "" {
 		n := &model.Notification{
-			UserID: keepOwner,
+			UserID: res.KeepOwnerID,
 			Kind:   model.NotifySubMerged,
 			Title:  "您的订阅已收录为全局规则",
 			Body: fmt.Sprintf(
 				"您的订阅《%s》被确认为与另外 %d 份订阅内容相同，已合并收录为全站共享的全局规则。"+
 					"它已从「我的订阅」移到全局层，对所有用户生效，您自己同样继续受保护，无需重新添加。",
-				res.KeepOwnerName, len(req.SubIDs)-1),
+				res.KeepOwnerName, total-1),
 			Link:      "/app/subscriptions",
 			RefID:     res.KeepID,
 			DedupeKey: "merge-kept:" + res.KeepID,
 		}
 		if _, err := s.store.CreateNotification(ctx, n); err != nil {
-			s.log.Warn("发送订阅收录通知失败", "user", keepOwner, "err", err)
+			s.log.Warn("发送订阅收录通知失败", "user", res.KeepOwnerID, "err", err)
 		} else {
 			notified++
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"keep_id":        res.KeepID,
-		"removed":        len(res.RemovedSubs),
-		"affected_users": len(res.AffectedUsers),
-		"notified":       notified,
-		// global=true 让前端能明确提示「已转为全局订阅」，
-		// 而不是含糊地说「已合并」。
-		"global": true,
-	})
+	s.log.Info("订阅合并后续处理完成",
+		"sub", res.KeepID, "删除", len(res.RemovedSubs), "通知", notified)
 }
 
 // handleAdminGlobalSubByURL 按 URL 查这条内容是否已有全局订阅（需求 3）。
