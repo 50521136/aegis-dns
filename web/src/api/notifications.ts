@@ -95,3 +95,8 @@ export async function lookupGlobalSubByURL(url: string): Promise<{
   })
   return data
 }
+
+/** 删除一条已结单的反馈（连带时间线）。未结单的会被服务端拒绝（409）。 */
+export async function deleteFeedback(id: string): Promise<void> {
+  await api.delete(`/admin/feedback/${id}`)
+}

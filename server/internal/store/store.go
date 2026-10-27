@@ -30,6 +30,13 @@ import (
 // ErrNotFound 表示目标记录不存在。
 var ErrNotFound = errors.New("记录不存在")
 
+// ErrFeedbackNotClosed 表示这条反馈还没结单，不允许删除。
+//
+// 单独一个错误而不是复用 ErrNotFound：调用方要能区分「不存在」和
+// 「存在但状态不对」，前者返回 404、后者返回 409 并告诉管理员
+// 「请先结单再删除」。
+var ErrFeedbackNotClosed = errors.New("反馈尚未结单，不能删除")
+
 // ErrClientIDTaken 表示目标 client_id 已被其他用户占用。
 //
 // 单独一个错误值是为了让 handler 能回 409 而不是笼统的 500 ——

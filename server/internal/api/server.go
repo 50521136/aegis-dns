@@ -275,6 +275,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/feedback/{id}/apply", s.handleAdminApplyDiagnosis)
 				// 管理员看过这条反馈（管理端红点用）。
 				r.Post("/feedback/{id}/read", s.handleAdminMarkFeedbackRead)
+				// 删除已结单的反馈（连带时间线）。
+				r.Delete("/feedback/{id}", s.handleAdminDeleteFeedback)
 				// 订阅自动收录：被 >= 3 人订阅的同一份内容转为全局规则。
 				r.Get("/subscriptions/promotion/preview", s.handleAdminPromotionPreview)
 				r.Post("/subscriptions/promotion/run", s.handleAdminRunPromotion)

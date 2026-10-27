@@ -261,3 +261,53 @@ func (s *Store) CountFeedbackMessages(ctx context.Context, feedbackID string) (i
 		`SELECT COUNT(*) FROM feedback_messages WHERE feedback_id = ?`, feedbackID).Scan(&n)
 	return n, err
 }
+
+// DeleteFeedback 删除一条**已结单**的反馈及其时间线。
+//
+// 只允许删 closed 的：未结单的反馈是用户还在等答复的事，删掉等于把问题
+// 丢掉；而结单的反馈留在库里只会让列表越翻越长，管理员需要能清理。
+// 这个约束写在 SQL 的 WHERE 里而不是只靠调用方判断 —— 调用方漏判一次
+// 就是一条真实问题被静默删除。
+//
+// feedback_messages 没有外键级联（0020 建表时没加 REFERENCES），
+// 必须显式删，否则会留下一堆永远查不到的孤儿消息占库。
+//
+// 事务内完成：两步之间失败会回滚，不会出现「消息删了反馈还在」。
+func (s *Store) DeleteFeedback(ctx context.Context, fid string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		// 先确认状态，避免删到未结单的。
+		var status string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT status FROM feedback WHERE id = ?`, fid).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if status != model.FeedbackClosed {
+			return ErrFeedbackNotClosed
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM feedback_messages WHERE feedback_id = ?`, fid); err != nil {
+			return fmt.Errorf("删除反馈时间线失败: %w", err)
+		}
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM feedback WHERE id = ? AND status = ?`, fid, model.FeedbackClosed)
+		if err != nil {
+			return fmt.Errorf("删除反馈失败: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// CountClosedFeedback 返回已结单反馈数（管理端「可清理」提示用）。
+func (s *Store) CountClosedFeedback(ctx context.Context) (int, error) {
+	var n int
+	err := s.read.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM feedback WHERE status = ?`, model.FeedbackClosed).Scan(&n)
+	return n, err
+}

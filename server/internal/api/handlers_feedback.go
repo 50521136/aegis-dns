@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
+	"github.com/50521136/aegis-dns/server/internal/store"
 )
 
 // 反馈正文与域名的长度上限，防止有人把整篇文档贴进来。
@@ -249,6 +251,42 @@ func (s *Server) handleAdminMarkFeedbackRead(w http.ResponseWriter, r *http.Requ
 		s.log.Warn("清除需人工标记失败", "feedback", fid, "err", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAdminDeleteFeedback 删除一条已结单的反馈（连带时间线）。
+//
+// 只允许删已结单的：
+//   - 未结单的反馈是用户还在等答复的事，删掉等于把问题丢掉；
+//   - 已结单的留在库里只会让列表越翻越长，管理员需要能清理。
+//
+// 这个约束在 store 层用 SQL 兜底（DeleteFeedback 里 WHERE status='closed'），
+// 这里再判一次是为了给出清晰的错误信息（409 + 「请先结单」而不是 404）。
+func (s *Server) handleAdminDeleteFeedback(w http.ResponseWriter, r *http.Request) {
+	fid := chi.URLParam(r, "id")
+
+	fb, err := s.store.GetFeedback(r.Context(), fid)
+	if err != nil {
+		writeStoreError(w, err, "反馈不存在")
+		return
+	}
+	if fb.Status != model.FeedbackClosed {
+		writeError(w, http.StatusConflict, CodeValidationFailed,
+			"只能删除已结单的反馈，请先结单", nil)
+		return
+	}
+
+	if err := s.store.DeleteFeedback(r.Context(), fid); err != nil {
+		if errors.Is(err, store.ErrFeedbackNotClosed) {
+			writeError(w, http.StatusConflict, CodeValidationFailed,
+				"只能删除已结单的反馈，请先结单", nil)
+			return
+		}
+		writeStoreError(w, err, "反馈不存在")
+		return
+	}
+
+	s.log.Info("删除反馈", "feedback", fid, "user", fb.UserID, "domain", fb.Domain)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": fid})
 }
 
 // handleAdminListFeedback 列出全部反馈（管理端）。

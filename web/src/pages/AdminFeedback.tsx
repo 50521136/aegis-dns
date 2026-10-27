@@ -7,11 +7,13 @@ import {
   MessageSquare,
   MessageSquareWarning,
   Send,
+  Trash2,
   UserRound,
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { AiDiagnosisPanel } from '@/components/AiDiagnosisPanel'
 import { FeedbackThread } from '@/components/FeedbackThread'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/EmptyState'
@@ -25,7 +27,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
-import { adminMarkFeedbackRead } from '@/api/notifications'
+import { adminMarkFeedbackRead, deleteFeedback } from '@/api/notifications'
 import { useUnreadCounts } from '@/hooks/useUnreadCounts'
 import { listAllFeedback, replyFeedback } from '@/api/scope'
 import type { Feedback, FeedbackStatus } from '@/api/types'
@@ -231,6 +233,9 @@ function FeedbackDetailDialog({
 }) {
   const [replyText, setReplyText] = useState('')
 
+  // 删除确认框：删的是真实数据（含整条时间线），必须二次确认。
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
   const reply = useMutation({
     mutationFn: ({ id, text, next }: { id: string; text: string; next?: FeedbackStatus }) =>
       replyFeedback(id, { reply: text, status: next }),
@@ -240,6 +245,20 @@ function FeedbackDetailDialog({
       onChanged()
     },
     onError: (err) => onErr('保存失败', errorMessage(err)),
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteFeedback(id),
+    onSuccess: () => {
+      onToast('反馈已删除')
+      setConfirmDelete(false)
+      onClose()
+      onChanged()
+    },
+    onError: (err) => {
+      setConfirmDelete(false)
+      onErr('删除失败', errorMessage(err))
+    },
   })
 
   if (!feedback) return null
@@ -344,8 +363,37 @@ function FeedbackDetailDialog({
                 直接结单
               </Button>
             )}
+            {/* 删除只对已结单的开放：未结单的反馈是用户还在等答复的事，
+                删掉等于把问题丢掉。服务端也会拒绝（409），
+                这里不显示是为了不给人一个点了必然失败的按钮。 */}
+            {f.status === 'closed' && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto text-danger hover:bg-danger/10 hover:text-danger"
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 />
+                删除
+              </Button>
+            )}
           </div>
         </div>
+
+        <ConfirmDialog
+          open={confirmDelete}
+          onOpenChange={setConfirmDelete}
+          title="删除这条反馈？"
+          description={
+            f.domain
+              ? `将永久删除「${f.domain}」这条反馈及其全部对话记录，无法恢复。`
+              : '将永久删除这条反馈及其全部对话记录，无法恢复。'
+          }
+          confirmText="删除"
+          destructive
+          loading={remove.isPending}
+          onConfirm={() => remove.mutate(f.id)}
+        />
       </DialogContent>
     </Dialog>
   )
