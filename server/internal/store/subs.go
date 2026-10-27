@@ -13,7 +13,8 @@ import (
 )
 
 const subCols = `id, user_id, list_type, name, url, format, enabled, is_global, last_etag, last_modified,
-	last_fetched, last_count, last_status, fail_count, created_at, timeout_sec`
+	last_fetched, last_count, last_status, fail_count, created_at, timeout_sec,
+	promoted_at, promoted_from`
 
 // subInsertCols 是 INSERT 用的列名。
 //
@@ -28,7 +29,8 @@ func scanSub(sc interface{ Scan(...any) error }) (*model.Subscription, error) {
 	var enabled, global int
 	err := sc.Scan(&sub.ID, &sub.UserID, &sub.ListType, &sub.Name, &sub.URL, &sub.Format,
 		&enabled, &global, &sub.LastETag, &sub.LastModified, &sub.LastFetched, &sub.LastCount,
-		&sub.LastStatus, &sub.FailCount, &sub.CreatedAt, &sub.TimeoutSec)
+		&sub.LastStatus, &sub.FailCount, &sub.CreatedAt, &sub.TimeoutSec,
+		&sub.PromotedAt, &sub.PromotedFrom)
 	if err != nil {
 		return nil, err
 	}

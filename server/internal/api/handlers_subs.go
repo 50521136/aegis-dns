@@ -103,6 +103,12 @@ func subToJSON(sub *model.Subscription) map[string]any {
 		"timeout_sec":  sub.TimeoutSec,
 		"last_fetched": rfc3339OrEmpty(sub.LastFetched),
 		"created_at":   rfc3339OrEmpty(sub.CreatedAt),
+		// 来源标记：promoted_at 非零表示这条全局订阅是被「自动收录」或
+		// 「手动合并」上来的，不是管理员自己建的。
+		// 界面上据此加一个「收录」徽章 —— 排查「这条全站生效的规则
+		// 是什么时候冒出来的」时，一眼能分辨来源。
+		"promoted_at":   rfc3339OrEmpty(sub.PromotedAt),
+		"promoted_from": sub.PromotedFrom,
 	}
 }
 

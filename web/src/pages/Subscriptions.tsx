@@ -369,6 +369,14 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                     <Badge variant={sub.list_type === 'allowlist' ? 'success' : 'danger'}>
                       {sub.list_type === 'allowlist' ? '白名单' : '黑名单'}
                     </Badge>
+                    {/* 收录来源标记：让管理员一眼分辨「这条全局规则是自己建的
+                        还是被自动收录 / 手动合并上来的」。排查「突然全站多了
+                        一批拦截」时这一步省掉大量翻日志的时间。 */}
+                    {sub.promoted_at && (
+                      <Badge variant="secondary" className="shrink-0" title={`收录时间 ${sub.promoted_at}`}>
+                        收录
+                      </Badge>
+                    )}
                   </div>
                   <p
                     className="mt-1 line-clamp-2 break-all font-mono text-xs leading-snug text-muted-foreground"

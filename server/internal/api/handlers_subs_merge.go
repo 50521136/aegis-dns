@@ -104,11 +104,12 @@ func (s *Server) handleAdminMergeDuplicateSubs(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 任何一条都不该是全局订阅：合并私有与全局会把「谁的规则」搞乱。
+	// 任何一条都不该已经是全局订阅：合并的语义是「把私有的重复项收成一条
+	// 全局」，已经全局的没有「合并」的必要，重复点击也只会报错。
 	for _, sub := range subs {
 		if sub.IsGlobal {
 			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed,
-				"全局订阅不参与合并，请先在全局订阅页单独处理", nil)
+				"订阅《"+sub.Name+"》已经是全局订阅，无需合并", nil)
 			return
 		}
 	}
@@ -120,25 +121,63 @@ func (s *Server) handleAdminMergeDuplicateSubs(w http.ResponseWriter, r *http.Re
 	}
 
 	// 规则集变了：受影响用户的快照都要重建。
-	for _, uid := range res.AffectedUsers {
-		if err := s.touched(ctx, uid, false); err != nil {
-			s.log.Warn("合并订阅后重建快照失败", "user", uid, "err", err)
-		}
+	//
+	// 这里必须传 global=true 走全量重建，而不是逐个 uid 增量：
+	// 合并把保留项转成了全局订阅，它现在对**所有**启用全局层的用户生效，
+	// 只重建这几个人的快照，其余用户会一直停留在旧规则上直到下次变更。
+	if err := s.touched(ctx, "", true); err != nil {
+		s.log.Warn("合并订阅后重建快照失败", "err", err)
 	}
 
-	// 给被删掉订阅的用户发通知 —— 他的订阅消失了，必须知道为什么。
+	// 通知所有受影响的人（含保留者）。
+	//
+	// 三件事都要说清楚，否则用户会以为自己的订阅莫名其妙消失了：
+	//   1. 这条内容**已转为全局规则**，仍然生效；
+	//   2. 因为重复，他自己的那份订阅被删掉了；
+	//   3. 保留者的那份从「我的订阅」移到了全站，所以他的列表里也会消失。
+	//
+	// 保留者的通知文案与其他人不同：他的订阅不是「被删」，是「升级成全局」，
+	// 说成「已删除」会让他去找管理员要回来。
+	notified := 0
 	for _, a := range res.RemovedSubs {
 		n := &model.Notification{
-			UserID:    a.UserID,
-			Kind:      model.NotifySubMerged,
-			Title:     "重复订阅已被合并",
-			Body:      fmt.Sprintf("您的订阅《%s》与管理员确认的其它订阅指向同一份内容，已合并保留一份，规则效果不受影响。", a.Name),
+			UserID: a.UserID,
+			Kind:   model.NotifySubMerged,
+			Title:  "重复订阅已合并为全局规则",
+			Body: fmt.Sprintf(
+				"您的订阅《%s》与另外几位用户订阅的是同一份内容（共 %d 份重复），已合并收录为全站共享的全局规则。"+
+					"您这份私有订阅已被删除，但拦截/放行效果由全局规则继续提供，无需重新添加。",
+				a.Name, len(req.SubIDs)),
 			Link:      "/app/subscriptions",
 			RefID:     res.KeepID,
-			DedupeKey: "merge:" + a.SubID,
+			DedupeKey: "merge-removed:" + a.SubID,
 		}
 		if _, err := s.store.CreateNotification(ctx, n); err != nil {
 			s.log.Warn("发送订阅合并通知失败", "user", a.UserID, "err", err)
+			continue
+		}
+		notified++
+	}
+
+	// 保留者单独一条：他不是「被删」，是「自己的订阅变成了全局规则」。
+	keepOwner := res.KeepOwnerID
+	if keepOwner != "" {
+		n := &model.Notification{
+			UserID: keepOwner,
+			Kind:   model.NotifySubMerged,
+			Title:  "您的订阅已收录为全局规则",
+			Body: fmt.Sprintf(
+				"您的订阅《%s》被确认为与另外 %d 份订阅内容相同，已合并收录为全站共享的全局规则。"+
+					"它已从「我的订阅」移到全局层，对所有用户生效，您自己同样继续受保护，无需重新添加。",
+				res.KeepOwnerName, len(req.SubIDs)-1),
+			Link:      "/app/subscriptions",
+			RefID:     res.KeepID,
+			DedupeKey: "merge-kept:" + res.KeepID,
+		}
+		if _, err := s.store.CreateNotification(ctx, n); err != nil {
+			s.log.Warn("发送订阅收录通知失败", "user", keepOwner, "err", err)
+		} else {
+			notified++
 		}
 	}
 
@@ -146,6 +185,10 @@ func (s *Server) handleAdminMergeDuplicateSubs(w http.ResponseWriter, r *http.Re
 		"keep_id":        res.KeepID,
 		"removed":        len(res.RemovedSubs),
 		"affected_users": len(res.AffectedUsers),
+		"notified":       notified,
+		// global=true 让前端能明确提示「已转为全局订阅」，
+		// 而不是含糊地说「已合并」。
+		"global": true,
 	})
 }
 

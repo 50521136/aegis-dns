@@ -160,6 +160,13 @@ export interface Subscription {
    * 永远停在旧版本。给个按源放宽的口子，不必为它把全站默认调长。
    */
   timeout_sec?: number
+  /**
+   * 非空表示这条订阅是被「自动收录」或「手动合并」转成全局的
+   * （空 = 管理员自己建的）。界面上据此加「收录」徽章。
+   */
+  promoted_at?: string
+  /** 收录前的归属用户（仅供追溯） */
+  promoted_from?: string
 }
 
 export interface SubscriptionInput {

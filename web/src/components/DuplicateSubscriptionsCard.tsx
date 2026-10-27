@@ -58,7 +58,10 @@ export function DuplicateSubscriptionsCard() {
     setMergeMsg('')
     try {
       const res = await mergeDuplicateSubs(ids, keep)
-      setMergeMsg(`已合并：删除 ${res.removed} 条重复订阅，影响 ${res.affected_users} 个用户`)
+      setMergeMsg(
+        `已合并为全局订阅：删除 ${res.removed} 条重复订阅，通知 ${res.notified ?? res.affected_users} 位用户` +
+          `（保留的那份已移到「全局订阅」，对所有人生效）`,
+      )
       await scan()
     } catch (e) {
       setErr(errorMessage(e))
@@ -208,10 +211,13 @@ export function DuplicateSubscriptionsCard() {
                           onClick={() => void mergeGroup(g)}
                         >
                           <GitMerge />
-                          合并为一条
+                          合并为全局
                         </Button>
-                        <span className="text-[11px] text-muted-foreground">
-                          保留选中的那条，其余 {g.subscriptions.length - 1} 条删除
+                        <span className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+                          保留选中那条并
+                          <strong className="font-medium text-foreground">转为全局订阅</strong>
+                          （所有人继续生效），其余 {g.subscriptions.length - 1} 条删除；
+                          相关用户都会收到通知
                         </span>
                       </div>
                     </li>

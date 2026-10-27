@@ -124,6 +124,13 @@ type Subscription struct {
 	FailCount    int    `json:"fail_count"`
 	CreatedAt    int64  `json:"-"`
 
+	// PromotedAt 非零表示这条订阅是被「收录 / 合并」转成全局的，记下时间
+	// （0 = 管理员自己建的）。用于在全局订阅页区分来源、排查
+	// 「这条全站生效的规则是什么时候冒出来的」。
+	PromotedAt int64 `json:"promoted_at,omitempty"`
+	// PromotedFrom 收录前的归属用户（用户可能改名或注销，仅供追溯）。
+	PromotedFrom string `json:"promoted_from,omitempty"`
+
 	// TimeoutSec 是该订阅自己的拉取超时（秒），0 表示跟随全局默认。
 	//
 	// 存在的理由：默认超时改短之后，几个慢速大源会必然失败。

@@ -36,6 +36,17 @@ func TestMergeSubscriptionsKeepsChosenOne(t *testing.T) {
 	if res.KeepID != sub1.ID {
 		t.Fatalf("保留的应是 %s，实际 %s", sub1.ID, res.KeepID)
 	}
+	// 保留项必须转成全局订阅：否则被删那几位从此不再受这份名单保护。
+	kept, err := s.store.GetSubByID(ctx, sub1.ID)
+	if err != nil {
+		t.Fatalf("读保留订阅失败: %v", err)
+	}
+	if !kept.IsGlobal {
+		t.Fatal("合并后保留的订阅必须是全局订阅（is_global = 1）")
+	}
+	if kept.PromotedAt == 0 {
+		t.Fatal("合并收录应记录 promoted_at，便于事后追溯这条全局规则的来源")
+	}
 	if len(res.RemovedSubs) != 1 {
 		t.Fatalf("应删除 1 条，实际 %d", len(res.RemovedSubs))
 	}
@@ -148,7 +159,7 @@ func TestMergeRefusesGlobalSubs(t *testing.T) {
 	privateSub := makeSub(t, s, u1, "https://example.com/private.txt", model.ListBlock)
 
 	// store 层的 MergeSubscriptions 只删 is_global = 0 的行，
-	// 所以全局订阅即使被传进来也删不掉 —— 这是最后一道防线。
+	// 所以已经全局的订阅即使被传进来也删不掉 —— 这是最后一道防线。
 	if _, err := s.store.MergeSubscriptions(ctx, []string{globalSub.ID, privateSub.ID}, privateSub.ID); err != nil {
 		t.Fatalf("合并失败: %v", err)
 	}
@@ -226,5 +237,87 @@ func TestGetSubByIDCrossTenant(t *testing.T) {
 	// 不存在的 id 应返回 ErrNotFound 而不是空对象。
 	if _, err := s.store.GetSubByID(ctx, "sub_does_not_exist"); err == nil {
 		t.Fatal("不存在的订阅应报错")
+	}
+}
+
+// TestMergeNotifiesAllIncludingKeeper 合并后所有人都要收到通知。
+//
+// 需求明确要求「合并完之后，删除要通知用户」。这里的「所有」包括保留者：
+// 他的订阅从「我的订阅」移到了全局层，列表里也会消失 —— 不通知他会以为
+// 自己的订阅被误删了。
+func TestMergeNotifiesAllIncludingKeeper(t *testing.T) {
+	s := newAutoTestServer(t)
+	ctx := context.Background()
+	u1 := seedUser(t, s, "mn1")
+	u2 := seedUser(t, s, "mn2")
+	u3 := seedUser(t, s, "mn3")
+
+	sub1 := makeSub(t, s, u1, "https://example.com/n1.txt", model.ListBlock)
+	sub2 := makeSub(t, s, u2, "https://example.com/n2.txt", model.ListBlock)
+	sub3 := makeSub(t, s, u3, "https://example.com/n3.txt", model.ListBlock)
+
+	// 直接用 store 层验证「保留项转全局 + 删除其余」的落库结果；
+	// 通知的发送在 api 层（handleAdminMergeDuplicateSubs），
+	// 这里先确认受影响用户清单覆盖了全部三个人，通知逻辑据此遍历。
+	res, err := s.store.MergeSubscriptions(ctx, []string{sub1.ID, sub2.ID, sub3.ID}, sub1.ID)
+	if err != nil {
+		t.Fatalf("合并失败: %v", err)
+	}
+	if res.KeepOwnerID != u1 {
+		t.Fatalf("保留者应是 %s，实际 %s", u1, res.KeepOwnerID)
+	}
+	if len(res.RemovedSubs) != 2 {
+		t.Fatalf("应删除 2 条，实际 %d", len(res.RemovedSubs))
+	}
+	// 三个人都在受影响清单里 —— 通知遍历这个清单，漏一个就少通知一个人。
+	if len(res.AffectedUsers) != 3 {
+		t.Fatalf("三个用户都该在受影响清单里，实际 %d: %v", len(res.AffectedUsers), res.AffectedUsers)
+	}
+	found := map[string]bool{}
+	for _, uid := range res.AffectedUsers {
+		found[uid] = true
+	}
+	for _, uid := range []string{u1, u2, u3} {
+		if !found[uid] {
+			t.Fatalf("用户 %s 不在受影响清单里", uid)
+		}
+	}
+}
+
+// TestMergeKeeperAppearsInGlobalLayer 保留项出现在全局层，不再属于个人列表。
+//
+// 这决定了用户和管理员分别在哪个页面看到它：
+// 管理员的「全局订阅」能管理它，用户的「我的订阅」看不到它。
+func TestMergeKeeperAppearsInGlobalLayer(t *testing.T) {
+	s := newAutoTestServer(t)
+	ctx := context.Background()
+	u1 := seedUser(t, s, "ml1")
+	u2 := seedUser(t, s, "ml2")
+
+	sub1 := makeSub(t, s, u1, "https://example.com/g1.txt", model.ListBlock)
+	sub2 := makeSub(t, s, u2, "https://example.com/g2.txt", model.ListBlock)
+
+	if _, err := s.store.MergeSubscriptions(ctx, []string{sub1.ID, sub2.ID}, sub1.ID); err != nil {
+		t.Fatalf("合并失败: %v", err)
+	}
+
+	// 全局层：有 1 条，就是保留项。
+	global := globalSubs(t, s)
+	if len(global) != 1 {
+		t.Fatalf("全局层应有 1 条订阅，实际 %d", len(global))
+	}
+	if global[0].ID != sub1.ID {
+		t.Fatalf("全局层那条应是保留项 %s，实际 %s", sub1.ID, global[0].ID)
+	}
+
+	// 个人层：两个人都看不到了（保留者那份已升级为全局）。
+	for _, uid := range []string{u1, u2} {
+		subs, err := s.store.ListSubs(ctx, uid, false)
+		if err != nil {
+			t.Fatalf("读用户 %s 订阅失败: %v", uid, err)
+		}
+		if len(subs) != 0 {
+			t.Fatalf("用户 %s 的私有订阅应为空，实际还剩 %d 条", uid, len(subs))
+		}
 	}
 }

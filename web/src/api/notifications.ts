@@ -64,7 +64,15 @@ export async function adminMarkFeedbackRead(id: string): Promise<void> {
 export async function mergeDuplicateSubs(
   subIds: string[],
   keepId?: string,
-): Promise<{ keep_id: string; removed: number; affected_users: number }> {
+): Promise<{
+  keep_id: string
+  removed: number
+  affected_users: number
+  /** 实际发出通知的人数（含保留者） */
+  notified?: number
+  /** 保留的那份是否已转为全局订阅 */
+  global?: boolean
+}> {
   const { data } = await api.post('/admin/subscriptions/merge', {
     sub_ids: subIds,
     keep_id: keepId,

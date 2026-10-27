@@ -5,14 +5,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
 
 // MergeResult 是一次手动合并的结果。
 type MergeResult struct {
-	// KeepID 被保留的订阅 id。
+	// KeepID 被保留并转成全局的订阅 id。
 	KeepID string
+	// KeepOwnerID 这条订阅原来的归属用户（保留原创建者，不做转移）。
+	KeepOwnerID string
+	// KeepOwnerName 这条订阅原来的名称（通知里要用）。
+	KeepOwnerName string
 	// RemovedSubs 被删除的订阅（含原归属用户与名称，用于发通知）。
 	RemovedSubs []MergedSub
 	// AffectedUsers 本次操作涉及的全部用户（含保留者）—— 他们的快照都要重建。
@@ -44,13 +49,24 @@ func (s *Store) GetSubByID(ctx context.Context, sid string) (*model.Subscription
 	return sub, nil
 }
 
-// MergeSubscriptions 把一组等价订阅合并成一条（保留 keepID，其余删除）。
+// MergeSubscriptions 把一组等价订阅合并成**一条全局订阅**（方案 1）。
 //
-// 调用方必须先做等价性校验 —— 这个函数只保证「删得干净」，
+// 语义：保留那一条转成 is_global = 1，其余删除。
+//
+// 为什么是转全局而不是就地保留成私有：
+// 合并会删掉其余几个人的订阅，如果保留项仍是私有，那几个人从此不再受
+// 这份名单保护 —— 一条「整理」动作就悄悄降低了他们的防护。转成全局后
+// 它对这些人生效，谁都不丢规则。
+//
+// 副作用要说清楚：保留者的订阅会从「我的订阅」移到管理员的「全局订阅」
+// （is_global = 1 之后不再属于个人列表）。调用方必须给**所有**受影响用户
+// 发通知，包括保留者 —— 否则他会以为订阅莫名其妙消失了。
+//
+// 调用方必须先做等价性校验 —— 这个函数只保证「删得干净、保留项转全局」，
 // 不判断「该不该删」。判断放在 api 层是因为它需要 CanonicalURL，
 // 而 store 不能反向依赖 subsub（会成环）。
 //
-// 一个事务内完成：删条目、删订阅、更新保留者的名称快照。
+// 一个事务内完成：删条目、删订阅、把保留项转全局。
 // 中途失败会回滚，不会出现「删了条目但订阅还在」的中间态
 // （那种状态下定时刷新会把它当成 0 条规则的空订阅）。
 func (s *Store) MergeSubscriptions(ctx context.Context, subIDs []string, keepID string) (*MergeResult, error) {
@@ -69,16 +85,33 @@ func (s *Store) MergeSubscriptions(ctx context.Context, subIDs []string, keepID 
 
 	for _, sid := range subIDs {
 		if sid == keepID {
-			// 保留的那条也要计入受影响用户：它的条目数、名称可能被更新，
-			// 用户的快照需要重建才能反映。
-			var uid string
+			// 保留项：读出归属信息（通知要用），并把它转成全局订阅。
+			var uid, name string
 			if err := tx.QueryRowContext(ctx,
-				`SELECT user_id FROM subscriptions WHERE id = ?`, sid).Scan(&uid); err != nil {
+				`SELECT user_id, name FROM subscriptions WHERE id = ?`, sid).Scan(&uid, &name); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return nil, fmt.Errorf("合并失败: 订阅 %s 不存在", sid)
 				}
 				return nil, fmt.Errorf("合并失败: %w", err)
 			}
+
+			// **转全局**。
+			//
+			// user_id 保留原创建者（不能置空：该列 NOT NULL 且带
+			// REFERENCES users(id) 外键），is_global = 1 才是「全局」的判据。
+			//
+			// promoted_at / promoted_from 记下这是一条被合并收录的订阅：
+			// 之后在全局订阅页上能区分「管理员自己建的」与「合并上来的」，
+			// 排查「这条全站生效的规则是什么时候冒出来的」时有用。
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE subscriptions
+				SET is_global = 1, promoted_at = ?, promoted_from = ?
+				WHERE id = ?`, time.Now().Unix(), uid, sid); err != nil {
+				return nil, fmt.Errorf("合并失败: 转为全局订阅: %w", err)
+			}
+
+			res.KeepOwnerID = uid
+			res.KeepOwnerName = name
 			userSet[uid] = struct{}{}
 			continue
 		}
