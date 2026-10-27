@@ -60,6 +60,74 @@ func (s *Store) ListSubs(ctx context.Context, uid string, global bool) ([]*model
 	return out, rows.Err()
 }
 
+// ListAllGlobalSubs 返回**全部**全局订阅，不按创建者过滤。
+//
+// 与 ListSubs(uid, true) 的区别：后者按 user_id = uid 过滤，只返回
+// 「这个人创建的」全局订阅。全局订阅的 user_id 只表示「谁建的」，
+// 生效范围是全站 —— 被自动收录或手动合并上来的订阅，user_id 保留的是
+// 原租户（可能是普通用户），用 ListSubs 查会让管理员在后台看不到它们。
+//
+// 管理端的全局订阅页必须用这个函数：它对全站在生效，
+// 看不到就等于无法管理。
+func (s *Store) ListAllGlobalSubs(ctx context.Context) ([]*model.Subscription, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT `+subCols+` FROM subscriptions WHERE is_global = 1 ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("列出全局订阅失败: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*model.Subscription, 0, 16)
+	for rows.Next() {
+		sub, err := scanSub(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+// UpdateSubByID 按 id 更新订阅（不校验归属），供管理端改全局订阅。
+//
+// 与 DeleteSubByID 同理：全局订阅的 user_id 可能是普通租户，
+// UpdateSub 的 `WHERE ... AND user_id = ?` 会让管理员的修改静默失败
+// （RowsAffected = 0 → ErrNotFound），而界面上只觉得「点了保存没反应」。
+func (s *Store) UpdateSubByID(ctx context.Context, sub *model.Subscription) error {
+	res, err := s.write.ExecContext(ctx,
+		`UPDATE subscriptions SET name=?, url=?, list_type=?, format=?, enabled=? WHERE id=? AND is_global=1`,
+		sub.Name, sub.URL, sub.ListType, sub.Format, boolInt(sub.Enabled), sub.ID)
+	if err != nil {
+		return fmt.Errorf("更新订阅失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteSubByID 按 id 删除订阅（不校验归属），供管理端删全局订阅。
+//
+// 全局订阅的 user_id 可能是普通租户（合并/收录保留原主人），
+// DeleteSub(uid, sid) 会因归属不符而删不掉 —— 管理员点了删除却报
+// 「订阅不存在」，而它确实在那里。
+//
+// 只给管理端全局路径用：普通用户路径仍然走 DeleteSub 的归属校验。
+func (s *Store) DeleteSubByID(ctx context.Context, sid string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sub_entries WHERE sub_id = ?`, sid); err != nil {
+			return fmt.Errorf("删除订阅条目失败: %w", err)
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM subscriptions WHERE id = ?`, sid)
+		if err != nil {
+			return fmt.Errorf("删除订阅失败: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // AllEnabledSubs 返回所有启用中的订阅（调度器刷新用）。
 func (s *Store) AllEnabledSubs(ctx context.Context) ([]*model.Subscription, error) {
 	rows, err := s.read.QueryContext(ctx,

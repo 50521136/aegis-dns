@@ -182,9 +182,43 @@ func normalizeStalePending(sub *model.Subscription) {
 	}
 }
 
+// getSubForScope 按作用域取订阅。
+//
+// 全局层**不校验归属**：全局订阅的 user_id 只是「谁建的」，生效范围是全站。
+// 被自动收录 / 手动合并转成全局的订阅，user_id 可能是普通租户，
+// 按当前登录管理员 uid 过滤会查不到 —— 于是列表里看不到、也改不了、删不了，
+// 而它对全站在生效，这等于给了管理员一个看不见的规则。
+//
+// 私有层仍然按归属过滤：普通用户绝不能读到别人的订阅。
+func (s *Server) getSubForScope(r *http.Request, uid, sid string, global bool) (*model.Subscription, error) {
+	if global {
+		return s.store.GetSubByID(r.Context(), sid)
+	}
+	return s.store.GetSub(r.Context(), uid, sid)
+}
+
 func (s *Server) listSubs(w http.ResponseWriter, r *http.Request, global bool) {
 	u := currentUser(r)
-	list, err := s.store.ListSubs(r.Context(), u.ID, global)
+
+	// 全局订阅**跨创建者可见**。
+	//
+	// 原来无条件用 ListSubs(uid, global)，即按 user_id = 当前登录者过滤。
+	// 这对私有订阅是对的，但全局订阅的 user_id 只是「谁建的」，
+	// 生效范围是全站 —— 被「自动收录 / 手动合并」转成全局的订阅，
+	// user_id 保留的是原租户（合并时保留项属于某个普通用户），
+	// 于是管理员在后台**看不到这一条**，只能看到自己建的。
+	//
+	// 实测就是这个现象：库里 6 条全局订阅，接口只返回 5 条，
+	// 合并上来的「666」不见了 —— 而它对全站在生效，是最需要被管理的。
+	var (
+		list []*model.Subscription
+		err  error
+	)
+	if global {
+		list, err = s.store.ListAllGlobalSubs(r.Context())
+	} else {
+		list, err = s.store.ListSubs(r.Context(), u.ID, global)
+	}
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
@@ -195,7 +229,7 @@ func (s *Server) listSubs(w http.ResponseWriter, r *http.Request, global bool) {
 		items = append(items, subToJSON(sub))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items, "total": len(items), "limit": s.subQuota(r.Context(), currentUser(r).ID, global),
+		"items": items, "total": len(items), "limit": s.subQuota(r.Context(), u.ID, global),
 	})
 }
 
@@ -325,7 +359,7 @@ func (s *Server) updateSub(w http.ResponseWriter, r *http.Request, global bool) 
 	u := currentUser(r)
 	sid := chi.URLParam(r, "id")
 
-	sub, err := s.store.GetSub(r.Context(), u.ID, sid)
+	sub, err := s.getSubForScope(r, u.ID, sid, global)
 	if err != nil {
 		writeStoreError(w, err, "订阅不存在")
 		return
@@ -361,12 +395,20 @@ func (s *Server) updateSub(w http.ResponseWriter, r *http.Request, global bool) 
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
 		return
 	}
-	if err := s.store.UpdateSub(r.Context(), sub); err != nil {
+	// 全局订阅用「按 id 更新」：UpdateSub 带 user_id 条件，
+	// 而全局订阅的 user_id 可能是原租户，会导致管理员改不动。
+	if global {
+		if err := s.store.UpdateSubByID(r.Context(), sub); err != nil {
+			writeStoreError(w, err, "订阅不存在")
+			return
+		}
+	} else if err := s.store.UpdateSub(r.Context(), sub); err != nil {
 		writeStoreError(w, err, "订阅不存在")
 		return
 	}
 
 	// 停用订阅必须立刻把它的条目从快照里摘掉，否则规则还在生效。
+	// 全局层改动影响所有人，走全量重建。
 	if err := s.touched(r.Context(), u.ID, global); err != nil {
 		writeStoreError(w, err, "")
 		return
@@ -399,7 +441,7 @@ func (s *Server) deleteSub(w http.ResponseWriter, r *http.Request, global bool) 
 	u := currentUser(r)
 	sid := chi.URLParam(r, "id")
 
-	sub, err := s.store.GetSub(r.Context(), u.ID, sid)
+	sub, err := s.getSubForScope(r, u.ID, sid, global)
 	if err != nil {
 		writeStoreError(w, err, "订阅不存在")
 		return
@@ -408,7 +450,14 @@ func (s *Server) deleteSub(w http.ResponseWriter, r *http.Request, global bool) 
 		writeError(w, http.StatusNotFound, CodeNotFound, "订阅不存在", nil)
 		return
 	}
-	if err := s.store.DeleteSub(r.Context(), u.ID, sid); err != nil {
+	// 删全局订阅用「按 id 删」：它的 user_id 可能不是当前管理员，
+	// DeleteSub(uid, sid) 会因归属不符而删不掉。
+	if global {
+		if err := s.store.DeleteSubByID(r.Context(), sid); err != nil {
+			writeStoreError(w, err, "订阅不存在")
+			return
+		}
+	} else if err := s.store.DeleteSub(r.Context(), u.ID, sid); err != nil {
 		writeStoreError(w, err, "订阅不存在")
 		return
 	}
@@ -431,7 +480,7 @@ func (s *Server) refreshSub(w http.ResponseWriter, r *http.Request, global bool)
 	u := currentUser(r)
 	sid := chi.URLParam(r, "id")
 
-	sub, err := s.store.GetSub(r.Context(), u.ID, sid)
+	sub, err := s.getSubForScope(r, u.ID, sid, global)
 	if err != nil {
 		writeStoreError(w, err, "订阅不存在")
 		return
@@ -465,7 +514,19 @@ func (s *Server) refreshAllSubs(w http.ResponseWriter, r *http.Request, global b
 
 	// 只刷新本作用域内的订阅：refresh-all 是用户级操作，
 	// 不能让任何登录用户触发全站拉取（那是放大器）。
-	subs, err := s.store.ListSubs(r.Context(), u.ID, global)
+	//
+	// 全局层用 ListAllGlobalSubs 而不是 ListSubs(uid, true)：
+	// 后者只返回「当前管理员创建的」，合并/收录上来的那些
+	// （user_id 是原租户）会被漏掉，「全部刷新」于是刷不全。
+	var (
+		subs []*model.Subscription
+		err  error
+	)
+	if global {
+		subs, err = s.store.ListAllGlobalSubs(r.Context())
+	} else {
+		subs, err = s.store.ListSubs(r.Context(), u.ID, global)
+	}
 	if err != nil {
 		writeStoreError(w, err, "")
 		return
