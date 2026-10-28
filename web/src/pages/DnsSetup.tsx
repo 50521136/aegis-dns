@@ -139,8 +139,12 @@ export default function DnsSetup() {
 
                       {/* iOS / macOS 原生支持 com.apple.dnsSettings.managed，
                           装了描述文件就系统级生效，不用逐台手填地址。
-                          Windows / Android 没有等价机制，不给这个按钮。 */}
-                      {(g.platform === 'ios' || g.platform === 'macos') && data.client_id && (
+                          Windows / Android 没有等价机制，不给这个按钮。
+
+                          三个条件缺一不可：管理员开了描述文件下发、该载荷对描述文件开放
+                          （后端已把全局协议与描述文件开关求过交集）、并且真算出了地址。
+                          少判一个就会给用户一个下下来装了不生效的文件。 */}
+                      {(g.platform === 'ios' || g.platform === 'macos') && data.client_id && data.enable_ios_profile && (
                         <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
                           <p className="text-xs text-muted-foreground">
                             描述文件装好后系统级生效，适合多设备。选一个协议下载：
@@ -149,7 +153,7 @@ export default function DnsSetup() {
                             {/* 两个协议各给一个按钮：DoH 走 443、兼容性最好；
                                 DoT 走 853，在只放行 DoT 的网络里能用。
                                 没开启的协议不出现，避免下到一个用不了的文件。 */}
-                            {data.enable_doh && data.doh_url && (
+                            {data.enable_doh && data.doh_url && data.profile_doh && (
                               <Button
                                 variant="outline"
                                 size="sm"
@@ -166,7 +170,7 @@ export default function DnsSetup() {
                                 DoH 描述文件（HTTPS）
                               </Button>
                             )}
-                            {data.enable_dot && data.dot_host && (
+                            {data.enable_dot && data.dot_host && data.profile_dot && (
                               <Button
                                 variant="outline"
                                 size="sm"
@@ -183,11 +187,12 @@ export default function DnsSetup() {
                                 DoT 描述文件（TLS）
                               </Button>
                             )}
-                            {!data.enable_doh && !data.enable_dot && (
-                              <span className="text-xs text-danger">
-                                DoH 与 DoT 均未开启，暂不能生成描述文件
-                              </span>
-                            )}
+                            {(!data.enable_doh || !data.doh_url || !data.profile_doh) &&
+                              (!data.enable_dot || !data.dot_host || !data.profile_dot) && (
+                                <span className="text-xs text-muted-foreground">
+                                  当前没有对描述文件开放的协议，请按上面的步骤手动填入地址
+                                </span>
+                              )}
                           </div>
                         </div>
                       )}

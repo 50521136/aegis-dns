@@ -150,6 +150,15 @@ const settingsSchema = z.object({
   enable_doh: z.boolean(),
   enable_dot: z.boolean(),
   enable_plain_dns: z.boolean(),
+  // iOS / macOS 描述文件（.mobileconfig）的三个开关。
+  //
+  // profile_doh_available / profile_dot_available 是后端给的只读派生字段，
+  // 故意**不**放进这个 schema：表单值会被原样 PUT 回去，而后端 decodeJSON
+  // 开了 DisallowUnknownFields，多带一个只读字段整次保存就 400。
+  // 置灰状态直接读 settingsQuery.data，不走表单。
+  enable_ios_profile: z.boolean(),
+  profile_doh: z.boolean(),
+  profile_dot: z.boolean(),
   signup_member_days: z.coerce.number().int().min(0),
   // 奖励发放的会员种类。空串是合法值 = 默认会员档，所以不能用 min(1)。
   signup_member_tier: z.string(),
@@ -378,6 +387,78 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                   <p className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
                     关闭 DoT 后 Android「私人 DNS」无法接入，该平台指引会显示「暂不支持」。
                   </p>
+                )}
+              </div>
+
+              {/* iOS / macOS 描述文件：把「描述文件里装哪种载荷」变成管理员可配的，
+                  而不是「全局 DoH/DoT 开着就一定能下」。
+                  两个载荷开关是全局协议的下级 —— 全局关了就把开关置灰，
+                  否则管理员会配出「下得到的文件装上不生效」的组合。 */}
+              <div className="space-y-2 rounded-xl border border-border bg-background px-4 py-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">iOS / macOS 描述文件</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      系统级加密 DNS 的 .mobileconfig 批量下发。关掉后「我的 DNS」不再出现下载入口，
+                      直接访问接口也会被拒绝。
+                    </p>
+                  </div>
+                  {toggle('enable_ios_profile')}
+                </div>
+
+                {form.watch('enable_ios_profile') && (
+                  <div className="space-y-2 border-t border-border/60 pt-3">
+                    {[
+                      {
+                        key: 'profile_doh' as const,
+                        name: 'HTTPS 载荷（DoH）',
+                        desc: 'DNSProtocol=HTTPS，用 ServerURL，Apple 支持最稳。',
+                        // 可用性直接看表单里的全局协议开关（实时联动），
+                        // 不要读服务端快照：管理员刚关掉全局 DoH 时快照还是旧的，
+                        // 开关会看起来还能点。
+                        available: Boolean(form.watch('enable_doh')),
+                        blockedHint: '全局 DoH 已关闭，此项不可用（描述文件的载荷不能超出全局协议）。',
+                      },
+                      {
+                        key: 'profile_dot' as const,
+                        name: 'TLS 载荷（DoT）',
+                        desc: 'DNSProtocol=TLS，用 ServerName，适合只放行 853 的网络。',
+                        available: Boolean(form.watch('enable_dot')),
+                        blockedHint: '全局 DoT 已关闭，此项不可用（描述文件的载荷不能超出全局协议）。',
+                      },
+                    ].map((it) => {
+                      const on = Boolean(form.watch(it.key)) && it.available
+                      return (
+                        <div
+                          key={it.key}
+                          className="flex items-start justify-between gap-4 rounded-lg bg-muted/40 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">{it.name}</p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              {it.available ? it.desc : it.blockedHint}
+                            </p>
+                          </div>
+                          <Switch
+                            checked={on}
+                            disabled={!it.available}
+                            onCheckedChange={(v) => form.setValue(it.key, v)}
+                          />
+                        </div>
+                      )
+                    })}
+                    {/* 全局还有加密协议、但两个载荷都被堵死时，保存会被后端拒绝。
+                        这里先提示，别等管理员点保存才看到报错。
+                        全局 DoH/DoT 全关的情况不算矛盾（描述文件本来就没载荷可用），
+                        所以只在还有全局协议时提示。 */}
+                    {(form.watch('enable_doh') || form.watch('enable_dot')) &&
+                      !(form.watch('enable_doh') && form.watch('profile_doh')) &&
+                      !(form.watch('enable_dot') && form.watch('profile_dot')) && (
+                        <p className="text-xs text-danger">
+                          两种载荷都不可用（需要全局协议与对应的载荷开关同时打开），保存会被拒绝。
+                        </p>
+                      )}
+                  </div>
                 )}
               </div>
 

@@ -190,6 +190,20 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["enable_plain_dns"]; ok {
 		set.EnablePlainDNS = v == "1" || strings.EqualFold(v, "true")
 	}
+	// 描述文件开关。老库里没有这三个键，缺省时保留 DefaultSettings 的全开值，
+	// 否则升级后 iOS 用户的描述文件入口会全部消失。
+	for _, kvp := range []struct {
+		key string
+		dst *bool
+	}{
+		{"enable_ios_profile", &set.EnableProfile},
+		{"profile_doh", &set.ProfileDoH},
+		{"profile_dot", &set.ProfileDoT},
+	} {
+		if v, ok := kv[kvp.key]; ok {
+			*kvp.dst = v == "1" || strings.EqualFold(v, "true")
+		}
+	}
 	if v, ok := kv["allow_register"]; ok {
 		set.AllowRegister = v == "1" || strings.EqualFold(v, "true")
 	}
@@ -327,6 +341,9 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"enable_doh":              boolStr(set.EnableDoH),
 		"enable_dot":              boolStr(set.EnableDoT),
 		"enable_plain_dns":        boolStr(set.EnablePlainDNS),
+		"enable_ios_profile":      boolStr(set.EnableProfile),
+		"profile_doh":             boolStr(set.ProfileDoH),
+		"profile_dot":             boolStr(set.ProfileDoT),
 		"allow_register":          boolStr(set.AllowRegister),
 		"invite_code":             set.InviteCode,
 		"update_repo":             set.UpdateRepo,

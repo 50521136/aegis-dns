@@ -162,48 +162,66 @@ func xmlEscape(s string) string {
 
 // handleMobileConfig 下发当前用户的 iOS/macOS 加密 DNS 描述文件。
 //
-// 优先 DoH（描述文件形态最稳，Apple 原生支持），DoH 关掉时退到 DoT。
-// 两个都关就返回 409 —— 生成一份地址为空的描述文件比不生成更糟：
+// 三种载荷的可用性都来自管理员配置，而不是「全局协议开着就一定能下」：
+//   - EnableProfile 关掉 → 整条路径关闭，直接 409（前端也不显示入口，
+//     但这里必须自己拦一遍，否则知道 URL 的人能绕过界面拿到文件）；
+//   - profile_doh / profile_dot 是全局 DoH / DoT 的下级开关，
+//     生效值 = 全局 && 描述文件，由 s.protos() 一次算好。
+//
+// 一个可下的载荷都没有时同样 409 —— 生成一份地址为空的描述文件比不生成更糟：
 // 装上之后系统显示「已安装」，但解析全挂，用户完全看不出哪里错了。
 func (s *Server) handleMobileConfig(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	protos := s.protos(r.Context())
 	cfg := buildDNSConfig(s.domain(r), u.ClientID, s.fingerprint(), s.dnsPorts(), s.coversSubdomains(r), s.rootDomainReserved(r.Context()), protos)
 
+	if !protos.Profile {
+		writeError(w, http.StatusConflict, CodeFeatureDisabled, "管理员未开启描述文件下发", nil)
+		return
+	}
+	// 地址也要一起判：协议开着但算不出地址（例如没有通配符又拿不到路径式地址）
+	// 时同样不能生成文件。
+	allowDoH := protos.ProfileDoH && cfg.DoHURL != ""
+	allowDoT := protos.ProfileDoT && cfg.DoTHost != ""
+
 	// proto 让用户自己选生成哪种描述文件：
-	//   doh → DNSProtocol=HTTPS（默认，Apple 支持最稳）
+	//   doh → DNSProtocol=HTTPS（Apple 支持最稳）
 	//   dot → DNSProtocol=TLS
 	// 不传就按「DoH 优先、其次 DoT」自动挑，兼容老页面。
+	// 管理员只允许一种时，传另一种必须明确报错，而不是悄悄降级成另一种 ——
+	// 用户要的是 DoT 文件，给他一个 DoH 的装上会以为配置生效了。
 	want := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("proto")))
 	target := profileTarget{Fingerprint: cfg.CertFingerprintSHA256}
 	switch want {
 	case "dot", "tls":
-		if !protos.DoT || cfg.DoTHost == "" {
-			writeError(w, http.StatusConflict, CodeFeatureDisabled, "DoT 未开启，无法生成 DoT 描述文件", nil)
+		if !allowDoT {
+			writeError(w, http.StatusConflict, CodeFeatureDisabled,
+				"DoT 描述文件未开启（需要全局 DoT 与描述文件里的 TLS 开关同时打开）", nil)
 			return
 		}
 		target.Protocol = "TLS"
 		target.ServerName = cfg.DoTHost
 	case "doh", "https":
-		if !protos.DoH || cfg.DoHURL == "" {
-			writeError(w, http.StatusConflict, CodeFeatureDisabled, "DoH 未开启，无法生成 DoH 描述文件", nil)
+		if !allowDoH {
+			writeError(w, http.StatusConflict, CodeFeatureDisabled,
+				"DoH 描述文件未开启（需要全局 DoH 与描述文件里的 HTTPS 开关同时打开）", nil)
 			return
 		}
 		target.Protocol = "HTTPS"
 		target.ServerURL = cfg.DoHURL
 	default:
 		switch {
-		case protos.DoH && cfg.DoHURL != "":
+		case allowDoH:
 			target.Protocol = "HTTPS"
 			target.ServerURL = cfg.DoHURL
-		case protos.DoT && cfg.DoTHost != "":
+		case allowDoT:
 			target.Protocol = "TLS"
 			target.ServerName = cfg.DoTHost
 		}
 	}
 	if !target.Usable() {
 		writeError(w, http.StatusConflict, CodeFeatureDisabled,
-			"当前没有可用的加密 DNS 协议（DoH / DoT 均已关闭），无法生成描述文件", nil)
+			"当前没有可用的加密 DNS 协议（DoH / DoT 均已关闭或未对描述文件开放），无法生成描述文件", nil)
 		return
 	}
 

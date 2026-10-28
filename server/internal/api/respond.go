@@ -284,8 +284,14 @@ type dnsConfigJSON struct {
 	EnableDoT      bool `json:"enable_dot"`
 	EnablePlainDNS bool `json:"enable_plain_dns"`
 	// EnableDoQ / EnableDoH3 跟随 DoT / DoH 开关，另加「config 里配了监听」这个前提。
-	EnableDoQ      bool            `json:"enable_doq"`
-	EnableDoH3     bool            `json:"enable_doh3"`
+	EnableDoQ  bool `json:"enable_doq"`
+	EnableDoH3 bool `json:"enable_doh3"`
+	// 描述文件（iOS / macOS）能否下载，以及里面允许哪种载荷。
+	// 前端据此决定露不露那两个下载按钮 —— 下到一个装了不生效的文件
+	// 比根本不给按钮更糟：用户会以为自己配好了。
+	EnableProfile  bool            `json:"enable_ios_profile"`
+	ProfileDoH     bool            `json:"profile_doh"`
+	ProfileDoT     bool            `json:"profile_dot"`
 	PlatformGuides []platformGuide `json:"platform_guides"`
 }
 
@@ -307,6 +313,12 @@ type protoSet struct {
 	// 没配监听就下发地址，用户照填必然连不上。
 	DoQ  bool
 	DoH3 bool
+	// Profile / ProfileDoH / ProfileDoT 是 iOS / macOS 描述文件这条路径的开关。
+	// 三者存的都已经是**生效值**（全局协议开关 AND 描述文件开关）：
+	// 全局关掉的协议不可能出现在描述文件里，所以这里不必再各自查一遍全局。
+	Profile    bool
+	ProfileDoH bool
+	ProfileDoT bool
 }
 
 // dnsPorts 是下发给客户端的实际端口。
@@ -363,6 +375,11 @@ func buildDNSConfig(domain, clientID, fingerprint string, ports dnsPorts, wildca
 		EnableDoH:             protos.DoH,
 		EnableDoT:             protos.DoT,
 		EnablePlainDNS:        protos.Plain,
+		// 描述文件：能否下载 + 允许哪种载荷。三个值都已经是生效值，
+		// 前端直接拿来决定按钮显隐，不必自己再和全局协议求交集。
+		EnableProfile: protos.Profile,
+		ProfileDoH:    protos.ProfileDoH,
+		ProfileDoT:    protos.ProfileDoT,
 	}
 	// 关掉的协议一律不下发地址：页面上没地址，用户就没法照着填一个连不上的东西
 	if protos.DoH {
@@ -433,39 +450,47 @@ func platformGuides(clientID, domain, dohURL, dothost string, wildcard bool, pro
 
 	out := make([]platformGuide, 0, 5)
 
+	// 描述文件那句文案必须跟着管理员开关走：关掉下发还写「或安装描述文件」，
+	// 用户会照着找一圈按钮然后找不到。只开放一种载荷时就只提那一种 ——
+	// 提了另一种等于让人去找一个不存在的按钮。
+	profileStep := func(label string, allowed bool) string {
+		if !protos.Profile || !allowed {
+			return ""
+		}
+		return "或安装 " + label + " 描述文件（.mobileconfig）批量下发，适合多设备"
+	}
+
 	// iOS / macOS：系统级加密 DNS 走 DoH（描述文件）或 DoT
 	if protos.DoH {
+		iosSteps := []string{
+			"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
+			"选择「加密 DNS」，填入 DoH 地址：" + dohURL,
+		}
+		macSteps := []string{
+			"打开「系统设置」→「网络」→ 选中当前连接 →「详细信息」",
+			"切到「DNS」标签页，添加 DNS 服务器",
+		}
+		if note := profileStep("DoH", protos.ProfileDoH); note != "" {
+			iosSteps = append(iosSteps, note)
+			macSteps = append(macSteps, "如需加密 DNS，安装描述文件并填入："+dohURL)
+		} else {
+			// 描述文件这条路不通时，macOS 只能手填地址 —— 不能提描述文件。
+			macSteps = append(macSteps, "加密 DNS 请直接填 DoH 地址："+dohURL)
+		}
 		out = append(out,
-			platformGuide{
-				Platform:  "ios",
-				Supported: true,
-				Steps: []string{
-					"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
-					"选择「加密 DNS」，填入 DoH 地址：" + dohURL,
-					"或安装描述文件（.mobileconfig）批量下发，适合多设备",
-				},
-			},
-			platformGuide{
-				Platform:  "macos",
-				Supported: true,
-				Steps: []string{
-					"打开「系统设置」→「网络」→ 选中当前连接 →「详细信息」",
-					"切到「DNS」标签页，添加 DNS 服务器",
-					"如需加密 DNS，安装描述文件并填入：" + dohURL,
-				},
-			},
+			platformGuide{Platform: "ios", Supported: true, Steps: iosSteps},
+			platformGuide{Platform: "macos", Supported: true, Steps: macSteps},
 		)
 	} else if protos.DoT {
+		iosSteps := []string{
+			"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
+			"选择「加密 DNS」→「手动」，主机名填：" + host + dotNote,
+		}
+		if note := profileStep("DoT", protos.ProfileDoT); note != "" {
+			iosSteps = append(iosSteps, note)
+		}
 		out = append(out,
-			platformGuide{
-				Platform:  "ios",
-				Supported: true,
-				Steps: []string{
-					"打开「设置」→「通用」→「VPN 与设备管理」→「DNS」",
-					"选择「加密 DNS」→「手动」，主机名填：" + host + dotNote,
-					"或安装描述文件（.mobileconfig）批量下发",
-				},
-			},
+			platformGuide{Platform: "ios", Supported: true, Steps: iosSteps},
 			platformGuide{
 				Platform:  "macos",
 				Supported: true,
@@ -600,16 +625,40 @@ func (s *Server) rootDomainReserved(ctx context.Context) bool {
 func (s *Server) protos(ctx context.Context) protoSet {
 	set, err := s.store.GetSettings(ctx)
 	if err != nil || set == nil {
-		return protoSet{DoH: true, DoT: true, Plain: true, DoQ: s.cfg.DNS.ListenDOQ != "", DoH3: s.cfg.DNS.ListenDOH3 != ""}
+		return protoSet{
+			DoH: true, DoT: true, Plain: true,
+			DoQ: s.cfg.DNS.ListenDOQ != "", DoH3: s.cfg.DNS.ListenDOH3 != "",
+			Profile: true, ProfileDoH: true, ProfileDoT: true,
+		}
 	}
 	ps := protoSet{DoH: set.EnableDoH, DoT: set.EnableDoT, Plain: set.EnablePlainDNS}
 	if !ps.DoH && !ps.DoT && !ps.Plain {
-		return protoSet{DoH: true, DoT: true, Plain: true, DoQ: s.cfg.DNS.ListenDOQ != "", DoH3: s.cfg.DNS.ListenDOH3 != ""}
+		return protoSet{
+			DoH: true, DoT: true, Plain: true,
+			DoQ: s.cfg.DNS.ListenDOQ != "", DoH3: s.cfg.DNS.ListenDOH3 != "",
+			Profile: true, ProfileDoH: true, ProfileDoT: true,
+		}
 	}
 	// DoQ 跟随 DoT、DoH3 跟随 DoH（与 dnsd 侧 protoEnabled 的判定一致），
 	// 另外要求 config.yaml 里真的配了监听 —— 没起监听却下发地址，
 	// 用户照着填一定连不上，而服务端连日志都不会有。
 	ps.DoQ = ps.DoT && s.cfg.DNS.ListenDOQ != ""
 	ps.DoH3 = ps.DoH && s.cfg.DNS.ListenDOH3 != ""
+	// 描述文件的载荷是全局协议的**下级**：全局关掉的协议一律不出现在描述文件里。
+	// 这里一次算成生效值，handler 与前端都只认它，避免两处各写一遍交集逻辑走偏。
+	return profileGate(ps, set)
+}
+
+// profileGate 把「描述文件开关」收敛成生效值。
+//
+// 抽成纯函数是为了能直接测：这条规则一旦写错，用户会拿到一份
+// 「装上了但解析全挂」的描述文件，而线上没有任何报错可查。
+func profileGate(ps protoSet, set *model.GlobalSettings) protoSet {
+	if set == nil {
+		return ps
+	}
+	ps.Profile = set.EnableProfile
+	ps.ProfileDoH = ps.DoH && set.ProfileDoH
+	ps.ProfileDoT = ps.DoT && set.ProfileDoT
 	return ps
 }

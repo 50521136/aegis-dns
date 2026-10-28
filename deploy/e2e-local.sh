@@ -194,6 +194,64 @@ curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Co
 code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig")
 [[ "$code" == "401" ]] && ok "未认证下载 → 401" || bad "未认证下载返回 $code"
 
+# ── 描述文件的细粒度开关（管理员可配 HTTPS / TLS 载荷 + 整体下发）──
+# 这一组锁的是「前端隐藏按钮之外，接口自己也得拦」：
+# 知道 /me/mobileconfig 这个 URL 的人可以绕开界面直接拿文件。
+
+hdr "描述文件细粒度开关"
+
+# 1) /me/dns-config 必须下发三个生效值，前端据此决定按钮显隐
+DC=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $PAT")
+echo "$DC" | grep -q '"enable_ios_profile":true' && ok "dns-config 下发 enable_ios_profile" || bad "缺 enable_ios_profile"
+echo "$DC" | grep -q '"profile_doh":true' && ok "dns-config 下发 profile_doh" || bad "缺 profile_doh"
+echo "$DC" | grep -q '"profile_dot":true' && ok "dns-config 下发 profile_dot" || bad "缺 profile_dot"
+
+# 2) 只关 HTTPS 载荷：proto=doh 必须 409，proto=dot 仍然 200
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"profile_doh":false}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig?proto=doh" -H "Authorization: Bearer $PAT")
+[[ "$code" == "409" ]] && ok "HTTPS 载荷关闭时拒绝 DoH 描述文件（409）" || bad "HTTPS 载荷关闭仍生成: $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig?proto=dot" -H "Authorization: Bearer $PAT")
+[[ "$code" == "200" ]] && ok "HTTPS 载荷关闭时 TLS 载荷仍可下" || bad "TLS 载荷被误伤: $code"
+# 不指定 proto 时应自动回退到仍可用的 TLS，而不是给一份 HTTPS
+curl -s "$API/me/mobileconfig" -H "Authorization: Bearer $PAT" -o "$RUN/e2e-profile-fallback.mobileconfig"
+grep -q '<string>TLS</string>' "$RUN/e2e-profile-fallback.mobileconfig" \
+  && ok "HTTPS 载荷关闭时自动回退 TLS" || bad "没回退到 TLS"
+
+# 3) 载荷开关是全局协议的下级：全局 DoH 关掉后，即使 profile_doh=true 也不能下
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":false,"profile_doh":true,"profile_dot":true}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig?proto=doh" -H "Authorization: Bearer $PAT")
+[[ "$code" == "409" ]] && ok "全局 DoH 关闭时 HTTPS 载荷不可用（409）" || bad "全局 DoH 关闭仍生成 HTTPS: $code"
+DC=$(curl -fsS "$API/me/dns-config" -H "Authorization: Bearer $PAT")
+echo "$DC" | grep -q '"profile_doh":false' \
+  && ok "dns-config 里 profile_doh 已按全局协议收敛为 false" || bad "profile_doh 未与全局协议求交集"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":true,"enable_dot":true,"profile_doh":true,"profile_dot":true}' >/dev/null
+
+# 4) 整体关掉描述文件下发：任何 proto 都 409，包括不带 proto 的默认请求
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_ios_profile":false}' >/dev/null
+for p in "" "?proto=doh" "?proto=dot"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig$p" -H "Authorization: Bearer $PAT")
+  [[ "$code" == "409" ]] && ok "描述文件关闭时 /me/mobileconfig$p → 409" || bad "描述文件关闭仍下发$p: $code"
+done
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_ios_profile":true}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/me/mobileconfig?proto=doh" -H "Authorization: Bearer $PAT")
+[[ "$code" == "200" ]] && ok "重新开启描述文件后恢复下发" || bad "重新开启后仍不可用: $code"
+
+# 5) 保存校验：全局还有加密协议、描述文件却一个载荷都没开 → 必须拒绝
+code=$(curl -s -o /tmp/mcdead.out -w '%{http_code}' -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"profile_doh":false,"profile_dot":false}')
+[[ "$code" == "422" ]] && ok "描述文件无可用载荷时拒绝保存（422）" || bad "矛盾配置未被拒绝: $code $(cat /tmp/mcdead.out)"
+# 只留明文 53 是合法操作，不该被拦（此时描述文件本来就没载荷）
+code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"enable_doh":false,"enable_dot":false,"enable_plain_dns":true}')
+[[ "$code" == "200" ]] && ok "只留明文 53 时允许保存" || bad "只留明文 53 被误拦: $code"
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d '{"enable_doh":true,"enable_dot":true,"enable_plain_dns":true,"profile_doh":true,"profile_dot":true}' >/dev/null
+
 hdr "添加规则"
 add_rule() {
   local body="$1" code

@@ -500,6 +500,22 @@ type GlobalSettings struct {
 	EnableDoH      bool `json:"enable_doh"`
 	EnableDoT      bool `json:"enable_dot"`
 	EnablePlainDNS bool `json:"enable_plain_dns"`
+
+	// --- iOS / macOS 描述文件（.mobileconfig）---
+	//
+	// EnableProfile 控制描述文件这条接入路径整体能不能用。关掉后
+	// /me/mobileconfig 直接 409，「我的 DNS」也不再出现下载入口 ——
+	// 管理员可能只想让用户手填地址，不想让描述文件满世界流传。
+	EnableProfile bool `json:"enable_ios_profile"`
+	// ProfileDoH / ProfileDoT 是描述文件内部两种载荷各自的开关：
+	// HTTPS 用 ServerURL、TLS 用 ServerName。
+	//
+	// 它们是上面 EnableDoH / EnableDoT 的**下级**：生效值 = 全局 && 本开关。
+	// 全局关掉的协议绝不允许出现在描述文件里 —— 那样装上去 iOS 显示
+	// 「已安装」，解析全挂，用户完全看不出哪里错了，比不给文件更糟。
+	// 所以这里只做「缩小范围」，不做「绕过全局」。
+	ProfileDoH bool `json:"profile_doh"`
+	ProfileDoT bool `json:"profile_dot"`
 	// CheckinDays 是单次签到赠送的天数。
 	CheckinDays int `json:"checkin_days"`
 	// CheckinBonusEvery 是「累计签到满多少天」触发额外奖励的门槛，0 表示不设累计奖励。
@@ -632,6 +648,11 @@ func DefaultSettings() GlobalSettings {
 		EnableDoH:      true,
 		EnableDoT:      true,
 		EnablePlainDNS: true,
+		// 描述文件默认全开：老库升级上来没有这三个键，必须保持「和以前一样能用」，
+		// 否则升级后所有 iOS 用户的下载按钮会静默消失。
+		EnableProfile: true,
+		ProfileDoH:    true,
+		ProfileDoT:    true,
 		// 国内可达的两个公共解析器，用于解析 DoH/DoT 上游的主机名。
 		BootstrapDNS: []string{"223.5.5.5", "119.29.29.29"},
 		SubIntervalH: 24,

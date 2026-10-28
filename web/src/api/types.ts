@@ -74,6 +74,16 @@ export interface DnsConfig {
   enable_plain_dns: boolean
   enable_doq?: boolean
   enable_doh3?: boolean
+  /**
+   * iOS / macOS 描述文件（.mobileconfig）的开关。
+   *
+   * 三个值都是后端算好的**生效值**：profile_doh / profile_dot 已经和全局
+   * enable_doh / enable_dot 求过交集，前端直接用来决定按钮显隐，
+   * 不要再自己与一次 —— 两处各算一遍必然有一天对不上。
+   */
+  enable_ios_profile: boolean
+  profile_doh: boolean
+  profile_dot: boolean
   platform_guides: PlatformGuide[]
 }
 
@@ -440,6 +450,24 @@ export interface AdminSettings {
   geetest_on_login: boolean
   geetest_on_forgot: boolean
   geetest_on_feedback: boolean
+
+  /** 接入协议开关：关掉的协议不下发地址、已接入的客户端会被 REFUSED */
+  enable_doh: boolean
+  enable_dot: boolean
+  enable_plain_dns: boolean
+  /**
+   * iOS / macOS 描述文件（.mobileconfig）的三个开关。
+   *
+   * enable_ios_profile 管这条路径整体能不能用；
+   * profile_doh / profile_dot 是描述文件里两种载荷（HTTPS / TLS）各自的开关。
+   *
+   * 后两个是上面 enable_doh / enable_dot 的**下级**：生效值 = 全局 && 本开关。
+   * 全局关掉的协议绝不允许出现在描述文件里 —— 那样用户下到的文件装上之后
+   * iOS 显示「已安装」但解析全挂，比不给按钮更糟。
+   */
+  enable_ios_profile: boolean
+  profile_doh: boolean
+  profile_dot: boolean
 }
 
 /** PUT /admin/settings 里只写不读的极验私钥字段。 */

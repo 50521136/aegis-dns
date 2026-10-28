@@ -206,25 +206,33 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 // settingsJSON 补充只读的派生字段。
 func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 	out := map[string]any{
-		"domain":                  set.Domain,
-		"upstreams":               set.Upstreams,
-		"bootstrap_dns":           set.BootstrapDNS,
-		"proxy_url":               set.ProxyURL,
-		"proxy_enabled":           set.ProxyEnabled,
-		"blocking_mode":           set.BlockingMode,
-		"custom_ip":               set.CustomIP,
-		"fallback_policy":         set.FallbackPolicy,
-		"cache_size":              set.CacheSize,
-		"cache_min_ttl":           set.CacheMinTTL,
-		"cache_max_ttl":           set.CacheMaxTTL,
-		"rate_limit_qps":          set.RateLimitQPS,
-		"max_inflight":            set.MaxInflight,
-		"query_timeout_ms":        set.QueryTimeoutMS,
-		"query_log_size":          set.QueryLogSize,
-		"enable_query_log":        set.EnableQueryLog,
-		"enable_doh":              set.EnableDoH,
-		"enable_dot":              set.EnableDoT,
-		"enable_plain_dns":        set.EnablePlainDNS,
+		"domain":           set.Domain,
+		"upstreams":        set.Upstreams,
+		"bootstrap_dns":    set.BootstrapDNS,
+		"proxy_url":        set.ProxyURL,
+		"proxy_enabled":    set.ProxyEnabled,
+		"blocking_mode":    set.BlockingMode,
+		"custom_ip":        set.CustomIP,
+		"fallback_policy":  set.FallbackPolicy,
+		"cache_size":       set.CacheSize,
+		"cache_min_ttl":    set.CacheMinTTL,
+		"cache_max_ttl":    set.CacheMaxTTL,
+		"rate_limit_qps":   set.RateLimitQPS,
+		"max_inflight":     set.MaxInflight,
+		"query_timeout_ms": set.QueryTimeoutMS,
+		"query_log_size":   set.QueryLogSize,
+		"enable_query_log": set.EnableQueryLog,
+		"enable_doh":       set.EnableDoH,
+		"enable_dot":       set.EnableDoT,
+		"enable_plain_dns": set.EnablePlainDNS,
+		// 描述文件（iOS / macOS）开关。后两个是「描述文件内部允许哪种载荷」，
+		// 受全局协议开关约束：生效值 = 全局 && 本开关（前端据此把开关置灰）。
+		// 生效值的计算只发生在后端 protos() / 前端的表单联动各一处，
+		// 不再额外下发一个「全局是否开着」的派生字段 —— 那就是 enable_doh 的副本，
+		// 两处来源必然有一天对不上。
+		"enable_ios_profile":      set.EnableProfile,
+		"profile_doh":             set.ProfileDoH,
+		"profile_dot":             set.ProfileDoT,
 		"sub_interval_hours":      set.SubIntervalH,
 		"sub_refresh_hour":        set.SubRefreshHour,
 		"sub_refresh_minute":      set.SubRefreshMinute,
@@ -340,9 +348,13 @@ type settingsPatch struct {
 	QueryLogSize   *int      `json:"query_log_size"`
 	EnableQueryLog *bool     `json:"enable_query_log"`
 	// 协议开关用指针：漏传 = 不变，不会因为前端没带字段就把协议关掉
-	EnableDoH          *bool   `json:"enable_doh"`
-	EnableDoT          *bool   `json:"enable_dot"`
-	EnablePlainDNS     *bool   `json:"enable_plain_dns"`
+	EnableDoH      *bool `json:"enable_doh"`
+	EnableDoT      *bool `json:"enable_dot"`
+	EnablePlainDNS *bool `json:"enable_plain_dns"`
+	// 描述文件（iOS / macOS）的三个开关，同样是「漏传 = 不变」
+	EnableProfile      *bool   `json:"enable_ios_profile"`
+	ProfileDoH         *bool   `json:"profile_doh"`
+	ProfileDoT         *bool   `json:"profile_dot"`
 	SubIntervalH       *int    `json:"sub_interval_hours"`
 	SubRefreshHour     *int    `json:"sub_refresh_hour"`
 	SubRefreshMinute   *int    `json:"sub_refresh_minute"`
@@ -529,6 +541,9 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setBool(&dst.EnableDoH, p.EnableDoH)
 	setBool(&dst.EnableDoT, p.EnableDoT)
 	setBool(&dst.EnablePlainDNS, p.EnablePlainDNS)
+	setBool(&dst.EnableProfile, p.EnableProfile)
+	setBool(&dst.ProfileDoH, p.ProfileDoH)
+	setBool(&dst.ProfileDoT, p.ProfileDoT)
 	setBool(&dst.AllowRegister, p.AllowRegister)
 	setBool(&dst.AllowRootDomain, p.AllowRootDomain)
 	setBool(&dst.RootDomainReserved, p.RootDomainReserved)
@@ -936,6 +951,17 @@ func validateSettings(s *model.GlobalSettings) error {
 	// 三个协议全关等于服务对外不可用，直接拒绝保存
 	if !s.EnableDoH && !s.EnableDoT && !s.EnablePlainDNS {
 		return errValidation("DoH / DoT / 普通 DNS 至少要保留一个开启")
+	}
+	// 描述文件开着，但**全局还有可用协议**、描述文件却一个载荷都没开 ——
+	// 这是自相矛盾的配置：用户页会出现能下载的入口，下下来却是装了不生效的文件。
+	//
+	// 注意不能无条件拦：管理员把 DoH / DoT 全关、只留明文 53 是合法操作，
+	// 这时描述文件本来就没有可用载荷（前端也不会给入口），不该因此拒绝保存。
+	if s.EnableProfile && (s.EnableDoH || s.EnableDoT) {
+		if !(s.EnableDoH && s.ProfileDoH) && !(s.EnableDoT && s.ProfileDoT) {
+			return errValidation("已开启描述文件下发，但 DoH / DoT 中没有任何一种对描述文件可用：" +
+				"请同时打开全局协议开关与描述文件里对应的开关，或直接关闭描述文件下发")
+		}
 	}
 	if s.CheckinBonusEvery < 0 || s.CheckinBonusEvery > 3650 {
 		return errValidation("checkin_bonus_every 需在 0 到 3650 之间（0 = 不设累计奖励）")

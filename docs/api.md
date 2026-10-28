@@ -524,12 +524,36 @@ access token，改密码就形同虚设。
   "invite_code": "",
   "update_repo": "50521136/aegis-dns",
   "update_channel": "stable",
+  "enable_doh": true,
+  "enable_dot": true,
+  "enable_plain_dns": true,
+  "enable_ios_profile": true,
+  "profile_doh": true,
+  "profile_dot": true,
   "config_domain": "example.com",
   "dns_listen": { "udp": ":53", "tcp": ":53", "dot": ":853", "doh": ":443" }
 }
 ```
 
 `config_domain` 是 `config.yaml` 里的值，用于发现「设置与配置不一致」。
+
+#### 接入协议与 iOS / macOS 描述文件
+
+四个开关构成两层，第二层是第一层的**下级**：
+
+| 字段 | 含义 | 约束 |
+|---|---|---|
+| `enable_doh` / `enable_dot` / `enable_plain_dns` | 全局协议开关，关掉后不下发地址、已接入客户端收到 REFUSED | 三者至少留一个 |
+| `enable_ios_profile` | 描述文件（.mobileconfig）这条接入路径整体开关 | 关掉后 `/me/mobileconfig` 一律 409 |
+| `profile_doh` / `profile_dot` | 描述文件内部 HTTPS / TLS 两种载荷各自的开关 | 生效值 = 全局开关 && 本开关 |
+
+生效值（`profile_doh` / `profile_dot`）才是下发给 `/me/dns-config` 的值：全局关掉的协议
+**不允许**出现在描述文件里 —— 那样用户下到的文件装上之后 iOS 显示「已安装」但解析全挂，
+比不给按钮更糟，而线上没有任何报错可查。
+
+保存时若「全局还有 DoH/DoT」但「描述文件一个载荷都没开」，返回 422：
+这是自相矛盾的配置（用户页有入口、下下来不生效）。DoH / DoT 全关、只留明文 53
+不算矛盾，不拦。
 
 ### PUT /admin/settings
 
