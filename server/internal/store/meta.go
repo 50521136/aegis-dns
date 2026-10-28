@@ -204,6 +204,20 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 			*kvp.dst = v == "1" || strings.EqualFold(v, "true")
 		}
 	}
+	// 用户协议。正文与标题都允许被显式清空（用 ok 判断而不是非空判断），
+	// 否则管理员想删掉正文时，会被「空串 = 没存过」的写法悄悄还原成默认稿。
+	if v, ok := kv["terms_enabled"]; ok {
+		set.TermsEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := kv["terms_title"]; ok {
+		set.TermsTitle = v
+	}
+	if v, ok := kv["terms_version"]; ok {
+		set.TermsVersion = v
+	}
+	if v, ok := kv["terms_content"]; ok {
+		set.TermsContent = v
+	}
 	if v, ok := kv["allow_register"]; ok {
 		set.AllowRegister = v == "1" || strings.EqualFold(v, "true")
 	}
@@ -344,6 +358,10 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"enable_ios_profile":      boolStr(set.EnableProfile),
 		"profile_doh":             boolStr(set.ProfileDoH),
 		"profile_dot":             boolStr(set.ProfileDoT),
+		"terms_enabled":           boolStr(set.TermsEnabled),
+		"terms_title":             set.TermsTitle,
+		"terms_version":           set.TermsVersion,
+		"terms_content":           set.TermsContent,
 		"allow_register":          boolStr(set.AllowRegister),
 		"invite_code":             set.InviteCode,
 		"update_repo":             set.UpdateRepo,

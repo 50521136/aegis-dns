@@ -29,6 +29,10 @@ const (
 	CodeValidationFailed = "VALIDATION_FAILED"
 	CodeRateLimited      = "RATE_LIMITED"
 	CodeInternal         = "INTERNAL_ERROR"
+	// CodeTermsRequired 表示用户没有同意用户协议。
+	// 单独一个码而不是复用 VALIDATION_FAILED：前端要据此把用户引导到
+	// 协议弹窗（注册）或高亮勾选框（登录），而不是只弹一句「参数不合法」。
+	CodeTermsRequired = "TERMS_REQUIRED"
 )
 
 // APIError 是统一错误响应体里的 error 对象。

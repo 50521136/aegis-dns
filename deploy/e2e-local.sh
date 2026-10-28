@@ -252,6 +252,73 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$API/admin/settings" -H "A
 curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
   -d '{"enable_doh":true,"enable_dot":true,"enable_plain_dns":true,"profile_doh":true,"profile_dot":true}' >/dev/null
 
+hdr "用户协议"
+
+# 默认关闭时也必须下发字段：前端据此决定渲染不渲染，缺字段会当成 undefined
+PC=$(curl -fsS "$API/public/config")
+echo "$PC" | grep -q '"terms_enabled":false' && ok "public/config 下发 terms_enabled（默认关闭）" || bad "缺 terms_enabled"
+echo "$PC" | grep -q '"terms_title"' && ok "public/config 下发 terms_title" || bad "缺 terms_title"
+echo "$PC" | grep -q '"terms_content"' && ok "public/config 下发 terms_content" || bad "缺 terms_content"
+
+# 开启协议但正文为空 → 保存必须被拒（否则用户要同意一份空白协议）
+code=$(curl -s -o /tmp/terms.out -w '%{http_code}' -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"terms_enabled":true,"terms_content":"   "}')
+[[ "$code" == "422" ]] && ok "开启协议但正文为空时拒绝保存（422）" || bad "空白正文未被拒绝: $code $(cat /tmp/terms.out)"
+
+# 正常开启（正文用后端内置默认稿，验证「恢复默认」的数据来源可用）
+DEF=$(curl -fsS "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["terms_content_default"])')
+[[ -n "$DEF" ]] && ok "admin/settings 提供 terms_content_default（恢复默认按钮用）" || bad "缺 terms_content_default"
+python3 - "$DEF" <<'PY' > /tmp/terms_patch.json
+import json, sys
+print(json.dumps({
+    "terms_enabled": True,
+    "terms_title": "用户协议",
+    "terms_version": "e2e-1.0",
+    "terms_content": sys.argv[1],
+}, ensure_ascii=False))
+PY
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' --data-binary @/tmp/terms_patch.json >/dev/null
+PC=$(curl -fsS "$API/public/config")
+echo "$PC" | grep -q '"terms_enabled":true' && ok "开启后 public/config 反映为 true" || bad "开启后仍为 false"
+echo "$PC" | grep -q '"terms_version":"e2e-1.0"' && ok "版本标识已下发" || bad "版本标识未下发"
+
+# 注册不带 agree_terms → 必须 422 TERMS_REQUIRED
+code=$(curl -s -o /tmp/reg1.out -w '%{http_code}' -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser1","email":"t1@test.local","password":"Str0ngPass123"}')
+[[ "$code" == "422" ]] && ok "未同意协议时注册被拒（422）" || bad "未同意仍注册成功: $code $(cat /tmp/reg1.out)"
+grep -q 'TERMS_REQUIRED' /tmp/reg1.out && ok "错误码是 TERMS_REQUIRED（前端据此弹协议）" || bad "错误码不对: $(cat /tmp/reg1.out)"
+
+# 显式传 agree_terms:false 同样被拒 —— 脚本直连不能绕过
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser2","email":"t2@test.local","password":"Str0ngPass123","agree_terms":false}')
+[[ "$code" == "422" ]] && ok "agree_terms=false 被拒（422）" || bad "agree_terms=false 仍注册成功: $code"
+
+# 带 agree_terms:true → 注册成功
+code=$(curl -s -o /tmp/reg3.out -w '%{http_code}' -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser3","email":"t3@test.local","password":"Str0ngPass123","agree_terms":true}')
+[[ "$code" == "201" ]] && ok "同意协议后注册成功（201）" || bad "同意后注册失败: $code $(cat /tmp/reg3.out)"
+
+# 登录：不带 agree_terms 必须被拒，带了才发令牌
+code=$(curl -s -o /tmp/login1.out -w '%{http_code}' -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser3","password":"Str0ngPass123"}')
+[[ "$code" == "422" ]] && ok "未同意协议时登录被拒（422）" || bad "未同意仍登录成功: $code $(cat /tmp/login1.out)"
+grep -q 'TERMS_REQUIRED' /tmp/login1.out && ok "登录侧错误码也是 TERMS_REQUIRED" || bad "登录错误码不对: $(cat /tmp/login1.out)"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser3","password":"Str0ngPass123","agree_terms":true}')
+[[ "$code" == "200" ]] && ok "同意协议后登录成功（200）" || bad "同意后登录失败: $code"
+
+# 关闭协议 → 老行为恢复：不带 agree_terms 也能注册和登录
+curl -fsS -X PUT "$API/admin/settings" -H "Authorization: Bearer $ADMTOK" \
+  -H 'Content-Type: application/json' -d '{"terms_enabled":false}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser4","email":"t4@test.local","password":"Str0ngPass123"}')
+[[ "$code" == "201" ]] && ok "关闭协议后不带 agree_terms 也能注册" || bad "关闭后注册被误拦: $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"termsuser4","password":"Str0ngPass123"}')
+[[ "$code" == "200" ]] && ok "关闭协议后不带 agree_terms 也能登录" || bad "关闭后登录被误拦: $code"
+
 hdr "添加规则"
 add_rule() {
   local body="$1" code

@@ -516,6 +516,21 @@ type GlobalSettings struct {
 	// 所以这里只做「缩小范围」，不做「绕过全局」。
 	ProfileDoH bool `json:"profile_doh"`
 	ProfileDoT bool `json:"profile_dot"`
+
+	// --- 用户协议 ---
+	//
+	// TermsEnabled 打开后，注册与登录都必须勾选同意才能继续。
+	// 默认关闭：升级到带这个功能的版本时，不能突然把所有人挡在门外。
+	TermsEnabled bool `json:"terms_enabled"`
+	// TermsTitle 是协议标题（「用户协议」/「服务条款」/「使用须知」都行）。
+	TermsTitle string `json:"terms_title"`
+	// TermsVersion 是协议版本标识（如 2026-10-28 或 1.0）。
+	// 前端展示它，用户能看到自己同意的是哪一版。
+	TermsVersion string `json:"terms_version"`
+	// TermsContent 是协议正文，纯文本，前端原样渲染（不解析 Markdown/HTML）。
+	// 正文可整体替换，因此协议内容与实现的出入由管理员负责 —— 默认正文
+	// 见 DefaultTermsContent，按本程序实际能力撰写。
+	TermsContent string `json:"terms_content"`
 	// CheckinDays 是单次签到赠送的天数。
 	CheckinDays int `json:"checkin_days"`
 	// CheckinBonusEvery 是「累计签到满多少天」触发额外奖励的门槛，0 表示不设累计奖励。
@@ -653,6 +668,12 @@ func DefaultSettings() GlobalSettings {
 		EnableProfile: true,
 		ProfileDoH:    true,
 		ProfileDoT:    true,
+		// 用户协议默认关闭：老库升级上来不能被突然拦在登录页外。
+		// 正文给一份按本程序实际能力写好的默认稿，管理员可以直接改或整体替换。
+		TermsEnabled: false,
+		TermsTitle:   "用户协议",
+		TermsVersion: "1.0",
+		TermsContent: DefaultTermsContent,
 		// 国内可达的两个公共解析器，用于解析 DoH/DoT 上游的主机名。
 		BootstrapDNS: []string{"223.5.5.5", "119.29.29.29"},
 		SubIntervalH: 24,

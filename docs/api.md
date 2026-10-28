@@ -530,6 +530,11 @@ access token，改密码就形同虚设。
   "enable_ios_profile": true,
   "profile_doh": true,
   "profile_dot": true,
+  "terms_enabled": false,
+  "terms_title": "用户协议",
+  "terms_version": "1.0",
+  "terms_content": "一、服务说明\n…",
+  "terms_content_default": "一、服务说明\n…",
   "config_domain": "example.com",
   "dns_listen": { "udp": ":53", "tcp": ":53", "dot": ":853", "doh": ":443" }
 }
@@ -554,6 +559,24 @@ access token，改密码就形同虚设。
 保存时若「全局还有 DoH/DoT」但「描述文件一个载荷都没开」，返回 422：
 这是自相矛盾的配置（用户页有入口、下下来不生效）。DoH / DoT 全关、只留明文 53
 不算矛盾，不拦。
+
+#### 用户协议（`terms_*`）
+
+`terms_enabled` 打开后，**注册与登录都必须带 `agree_terms: true`**，否则返回
+`422 TERMS_REQUIRED`。前端勾选框只是体验层，接口自己也要拦 —— 脚本直连不能绕过。
+
+| 字段 | 含义 |
+|---|---|
+| `terms_enabled` | 总开关。关闭时注册/登录页完全不渲染协议，行为与旧版一致 |
+| `terms_title` | 协议标题（展示用，也为错误提示拼「请先阅读并同意《X》」） |
+| `terms_version` | 版本标识，会显示给用户 |
+| `terms_content` | 正文，纯文本。**不解析 Markdown / HTML**（否则管理员填的内容就是存储型 XSS 入口） |
+| `terms_content_default` | 只读，内置默认稿。供后台「恢复默认协议」按钮使用，前端不必自己存一份 |
+
+校验：`terms_enabled=true` 时正文与标题都不能为空（否则用户被要求同意一份空白协议）；
+正文上限 10 万字符。正文用指针字段接收，**显式传空串可以清空**（与「没传」区分）。
+
+`GET /public/config` 也会下发这四个字段，登录/注册页据此决定渲染与弹窗。
 
 ### PUT /admin/settings
 

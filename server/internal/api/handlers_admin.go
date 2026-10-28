@@ -230,9 +230,17 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		// 生效值的计算只发生在后端 protos() / 前端的表单联动各一处，
 		// 不再额外下发一个「全局是否开着」的派生字段 —— 那就是 enable_doh 的副本，
 		// 两处来源必然有一天对不上。
-		"enable_ios_profile":      set.EnableProfile,
-		"profile_doh":             set.ProfileDoH,
-		"profile_dot":             set.ProfileDoT,
+		"enable_ios_profile": set.EnableProfile,
+		"profile_doh":        set.ProfileDoH,
+		"profile_dot":        set.ProfileDoT,
+		// 用户协议：正文可能很长，但后台表单要能编辑它，所以整段回传。
+		"terms_enabled": set.TermsEnabled,
+		"terms_title":   set.TermsTitle,
+		"terms_version": set.TermsVersion,
+		"terms_content": set.TermsContent,
+		// 只读：默认正文，供后台「恢复默认」按钮使用。
+		// 让前端自己存一份默认稿的话，改一次措辞就要两个地方同步。
+		"terms_content_default":   model.DefaultTermsContent,
 		"sub_interval_hours":      set.SubIntervalH,
 		"sub_refresh_hour":        set.SubRefreshHour,
 		"sub_refresh_minute":      set.SubRefreshMinute,
@@ -352,9 +360,14 @@ type settingsPatch struct {
 	EnableDoT      *bool `json:"enable_dot"`
 	EnablePlainDNS *bool `json:"enable_plain_dns"`
 	// 描述文件（iOS / macOS）的三个开关，同样是「漏传 = 不变」
-	EnableProfile      *bool   `json:"enable_ios_profile"`
-	ProfileDoH         *bool   `json:"profile_doh"`
-	ProfileDoT         *bool   `json:"profile_dot"`
+	EnableProfile *bool `json:"enable_ios_profile"`
+	ProfileDoH    *bool `json:"profile_doh"`
+	ProfileDoT    *bool `json:"profile_dot"`
+	// 用户协议。正文用指针区分「没传」和「显式清空成空串」。
+	TermsEnabled       *bool   `json:"terms_enabled"`
+	TermsTitle         *string `json:"terms_title"`
+	TermsVersion       *string `json:"terms_version"`
+	TermsContent       *string `json:"terms_content"`
 	SubIntervalH       *int    `json:"sub_interval_hours"`
 	SubRefreshHour     *int    `json:"sub_refresh_hour"`
 	SubRefreshMinute   *int    `json:"sub_refresh_minute"`
@@ -544,6 +557,18 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	setBool(&dst.EnableProfile, p.EnableProfile)
 	setBool(&dst.ProfileDoH, p.ProfileDoH)
 	setBool(&dst.ProfileDoT, p.ProfileDoT)
+	setBool(&dst.TermsEnabled, p.TermsEnabled)
+	// 协议正文不 TrimSpace 掉换行：正文是排版好的多段文本，
+	// 只去掉首尾空白，保留段内缩进与空行。
+	if p.TermsTitle != nil {
+		dst.TermsTitle = strings.TrimSpace(*p.TermsTitle)
+	}
+	if p.TermsVersion != nil {
+		dst.TermsVersion = strings.TrimSpace(*p.TermsVersion)
+	}
+	if p.TermsContent != nil {
+		dst.TermsContent = strings.Trim(*p.TermsContent, "\r\n 	")
+	}
 	setBool(&dst.AllowRegister, p.AllowRegister)
 	setBool(&dst.AllowRootDomain, p.AllowRootDomain)
 	setBool(&dst.RootDomainReserved, p.RootDomainReserved)
@@ -965,6 +990,21 @@ func validateSettings(s *model.GlobalSettings) error {
 	}
 	if s.CheckinBonusEvery < 0 || s.CheckinBonusEvery > 3650 {
 		return errValidation("checkin_bonus_every 需在 0 到 3650 之间（0 = 不设累计奖励）")
+	}
+	// 开了协议勾选却没有正文：用户会被要求同意一份空白协议。
+	// 这既是体验问题也是合规问题（无法证明他同意了什么）。
+	if s.TermsEnabled {
+		if strings.TrimSpace(s.TermsContent) == "" {
+			return errValidation("已开启用户协议勾选，但协议正文为空：请填写正文或先关闭该开关")
+		}
+		if strings.TrimSpace(s.TermsTitle) == "" {
+			return errValidation("已开启用户协议勾选，但协议标题为空")
+		}
+	}
+	// 正文过长会撑爆 SQLite 单行与前端渲染。10 万字符足够写任何协议，
+	// 超了基本是误粘贴（比如把整本法律文本贴进来）。
+	if len([]rune(s.TermsContent)) > 100000 {
+		return errValidation("协议正文超过 10 万字符，请精简后再保存")
 	}
 	if s.CheckinBonusDays < 0 || s.CheckinBonusDays > 3650 {
 		return errValidation("checkin_bonus_days 需在 0 到 3650 之间")

@@ -21,6 +21,10 @@ type registerRequest struct {
 	EmailCode string `json:"email_code"`
 	// Captcha 是极验验证参数；后台开了注册验证时必填。
 	Captcha *captchaBody `json:"captcha"`
+	// AgreeTerms 表示用户勾选了同意用户协议。
+	// 后台开了 terms_enabled 时必须为 true，否则注册被拒 ——
+	// 前端勾选框只是体验层，脚本直连 API 也得显式表态。
+	AgreeTerms bool `json:"agree_terms"`
 }
 
 // authResponse 是注册/登录的统一响应（文档 9.2）。
@@ -68,6 +72,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if !settings.AllowRegister {
 		writeError(w, http.StatusForbidden, CodeForbidden, "当前已关闭公开注册，请联系管理员开通账号", nil)
+		return
+	}
+	// 用户协议：后台开了就必须显式同意。
+	// 放在注册开关之后、其它字段校验之前 —— 没同意协议是最根本的拒绝理由，
+	// 先告诉他这一条，别让他改完用户名和密码才被拦。
+	if settings.TermsEnabled && !req.AgreeTerms {
+		writeError(w, http.StatusUnprocessableEntity, CodeTermsRequired,
+			"请先阅读并同意"+termsTitleOrDefault(settings.TermsTitle), nil)
 		return
 	}
 	// 邮箱后缀白名单：挡掉一次性邮箱。
@@ -190,11 +202,24 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// termsTitleOrDefault 返回展示用的协议标题。
+//
+// 标题被管理员清空时兜底成「用户协议」：错误提示里拼一个空标题会变成
+// 「请先阅读并同意」，读起来像话没说完。
+func termsTitleOrDefault(title string) string {
+	if t := strings.TrimSpace(title); t != "" {
+		return t
+	}
+	return "用户协议"
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string       `json:"username"`
 		Password string       `json:"password"`
 		Captcha  *captchaBody `json:"captcha"`
+		// AgreeTerms 同注册：后台开了协议时必须显式同意才发令牌。
+		AgreeTerms bool `json:"agree_terms"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -202,6 +227,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneLogin, req.Captcha); !ok {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
+		return
+	}
+
+	// 协议校验放在密码校验**之前**：没同意协议的人不该触发一次 bcrypt
+	// 运算（每次几十毫秒 + 内存），也不该通过响应时间差推断出密码对不对。
+	// 这与注册侧「最根本的拒绝理由先说」是同一个原则。
+	if settings, err := s.store.GetSettings(r.Context()); err == nil && settings.TermsEnabled && !req.AgreeTerms {
+		writeError(w, http.StatusUnprocessableEntity, CodeTermsRequired,
+			"请先阅读并同意"+termsTitleOrDefault(settings.TermsTitle), nil)
 		return
 	}
 

@@ -381,6 +381,14 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		// 并进这个接口而不是单开一个，省掉首屏一次额外往返。
 		// 只暴露 captcha_id，私钥永不出后端。
 		"captcha": s.captchaPublicConfig(set),
+		// 用户协议。登录/注册页要能**展示全文**（注册时弹窗、登录时勾选框旁的
+		// 链接），所以正文整段下发 —— 单开一个 /public/terms 只会让首屏多一次
+		// 往返，而这两个页面本来就必然要拿这份配置。
+		// terms_enabled=false 时前端完全不渲染勾选框，老站点行为不变。
+		"terms_enabled": set.TermsEnabled,
+		"terms_title":   set.TermsTitle,
+		"terms_version": set.TermsVersion,
+		"terms_content": set.TermsContent,
 	})
 }
 

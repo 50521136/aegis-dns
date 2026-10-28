@@ -12,6 +12,13 @@ export interface RegisterPayload {
   email_code?: string
   /** 开启人机验证时必填 */
   captcha?: CaptchaResult
+  /**
+   * 是否已勾选同意用户协议。
+   *
+   * 后台开启协议后必须为 true，否则后端返回 TERMS_REQUIRED。
+   * 前端勾选框只是体验层，这里显式传上去才算「用户表过态」。
+   */
+  agree_terms?: boolean
 }
 
 export interface LoginPayload {
@@ -19,6 +26,8 @@ export interface LoginPayload {
   password: string
   /** 开启人机验证时必填 */
   captcha?: CaptchaResult
+  /** 是否已勾选同意用户协议（后台开启协议时必填） */
+  agree_terms?: boolean
 }
 
 export async function register(payload: RegisterPayload): Promise<AuthResponse> {

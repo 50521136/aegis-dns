@@ -468,6 +468,18 @@ export interface AdminSettings {
   enable_ios_profile: boolean
   profile_doh: boolean
   profile_dot: boolean
+  /**
+   * 用户协议。开启后注册与登录都必须勾选同意才能继续。
+   *
+   * 正文是纯文本，前端按 whitespace-pre-wrap 原样渲染 —— 不解析
+   * Markdown/HTML，否则管理员填的内容就成了一个 XSS 入口。
+   */
+  terms_enabled: boolean
+  terms_title: string
+  terms_version: string
+  terms_content: string
+  /** 只读：后端内置的默认正文，供「恢复默认」按钮使用 */
+  terms_content_default: string
 }
 
 /** PUT /admin/settings 里只写不读的极验私钥字段。 */

@@ -159,6 +159,14 @@ const settingsSchema = z.object({
   enable_ios_profile: z.boolean(),
   profile_doh: z.boolean(),
   profile_dot: z.boolean(),
+  // 用户协议。terms_content_default 是只读派生字段（后端内置的默认稿），
+  // 同样不能进这个 schema —— 它会被原样 PUT 回去，而后端开了
+  // DisallowUnknownFields，多带一个只读字段整次保存就 400。
+  // 「恢复默认」按钮直接读 settingsQuery.data.terms_content_default 写进表单。
+  terms_enabled: z.boolean(),
+  terms_title: z.string(),
+  terms_version: z.string(),
+  terms_content: z.string(),
   signup_member_days: z.coerce.number().int().min(0),
   // 奖励发放的会员种类。空串是合法值 = 默认会员档，所以不能用 min(1)。
   signup_member_tier: z.string(),
@@ -523,6 +531,88 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                   填了以后注册必须带这个码。<strong className="text-foreground">多码与奖励机制</strong>在「会员与邀请」里管理。
                 </p>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>用户协议</CardTitle>
+              <CardDescription>
+                开启后，注册必须勾选同意才能提交（未勾选时弹窗展示全文）；
+                登录页只放勾选框、不弹窗。正文支持换行，前端原样显示。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <ToggleRow
+                title="注册与登录需同意用户协议"
+                desc="关闭后注册/登录页完全不显示协议，老行为不变"
+                checked={Boolean(form.watch('terms_enabled'))}
+                onChange={(v) => form.setValue('terms_enabled', v)}
+              />
+
+              {form.watch('terms_enabled') && (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+                    <div className="space-y-2">
+                      <Label htmlFor="terms_title">协议标题</Label>
+                      <Input
+                        id="terms_title"
+                        placeholder="用户协议"
+                        {...form.register('terms_title')}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="terms_version">版本标识</Label>
+                      <Input
+                        id="terms_version"
+                        className="font-mono"
+                        placeholder="1.0"
+                        {...form.register('terms_version')}
+                      />
+                      <p className="text-xs text-muted-foreground">会显示给用户</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Label htmlFor="terms_content">协议正文</Label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          {form.watch('terms_content')?.length ?? 0} 字符
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            form.setValue(
+                              'terms_content',
+                              settingsQuery.data?.terms_content_default ?? '',
+                            )
+                          }
+                        >
+                          恢复默认协议
+                        </Button>
+                      </div>
+                    </div>
+                    <Textarea
+                      id="terms_content"
+                      rows={12}
+                      className="font-mono text-xs leading-relaxed"
+                      placeholder="填写协议正文，换行会原样保留"
+                      {...form.register('terms_content')}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      纯文本，不解析 Markdown / HTML（避免管理员填的内容变成 XSS 入口）。
+                      「恢复默认协议」会用程序内置的那份按本服务实际能力撰写的稿子覆盖当前内容。
+                    </p>
+                    {form.watch('terms_enabled') &&
+                      !form.watch('terms_content')?.trim() && (
+                        <p className="text-xs text-danger">已开启协议但正文为空，保存会被拒绝。</p>
+                      )}
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 

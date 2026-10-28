@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -9,11 +9,13 @@ import { ArrowRight, CheckCircle2, Eye, EyeOff, PartyPopper } from 'lucide-react
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 import { CopyField } from '@/components/CopyField'
+import { TermsDialog } from '@/components/TermsDialog'
 import { getPublicConfig, sendEmailCode } from '@/api/member'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
-import { errorMessage } from '@/api/client'
+import { errorMessage, normalizeError } from '@/api/client'
 import { GeetestCaptcha, useCaptchaGate } from '@/components/GeetestCaptcha'
 import type { DnsConfig } from '@/api/types'
 
@@ -48,6 +50,11 @@ export default function Register() {
   const [emailLocal, setEmailLocal] = useState('')
   const [emailDomain, setEmailDomain] = useState('')
   const [dnsConfig, setDnsConfig] = useState<DnsConfig | null>(null)
+  // 用户协议：agreed 由页面勾选框与弹窗共享，pendingRef 存「等同意后再提交」
+  // 的那一份表单值，这样在弹窗里点同意能直接续上刚才的注册。
+  const [agreed, setAgreed] = useState(false)
+  const [termsOpen, setTermsOpen] = useState(false)
+  const pendingRef = useRef<FormValues | null>(null)
   const {
     register,
     handleSubmit,
@@ -101,6 +108,25 @@ export default function Register() {
 
 
   const onSubmit = async (values: FormValues) => {
+    // 后台开了协议但还没勾选：不直接报错，把协议弹出来让他读完再决定。
+    // 「注册时会弹出协议」就是这个时机 —— 用户已经填完表单、正要提交，
+    // 此刻弹窗既不会一进页面就打扰，也保证他确实看到了内容。
+    if (cfg?.terms_enabled && !agreed) {
+      pendingRef.current = values
+      setTermsOpen(true)
+      return
+    }
+    await doRegister(values, agreed)
+  }
+
+  /**
+   * 真正的注册请求。
+   *
+   * agreedOverride 是必需的：在「弹窗里点了同意」这条路径上，
+   * setAgreed 还没生效（React 状态更新是异步的），闭包里的 agreed 仍是 false，
+   * 直接用状态会把 agree_terms: false 发出去，然后被后端 422 打回来。
+   */
+  const doRegister = async (values: FormValues, agreedOverride: boolean) => {
     try {
       // 人机验证在真正提交前弹：需要在最前面挡住脚本批量注册，
       // 又不想让用户填完表单才发现要验证两次。
@@ -112,6 +138,7 @@ export default function Register() {
           invite_code: values.invite_code?.trim() || undefined,
           email_code: values.email_code?.trim() || undefined,
           captcha,
+          agree_terms: cfg?.terms_enabled ? agreedOverride : undefined,
         }),
       )
       toast.success('注册成功', '你的专属 DNS 地址已生成')
@@ -122,8 +149,24 @@ export default function Register() {
         navigate('/app/setup', { replace: true })
       }
     } catch (err) {
+      // 后端也有一道协议校验：管理员可能在我们打开页面之后才开启协议。
+      // 这时把弹窗打开，别只丢一句「请先同意协议」让用户找不着北。
+      if (normalizeError(err).code === 'TERMS_REQUIRED') {
+        pendingRef.current = values
+        setTermsOpen(true)
+        return
+      }
       toast.error('注册失败', errorMessage(err))
     }
+  }
+
+  /** 弹窗里点了「同意并继续」：勾上、关窗，并接着把刚才那次提交做完 */
+  const onAgreeTerms = () => {
+    setAgreed(true)
+    setTermsOpen(false)
+    const pending = pendingRef.current
+    pendingRef.current = null
+    if (pending) void doRegister(pending, true)
   }
 
   if (dnsConfig) {
@@ -316,6 +359,35 @@ export default function Register() {
           {errors.password && <p className="text-xs text-danger">{errors.password.message}</p>}
         </div>
 
+        {/* 用户协议勾选框。后台没开就整块不渲染，老站点行为不变。
+            注册场景的「弹出」发生在点提交且未勾选时（见 onSubmit），
+            这里的链接只是让想先看的人不用先点一次注册。 */}
+        {cfg?.terms_enabled && (
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+            <Checkbox
+              checked={agreed}
+              onCheckedChange={(v) => setAgreed(v)}
+              aria-label="我已阅读并同意"
+            />
+            <span className="min-w-0 leading-relaxed">
+              我已阅读并同意{' '}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  setTermsOpen(true)
+                }}
+                className="font-medium text-primary hover:underline"
+              >
+                《{cfg.terms_title || '用户协议'}》
+              </button>
+              {cfg.terms_version && (
+                <span className="text-xs text-muted-foreground">（版本 {cfg.terms_version}）</span>
+              )}
+            </span>
+          </label>
+        )}
+
         <Button type="submit" className="w-full" size="lg" loading={isSubmitting}>
           注册
         </Button>
@@ -332,6 +404,21 @@ export default function Register() {
           去登录
         </Link>
       </p>
+
+      {/* 注册场景的协议弹窗：点「注册」未勾选时弹出，读完勾选后自动续上注册 */}
+      {cfg?.terms_enabled && (
+        <TermsDialog
+          open={termsOpen}
+          onOpenChange={setTermsOpen}
+          title={cfg.terms_title || '用户协议'}
+          version={cfg.terms_version}
+          content={cfg.terms_content}
+          agreed={agreed}
+          onAgreedChange={setAgreed}
+          onAgree={onAgreeTerms}
+          declineText="不同意，返回"
+        />
+      )}
     </div>
   )
 }

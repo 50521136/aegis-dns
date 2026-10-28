@@ -169,6 +169,15 @@ export interface PublicConfig {
    * 并进这个接口而不是单开一个，省掉首屏一次额外往返。
    */
   captcha?: CaptchaConfig
+  /**
+   * 用户协议。登录/注册页据此决定要不要渲染勾选框、要不要弹窗。
+   *
+   * terms_enabled=false 时前端完全不渲染这一块，老站点行为不变。
+   */
+  terms_enabled: boolean
+  terms_title: string
+  terms_version: string
+  terms_content: string
 }
 
 export async function getPublicConfig(): Promise<PublicConfig> {

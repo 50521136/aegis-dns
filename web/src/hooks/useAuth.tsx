@@ -14,7 +14,7 @@ interface AuthContextValue {
   initializing: boolean
   isAuthenticated: boolean
   isAdmin: boolean
-  login: (username: string, password: string, captcha?: CaptchaResult) => Promise<User>
+  login: (username: string, password: string, captcha?: CaptchaResult, agreeTerms?: boolean) => Promise<User>
   register: (payload: {
     username: string
     email: string
@@ -22,6 +22,7 @@ interface AuthContextValue {
     invite_code?: string
     email_code?: string
     captcha?: CaptchaResult
+    agree_terms?: boolean
   }) => Promise<AuthResponse>
   logout: () => Promise<void>
   refreshUser: () => Promise<User | null>
@@ -80,8 +81,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadMe, clearSession])
 
   const login = useCallback(
-    async (username: string, password: string, captcha?: CaptchaResult) => {
-      const res = await authApi.login({ username, password, captcha })
+    async (username: string, password: string, captcha?: CaptchaResult, agreeTerms?: boolean) => {
+      const res = await authApi.login({ username, password, captcha, agree_terms: agreeTerms })
       setUser(res.user)
       setDnsConfig(res.dns_config ?? null)
       queryClient.clear()
@@ -98,6 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       invite_code?: string
       email_code?: string
       captcha?: CaptchaResult
+      agree_terms?: boolean
     }) => {
       const res = await authApi.register(payload)
       setUser(res.user)
