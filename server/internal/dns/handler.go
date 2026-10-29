@@ -195,6 +195,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 // Handle 执行完整查询管线。
 func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint) {
 	start := time.Now()
+	// 整条管线耗时：所有 return 分支都会经过这个 defer。
+	defer func() { observe(stageTotal, time.Since(start)) }()
 	// det 承载日志详情，贯穿整条管线逐步填充。
 	det := qdetail{Proto: protoOf(hint, w), ECS: ecsFrom(req)}
 
@@ -238,7 +240,9 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	applyDNSSEC := d.EnableDNSSEC
 
 	// Stage 2 前置校验：并发闸门。
+	gateStart := time.Now()
 	releaseSem, ok := acquireSemaphore(&h.sem)
+	observe(stageGate, time.Since(gateStart))
 	if !ok {
 		// 并发已满：立刻回 SERVFAIL 而不是排队。
 		// 排队会让延迟雪崩，客户端更可能超时后重试，形成正反馈。
@@ -257,8 +261,15 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	q := req.Question[0]
 
 	// Stage 1 用户识别。
+	//
+	// 打点要细分：之前把「识别 + 全部前置校验」合成一个 identify 打点，
+	// 结果 identify 的 P50 是 34ms —— 但里面全是内存查表，不可能这么慢。
+	// 说明时间花在了别处（排在同一个 defer 区间里的并发闸门/配额/限流），
+	// 混在一起就把真正的原因掩盖了。现在拆成 identify / 闸门 / 校验三段。
+	identifyStart := time.Now()
 	snap := h.registry.Load()
 	user := h.identify(snap, w, req, hint)
+	observe(stageIdentify, time.Since(identifyStart))
 	if user == nil {
 		user = snap.Fallback()
 	}
@@ -409,8 +420,10 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// 谁也没法从面板核实 ECS 到底有没有生效。
 	det.ECS = formatECS(ecsSub)
 
+	cacheStart := time.Now()
 	if cacheable && cache != nil {
 		msg, hit, allowRule, cachedAction, missReason := cache.GetWithECS(cacheKey, req, ecsCache)
+		observe(stageCache, time.Since(cacheStart))
 		if !hit {
 			// 记下未命中的成因（仅当这条请求本来会进缓存时才有意义）。
 			switch missReason {
@@ -462,8 +475,10 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// 命中放行规则 → 允许项；其余正常解析/改写 → 已处理。
 	allowRule := false
 	rs := user.Rules.Load()
+	rulesStart := time.Now()
 	if rs != nil && !rs.Empty() {
 		decision := rs.Match(q.Name, q.Qtype)
+		observe(stageRules, time.Since(rulesStart))
 		switch decision.Action {
 		case rules.ActionAllow:
 			// 白名单：放行到上游，跳过后续拦截判断。
@@ -546,10 +561,14 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	if !mergeable {
 		fkey = "" // 不参与合并，直接问上游
 	}
+	upstreamStart := time.Now()
 	resp, upSrc, err, shared := h.flight.Do(ctx, fkey,
 		func() (*dns.Msg, string, error) {
 			return pool.ExchangeWithSource(ctx, upReq)
 		})
+	// 这里量的是「等到上游答完」，包含被并发合并时的等待时间 ——
+	// 那正是用户感知的延迟，单独剔除反而失真。
+	observe(stageUpstream, time.Since(upstreamStart))
 	if shared && resp != nil {
 		// 等待者拿到的是别人那次的共享副本：leader 还会继续改它
 		// （回填 ID、置 Compress、写缓存），这里必须先复制。

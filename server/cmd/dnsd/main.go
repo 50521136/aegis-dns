@@ -179,6 +179,7 @@ func metricsLoop(ctx context.Context, h *dns.Handler, log *slog.Logger) {
 			return
 		case <-t.C:
 			m := h.Metrics()
+			st := dns.StageMetrics()
 			absent, _ := m["cache_miss_absent"].(int64)
 			expired, _ := m["cache_miss_expired"].(int64)
 			merged, _ := m["cache_merged"].(int64)
@@ -199,6 +200,30 @@ func metricsLoop(ctx context.Context, h *dns.Handler, log *slog.Logger) {
 				"rejected", m["rejected"],
 				"upstream_errors", m["upstream_errors"],
 			)
+
+			// 分阶段耗时快照。
+			//
+			// 单独一条日志，不要和缓存指标混在一起：缓存那条是固定字段
+			// 的业务指标，这条是排查用的诊断数据，字段多、涨落大。
+			//
+			// 输出 P50/P90/P99 而不是只给均值：尾部延迟问题的特征就是
+			// 均值正常、P90 开始发散，只看 avg 会得出「一切正常」的错误结论
+			// （线上 P50=6ms 但 P90=64ms 就是这个形状）。
+			for _, name := range []string{"identify", "gate", "rules", "cache", "upstream", "total"} {
+				ss := st[name]
+				if ss.Count == 0 {
+					continue
+				}
+				log.Info("阶段耗时快照",
+					"stage", name,
+					"samples", ss.Count,
+					"avg_us", ss.AvgUS,
+					"p50_us", ss.P50US,
+					"p90_us", ss.P90US,
+					"p99_us", ss.P99US,
+					"max_us", ss.MaxUS,
+				)
+			}
 		}
 	}
 }
