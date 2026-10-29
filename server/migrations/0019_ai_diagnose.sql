@@ -21,8 +21,8 @@ ALTER TABLE feedback ADD COLUMN ai_ran_at      INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_feedback_ai_status ON feedback(ai_status, created_at);
 
 -- 诊断要按域名反查「这个域名来自哪个订阅」。
--- sub_entries 线上 150 万行，没有这个索引单次查询要全表扫，几秒钟起步。
-CREATE INDEX IF NOT EXISTS idx_sub_entries_domain ON sub_entries(domain);
+-- 这里原本还有一条 CREATE INDEX idx_sub_entries_domain ON sub_entries(domain)，
+-- 实测执行计划走 SCAN e + 主键接 JOIN，索引从没被用上，0023 已删。
 
 -- 诊断要按域名查近期查询记录（判断「用户说的到底发生没发生」）。
 CREATE INDEX IF NOT EXISTS idx_query_log_domain ON query_log(domain, ts);

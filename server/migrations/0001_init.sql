@@ -67,7 +67,9 @@ CREATE TABLE IF NOT EXISTS sub_entries (
   kind   TEXT NOT NULL,                        -- block | allow
   PRIMARY KEY (sub_id, domain)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS idx_sub_entries_domain ON sub_entries(domain);
+-- idx_sub_entries_domain 已删：建表初衷是「诊断按域名反查订阅来源」要用，
+-- 但实测执行计划走的是 SCAN e + 主键接 JOIN，这个索引从没被用上，
+-- 却要每条条目多养一棵 249MB 的 B 树。见 0023 迁移。
 
 -- === 统计聚合（5 分钟粒度）===
 CREATE TABLE IF NOT EXISTS query_rollup (
