@@ -112,11 +112,39 @@ func (s *Server) touched(ctx context.Context, uid string, global bool) error {
 		return nil
 	}
 	if global {
-		_, err := s.coord.Changed(ctx)
-		return err
+		// 全局层变更走异步。
+		//
+		// 全局规则对所有开启全局的用户生效，所以这里**必然是全量重建**
+		// （见上面的注释），而全量重建线上要 4.3~5.3 秒。同步等它的后果
+		// 是管理员逐条保存 N 条规则就要等 N × 5 秒，且每次都触发一次
+		// 「全局层指纹变化 → 全站缓存 Flush」——2026-10-29 17:47 线上连续
+		// 9 次整体清空、单次丢 28594 条，就是这条路径造成的。
+		//
+		// 改成异步后，连续改动在 debounce 窗口内并成一批：只重建一次、
+		// 只清一次缓存。返回值的语义从「已生效」变成「已接受」，这个代价
+		// 只在管理员后台可接受 —— 规则确实已经落库，只是快照晚几百毫秒。
+		s.coord.TouchedAsync()
+		return nil
 	}
 	_, err := s.coord.Changed(ctx, uid)
 	return err
+}
+
+// touchedGlobalAsync 用于**后台批量**的全局规则写入。
+//
+// 与 touched(global=true) 的唯一区别是不等重建完成。为什么全局规则需要
+// 这个：全局层一变，所有租户的缓存都得清（缓存键里没有规则版本号，见
+// loader.go 的说明），而一次全量重建线上要 4.3~5.3 秒。管理员逐条保存时
+// 前端是串行请求，等于每改一条就「等 5 秒 + 清一次全站缓存」。
+//
+// 用 async 之后：连续改动在 debounce 窗口内并成一批，只重建一次、只清
+// 一次缓存。代价是接口不能再保证「返回即生效」—— 所以只在管理员后台的
+// 单条编辑／批量操作入口使用，用户侧的改动仍然走同步的 touched。
+func (s *Server) touchedGlobalAsync() {
+	if s.coord == nil {
+		return
+	}
+	s.coord.TouchedAsync()
 }
 
 func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {

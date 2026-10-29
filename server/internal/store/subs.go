@@ -388,11 +388,21 @@ func (s *Store) SubEntriesByUser(ctx context.Context, uid string) (block, allow 
 
 // AllSubEntries 返回全部启用订阅的条目，按 user_id 分组（全量快照用）。
 func (s *Store) AllSubEntries(ctx context.Context) (map[string][2][]string, error) {
+	// 不写 ORDER BY。
+	//
+	// 结果本来就按 user_id 塞进 map，顺序对下游没有任何意义 —— 但 SQLite
+	// 为了满足 ORDER BY user_id 会建一颗临时 B 树把 183 万行全排一遍。
+	// 线上实测（执行计划里能直接看到 `USE TEMP B-TREE FOR ORDER BY`）：
+	//
+	//	ORDER BY user_id   2597ms
+	//	去掉 ORDER BY      1542ms   <- 省 41%
+	//
+	// 这 1 秒直接落在每次快照重建上，而重建期间全站缓存会被清空、请求
+	// 全部回源，用户感知就是「改完规则之后一阵子特别慢」。
 	rows, err := s.read.QueryContext(ctx,
 		`SELECT s.user_id, e.kind, e.domain FROM sub_entries e
 		 JOIN subscriptions s ON s.id = e.sub_id
-		 WHERE s.enabled = 1 AND s.is_global = 0
-		 ORDER BY s.user_id`)
+		 WHERE s.enabled = 1 AND s.is_global = 0`)
 	if err != nil {
 		return nil, fmt.Errorf("读取全部订阅条目失败: %w", err)
 	}
@@ -419,12 +429,25 @@ func (s *Store) AllSubEntries(ctx context.Context) (map[string][2][]string, erro
 //
 // 全局层是全体用户共享的一份，不按用户分组 —— 这正是它能把内存压下来的原因：
 // 订阅条目在快照里只出现一次，而不是每个用户各存一份。
+//
+// 去重是必须的，且已在 SQL 里做（DISTINCT）：
+//   线上全局层有 113.9 万条，唯一域名只有 69.3 万 —— **39.2% 是重复**。
+//   不同订阅源大量互相收录（同一条广告域名出现在三四个列表里很常见）。
+//   不去重的话这 44.6 万条冗余会：
+//     1. 让快照 JSON 白白大出三分之一（63MB -> 实际只需 ~39MB），每次
+//        全量重建都要多序列化、多写盘、多让 dnsd 解析一遍；
+//     2. 让 buildSnapshot 里 6 个 map 各多插 44.6 万次（去重后才发现这些
+//        插入是纯浪费）；
+//     3. 让 suffixSet 的排序数组变大，二分多走一层。
+//   语义上完全等价：suffixSet 本来就会在 finish() 里去重，这里提前做掉
+//   只是把浪费从「构建期 + 每次重建」挪到源头一次性解决。
 func (s *Store) AllGlobalSubEntries(ctx context.Context) (block, allow []string, err error) {
+	// 同理不写 ORDER BY：调用方只是把结果按 kind 分进两个切片，
+	// 顺序无关，而 SQLite 排序要建临时 B 树（实测 1502ms -> 1360ms）。
 	rows, err := s.read.QueryContext(ctx,
-		`SELECT e.kind, e.domain FROM sub_entries e
+		`SELECT DISTINCT e.kind, e.domain FROM sub_entries e
 		 JOIN subscriptions s ON s.id = e.sub_id
-		 WHERE s.enabled = 1 AND s.is_global = 1
-		 ORDER BY e.kind, e.domain`)
+		 WHERE s.enabled = 1 AND s.is_global = 1`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("读取全局订阅条目失败: %w", err)
 	}

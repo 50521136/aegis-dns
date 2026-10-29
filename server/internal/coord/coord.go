@@ -62,6 +62,9 @@ type Coordinator struct {
 	// 相对 6 秒的重建耗时，120ms 可以忽略；它的作用是让「一次用户操作产生的
 	// 多个写请求」落进同一批，而不是各触发一次。
 	debounce time.Duration
+	// onRebuild 在每次重建完成后回调，仅供测试统计合并效果。
+	// 生产路径为 nil，不影响行为。
+	onRebuild func()
 }
 
 // waiter 是一个等待重建结果的调用方。
@@ -136,6 +139,47 @@ func (c *Coordinator) Rebuild(ctx context.Context) (int64, error) {
 	return c.Changed(ctx)
 }
 
+// TouchedAsync 标记变更已发生，但**不等重建完成**就返回。
+//
+// 为什么需要它：Changed 的契约是「返回时 dnsd 已经能看到改动」，所以它
+// 会一直阻塞到整次重建（线上实测 4.3~5.3 秒）结束。这对单个用户改一条
+// 个人规则是合适的 —— 他要看到「已生效」。
+//
+// 但对**批量操作**是灾难：管理员在后台逐条保存 7 条全局规则时，前端是
+// 串行请求，每个请求都同步等一次重建，总耗时 = 7 × 5.3 ≈ 37 秒；更糟的是
+// 每次都触发一次「全局层指纹变化 → 全站缓存 Flush」，那段时间所有租户的
+// 每个查询都要回源。线上 2026-10-29 17:47~17:48 就发生过这一幕：连续 9 次
+// 整体清空缓存，单次丢掉 28594 条。
+//
+// TouchedAsync 把「变更已登记」和「重建已完成」解耦：调用方立刻拿到返回，
+// 后续到达的变更在 debounce 窗口内被并进同一批重建。批量 N 次操作只付
+// 一次重建成本、只清一次缓存。
+//
+// 代价：调用方无法再声称「改动已生效」，只能声称「改动已接受」。所以它
+// 只用于「用户明确知道有延迟」的后台批量入口，不能替换 Changed。
+func (c *Coordinator) TouchedAsync(userIDs ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pending == nil {
+		c.pending = map[string]bool{}
+	}
+	if len(userIDs) == 0 {
+		c.full = true
+	} else {
+		for _, u := range userIDs {
+			if u == "" {
+				c.full = true
+				continue
+			}
+			c.pending[u] = true
+		}
+	}
+	if !c.running {
+		c.running = true
+		go c.run()
+	}
+}
+
 // run 是唯一的 builder 循环。
 //
 // 由 Changed 按需启动、pending 清空后自行退出（running 复位），
@@ -179,6 +223,10 @@ func (c *Coordinator) run() {
 		c.mu.Unlock()
 
 		version, err := c.writeSnapshot(changed, full)
+
+		if c.onRebuild != nil {
+			c.onRebuild()
+		}
 
 		// 无论成功失败都要唤醒这一批，否则调用方会一直挂着。
 		for _, w := range batch {
