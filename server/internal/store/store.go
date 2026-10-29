@@ -18,12 +18,14 @@ import (
 	"io/fs"
 	"os"
 	"sort"
+	"sync"
 	"strconv"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // 纯 Go 驱动，CGO_ENABLED=0 也能交叉编译
 
+	"github.com/50521136/aegis-dns/server/internal/model"
 	"github.com/50521136/aegis-dns/server/migrations"
 )
 
@@ -48,6 +50,43 @@ type Store struct {
 	read  *sql.DB
 	write *sql.DB
 	path  string
+
+	// 全局设置的进程内缓存。
+	//
+	// GetSettings 在 api 层有 40 多处调用点，其中一部分（protos）几乎每个
+	// 请求都会走一次。每次都 SELECT ... LIKE 'setting.%' 全扫一遍 meta 再
+	// 逐字段解析，等于把一张只有几十行的表反复读成几十次分配 ——
+	// 加上用户协议正文之后这条查询还要多带几 KB 字符串。
+	//
+	// 失效点只有一个：SaveSettings。设置只由 apid 写（dnsd 完全不碰设置，
+	// 它读的是快照文件），所以进程内缓存不存在多实例不一致问题。
+	settingsMu  sync.RWMutex
+	settings    *model.GlobalSettings
+	settingsGen uint64
+}
+
+// cloneSettings 深拷贝一份设置。
+//
+// 必须拷贝，不能把缓存里的指针直接返回：applySettingsPatch 会就地修改
+// 从 GetSettings 拿到的结构体，返回共享指针等于让一次「读取-修改-保存」
+// 把缓存也改脏（此后所有请求都看到一份没落库的假设置）。
+func cloneSettings(s *model.GlobalSettings) *model.GlobalSettings {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	// 只拷贝会被调用方改动的切片字段，其余是值类型。
+	cp.Upstreams = append([]string(nil), s.Upstreams...)
+	cp.BootstrapDNS = append([]string(nil), s.BootstrapDNS...)
+	return &cp
+}
+
+// invalidateSettings 丢弃设置缓存。写路径保存成功后必须调用。
+func (s *Store) invalidateSettings() {
+	s.settingsMu.Lock()
+	s.settings = nil
+	s.settingsGen++
+	s.settingsMu.Unlock()
 }
 
 // dsn 构造 modernc.org/sqlite 的连接串。

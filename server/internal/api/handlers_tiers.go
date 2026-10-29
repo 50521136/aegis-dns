@@ -151,7 +151,7 @@ func (s *Server) syncTierToSettings(ctx context.Context, t model.TierDef) error 
 		set.VipMaxSubs = t.MaxSubs
 		set.VipDailyQueries = t.DailyQueries
 	}
-	return s.store.SaveSettings(ctx, set)
+	return s.store.SaveSettingsAndInvalidate(ctx, set)
 }
 
 // syncSettingsToTiers 是反方向：改设置时把 free/vip 同步进 tiers 表。

@@ -84,7 +84,20 @@ func (s *Store) BumpConfigVersion(ctx context.Context) (int64, error) {
 
 // GetSettings 读取全局设置，缺失的键用出厂默认值补齐。
 func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) {
+	// 命中进程内缓存就直接返回深拷贝。见 store.go 里 settings 字段的说明。
+	s.settingsMu.RLock()
+	cached := s.settings
+	s.settingsMu.RUnlock()
+	if cached != nil {
+		return cloneSettings(cached), nil
+	}
+
 	set := model.DefaultSettings()
+	// 记下「读库开始时的代际」：读库期间若有 SaveSettings 提交，代际会变，
+	// 这份结果就是过期的，绝不能写回缓存（否则一次并发写之后所有请求都拿到旧设置）。
+	s.settingsMu.RLock()
+	gen := s.settingsGen
+	s.settingsMu.RUnlock()
 	rows, err := s.read.QueryContext(ctx, `SELECT k, v FROM meta WHERE k LIKE 'setting.%'`)
 	if err != nil {
 		return nil, fmt.Errorf("读取全局设置失败: %w", err)
@@ -318,6 +331,16 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["allow_user_subs"]; ok {
 		set.AllowUserSubs = v == "1" || strings.EqualFold(v, "true")
 	}
+
+	// 回填缓存。这里存的是即将返回的那一份的深拷贝，调用方后续就地改动
+	// 不会污染缓存（返回 &set 本身，所以必须拷一次存进去）。
+	// 只在读库期间没有并发提交的前提下回填，见上面 gen 的说明。
+	s.settingsMu.Lock()
+	if s.settingsGen == gen {
+		s.settings = cloneSettings(&set)
+	}
+	s.settingsMu.Unlock()
+
 	return &set, nil
 }
 
@@ -448,6 +471,19 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		}
 		return nil
 	})
+}
+
+// SaveSettingsAndInvalidate 保存设置并丢弃进程内缓存。
+//
+// 单独一个方法而不是把 invalidateSettings 塞进 SaveSettings 的 defer：
+// s.tx 失败时事务已回滚，此刻丢缓存只会白读一次库，但更重要的是——
+// 调用方必须显式表达「我这次写成功了」，缓存失效才有确定语义。
+func (s *Store) SaveSettingsAndInvalidate(ctx context.Context, set *model.GlobalSettings) error {
+	if err := s.SaveSettings(ctx, set); err != nil {
+		return err
+	}
+	s.invalidateSettings()
+	return nil
 }
 
 func boolStr(b bool) string {

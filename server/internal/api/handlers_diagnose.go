@@ -281,7 +281,7 @@ func (s *Server) handleAdminUpdateAISettings(w http.ResponseWriter, r *http.Requ
 		}
 		set.AIKeyEncrypted = enc
 	}
-	if err := s.store.SaveSettings(r.Context(), set); err != nil {
+	if err := s.store.SaveSettingsAndInvalidate(r.Context(), set); err != nil {
 		writeStoreError(w, err, "")
 		return
 	}

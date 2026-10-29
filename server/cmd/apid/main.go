@@ -259,7 +259,7 @@ func seedSettingsFromConfig(ctx context.Context, st *store.Store, cfg *config.Co
 	if !changed {
 		return nil
 	}
-	return st.SaveSettings(ctx, set)
+	return st.SaveSettingsAndInvalidate(ctx, set)
 }
 
 // maintenanceLoop 每天清理过期统计与日志（文档 8.4）。

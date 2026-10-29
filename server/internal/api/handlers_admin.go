@@ -665,7 +665,7 @@ func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
 		return
 	}
-	if err := s.store.SaveSettings(r.Context(), cur); err != nil {
+	if err := s.store.SaveSettingsAndInvalidate(r.Context(), cur); err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
