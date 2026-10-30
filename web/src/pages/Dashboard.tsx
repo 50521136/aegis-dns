@@ -361,11 +361,11 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
         </Card>
 
         {/* TOP 拦截域名 */}
-        <Card>
-          <CardHeader>
+        <Card className="lg:max-h-[420px] flex flex-col">
+          <CardHeader className="shrink-0">
             <CardTitle>拦截最多的域名</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-1">
+          <CardContent className="min-h-0 flex-1 space-y-1 overflow-y-auto">
             {top.isLoading ? (
               Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-9 w-full rounded-lg" />)
             ) : top.isError ? (
@@ -400,82 +400,71 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
           </CardContent>
         </Card>
 
-        {/* 上游服务器：管理员看谁在干活、谁在拖后腿。
-            放在「拦截最多的域名」同一行 —— 两块都是「排行」性质的
-            短列表，并排后既省纵向空间，又方便横向对比。
-            只统计未命中缓存的查询：命中时根本没碰上游，
-            混进去会让所有上游的响应时间虚低三分之一。 */}
-        {isAdmin && (
-          <Card>
-            <CardHeader>
-              <CardTitle>上游服务器</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">
-                按请求次数排序，响应时间只算真实回源的查询
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-1">
-              {upstreams.length === 0 ? (
-                <EmptyState
-                  icon={<Server className="size-6" />}
-                  title="暂无上游记录"
-                  className="py-8"
-                />
-              ) : (
-                upstreams.map((u, i) => (
-                  <div
-                    key={u.upstream}
-                    className="rounded-lg px-2 py-2 transition-colors hover:bg-muted/50"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold tabular-nums text-muted-foreground">
-                        {i + 1}
-                      </span>
-                      <span
-                        className="min-w-0 flex-1 truncate font-mono text-[13px]"
-                        title={u.upstream}
-                      >
-                        {shortUpstream(u.upstream)}
-                      </span>
-                      <span className="shrink-0 text-right font-mono text-xs tabular-nums">
-                        {formatCompact(u.hits)}
-                      </span>
-                      <Badge
-                        variant={
-                          u.avg_latency_ms < 30
-                            ? 'success'
-                            : u.avg_latency_ms < 60
-                              ? 'secondary'
-                              : 'warning'
-                        }
-                        className="w-16 shrink-0 justify-center tabular-nums"
-                      >
-                        {u.avg_latency_ms.toFixed(0)}ms
-                      </Badge>
-                    </div>
-                    {/* 占比条：一眼看出主力是哪一个 */}
-                    <div className="mt-1.5 flex items-center gap-2 pl-9">
-                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary/60"
-                          style={{ width: `${Math.max(u.share * 100, 1)}%` }}
-                        />
-                      </div>
-                      <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
-                        {(u.share * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-        )}
       </div>
 
-      {/* 流量排行：只有管理员看得到（租户侧只有一个用户，排行没意义）*/}
+      {/* 上游 + 流量排行：同一行并排，两卡等高、内容溢出时各自内部滚动。
+          为什么不用「撑开页面」而是内部滚动：这两个榜都可能几十行，
+          撑开会把下面的快捷入口顶到很远处，而它们本质上只是「扫一眼」的
+          信息 —— 固定高度 + 滚动既保证一行放得下，又不丢数据。 */}
       {isAdmin && (
-        <Card>
-          <CardHeader className="flex-row items-center justify-between">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* 上游服务器 */}
+        <Card className="lg:max-h-[420px] flex flex-col">
+          <CardHeader className="shrink-0">
+            <CardTitle>上游服务器</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              按请求次数排序，响应时间只算真实回源的查询
+            </p>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+            {upstreams.length === 0 ? (
+              <EmptyState
+                icon={<Server className="size-6" />}
+                title="暂无上游记录"
+                className="py-8"
+              />
+            ) : (
+              upstreams.map((u, i) => (
+                <div key={u.upstream} className="rounded-lg px-2 py-2 transition-colors hover:bg-muted/50">
+                  <div className="flex items-center gap-3">
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold tabular-nums text-muted-foreground">
+                      {i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={u.upstream}>
+                      {shortUpstream(u.upstream)}
+                    </span>
+                    <span className="shrink-0 text-right font-mono text-xs tabular-nums">
+                      {formatCompact(u.hits)}
+                    </span>
+                    <Badge
+                      variant={
+                        u.avg_latency_ms < 30 ? 'success' : u.avg_latency_ms < 60 ? 'secondary' : 'warning'
+                      }
+                      className="w-16 shrink-0 justify-center tabular-nums"
+                    >
+                      {u.avg_latency_ms.toFixed(0)}ms
+                    </Badge>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2 pl-9">
+                    <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary/60"
+                        style={{ width: `${Math.max(u.share * 100, 1)}%` }}
+                      />
+                    </div>
+                    <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+                      {(u.share * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 流量排行 */}
+        <Card className="lg:max-h-[420px] flex flex-col">
+          <CardHeader className="flex-row items-center justify-between shrink-0">
             <div>
               <CardTitle>流量排行</CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">按租户统计请求量与拦截率</p>
@@ -501,7 +490,7 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
               </Badge>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-h-0 flex-1 overflow-y-auto">
             {traffic.isLoading ? (
               <div className="space-y-2">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -570,6 +559,7 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
             )}
           </CardContent>
         </Card>
+        </div>
       )}
 
       {/* 快捷入口：租户侧才有意义 */}
