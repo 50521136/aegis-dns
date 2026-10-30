@@ -12,6 +12,45 @@ export function formatCompact(n: number | null | undefined): string {
   return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
 
+/**
+ * 把上游地址缩成「协议 + 主机」的短形式，用于窄列表里展示。
+ *
+ *   quic://dns.alidns.com:853                       -> quic://dns.alidns.com
+ *   https://909111-m2tdhgkjlcpife47.alidns.com/dns-query
+ *                                                   -> https://909111-…alidns.com
+ *   223.5.5.5:53                                    -> 223.5.5.5
+ *
+ * 为什么要在前端再缩一次：管理后台虽然能拿到完整地址，但卡片宽度有限，
+ * 一个长得离谱的个人版 DoH 地址会把「次数」和「响应时间」两列挤出去。
+ * 完整值仍然放在 title 里，鼠标悬停能看到原文。
+ */
+export function shortUpstream(addr: string | null | undefined): string {
+  if (!addr) return '—'
+  const raw = addr.trim()
+
+  // 裸 IP（含端口）直接返回，去掉默认的 :53
+  if (!raw.includes('://')) {
+    return raw.replace(/:53$/, '')
+  }
+
+  const sep = raw.indexOf('://')
+  const scheme = raw.slice(0, sep)
+  let rest = raw.slice(sep + 3)
+
+  // 去掉路径（DoH 的 /dns-query 之类）
+  const slash = rest.indexOf('/')
+  if (slash >= 0) rest = rest.slice(0, slash)
+
+  // 去掉默认端口
+  rest = rest.replace(/:853$/, '').replace(/:443$/, '').replace(/:53$/, '')
+
+  // 主机名过长时保留头尾，中间省略：头能看出是哪家、尾是域名
+  if (rest.length > 26) {
+    rest = `${rest.slice(0, 8)}…${rest.slice(-11)}`
+  }
+  return `${scheme}://${rest}`
+}
+
 /** 百分比，输入 0.1454 -> "14.5%" */
 export function formatPercent(ratio: number | null | undefined, digits = 1): string {
   if (ratio === null || ratio === undefined || Number.isNaN(ratio)) return '—'

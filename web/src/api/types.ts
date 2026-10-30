@@ -245,6 +245,18 @@ export interface SubscriptionPreset {
 
 /* ---------------- 统计 ---------------- */
 
+// 单个上游的使用情况。只有管理员视角会返回（用户侧没有这个字段）。
+export interface UpstreamHit {
+  /** 上游地址原文，例如 quic://dns.alidns.com:853 */
+  upstream: string
+  /** 该上游实际应答的次数（只统计未命中缓存、真的发出上游请求的查询） */
+  hits: number
+  avg_latency_ms: number
+  max_latency_ms: number
+  /** 占全部上游请求的比例，0~1 */
+  share: number
+}
+
 export interface StatsSummary {
   range: string
   total: number
@@ -255,6 +267,8 @@ export interface StatsSummary {
   cache_hit_rate: number
   avg_latency_ms: number
   unique_domains: number
+  /** 上游使用情况，仅管理员视角返回 */
+  upstreams?: UpstreamHit[]
 }
 
 export interface TimeseriesPoint {

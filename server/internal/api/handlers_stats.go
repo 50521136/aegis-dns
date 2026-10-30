@@ -34,7 +34,16 @@ func (s *Server) statsSummary(w http.ResponseWriter, r *http.Request, uid string
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	// 上游使用情况：只有管理员视角需要（用户看自己的上游分布意义不大，
+	// 而且完整地址里有接入方标识）。查询失败不影响总览主数据。
+	var upstreams []store.UpstreamHit
+	if uid == "" {
+		if ups, uerr := s.store.UpstreamStats(r.Context(), "", since.Unix(), 20); uerr == nil {
+			upstreams = ups
+		}
+	}
+
+	resp := map[string]any{
 		"range":          orDefault(r.URL.Query().Get("range"), "24h"),
 		"total":          sum.Total,
 		"blocked":        sum.Blocked,
@@ -44,7 +53,20 @@ func (s *Server) statsSummary(w http.ResponseWriter, r *http.Request, uid string
 		"cache_hit_rate": sum.CacheRate,
 		"avg_latency_ms": sum.AvgLatency,
 		"unique_domains": unique,
-	})
+	}
+	if uid == "" {
+		// 管理员看完整地址：他要判断「是主上游还是备用在答」。
+		resp["upstreams"] = orEmptyUpstreams(upstreams)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// orEmptyUpstreams 保证 JSON 里是 [] 而不是 null。
+func orEmptyUpstreams(in []store.UpstreamHit) []store.UpstreamHit {
+	if in == nil {
+		return []store.UpstreamHit{}
+	}
+	return in
 }
 
 func (s *Server) handleStatsTimeseries(w http.ResponseWriter, r *http.Request) {

@@ -28,10 +28,11 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronUp,
+  Server,
 } from 'lucide-react'
 import { flushCache, flushMyCache, getSummary, getTimeseries, getTop, type StatsRange } from '@/api/stats'
 import { getAdminUserTraffic } from '@/api/adminStats'
-import type { Scope } from '@/api/types'
+import type { Scope, UpstreamHit } from '@/api/types'
 import { getCheckin } from '@/api/member'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
@@ -51,7 +52,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { EmptyState } from '@/components/EmptyState'
-import { formatCompact, formatNumber, formatPercent } from '@/lib/format'
+import { formatCompact, formatNumber, formatPercent, shortUpstream } from '@/lib/format'
 
 function formatTs(ts: string | number): string {
   const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
@@ -137,6 +138,8 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   }
 
   const s = summary.data
+  // 上游使用情况：只有管理员视角后端才会返回这个字段。
+  const upstreams: UpstreamHit[] = s?.upstreams ?? []
   const chartData = (timeseries.data?.points ?? []).map((p) => ({
     ...p,
     label: formatTs(p.ts),
@@ -396,6 +399,77 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
             )}
           </CardContent>
         </Card>
+
+        {/* 上游服务器：管理员看谁在干活、谁在拖后腿。
+            放在「拦截最多的域名」同一行 —— 两块都是「排行」性质的
+            短列表，并排后既省纵向空间，又方便横向对比。
+            只统计未命中缓存的查询：命中时根本没碰上游，
+            混进去会让所有上游的响应时间虚低三分之一。 */}
+        {isAdmin && (
+          <Card>
+            <CardHeader>
+              <CardTitle>上游服务器</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                按请求次数排序，响应时间只算真实回源的查询
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-1">
+              {upstreams.length === 0 ? (
+                <EmptyState
+                  icon={<Server className="size-6" />}
+                  title="暂无上游记录"
+                  className="py-8"
+                />
+              ) : (
+                upstreams.map((u, i) => (
+                  <div
+                    key={u.upstream}
+                    className="rounded-lg px-2 py-2 transition-colors hover:bg-muted/50"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold tabular-nums text-muted-foreground">
+                        {i + 1}
+                      </span>
+                      <span
+                        className="min-w-0 flex-1 truncate font-mono text-[13px]"
+                        title={u.upstream}
+                      >
+                        {shortUpstream(u.upstream)}
+                      </span>
+                      <span className="shrink-0 text-right font-mono text-xs tabular-nums">
+                        {formatCompact(u.hits)}
+                      </span>
+                      <Badge
+                        variant={
+                          u.avg_latency_ms < 30
+                            ? 'success'
+                            : u.avg_latency_ms < 60
+                              ? 'secondary'
+                              : 'warning'
+                        }
+                        className="w-16 shrink-0 justify-center tabular-nums"
+                      >
+                        {u.avg_latency_ms.toFixed(0)}ms
+                      </Badge>
+                    </div>
+                    {/* 占比条：一眼看出主力是哪一个 */}
+                    <div className="mt-1.5 flex items-center gap-2 pl-9">
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary/60"
+                          style={{ width: `${Math.max(u.share * 100, 1)}%` }}
+                        />
+                      </div>
+                      <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+                        {(u.share * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* 流量排行：只有管理员看得到（租户侧只有一个用户，排行没意义）*/}
