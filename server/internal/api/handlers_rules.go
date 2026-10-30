@@ -211,6 +211,14 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request, global bool)
 	if req.Enabled != nil {
 		rule.Enabled = *req.Enabled
 	}
+	// 先规范化再校验：把 "@@||x^" / "||x^" 统一成 "x"，并挡掉
+	// kind 与 @@ 前缀矛盾的输入（那种输入能悄悄入库，然后按 kind 生效，
+	// 和写规则的人的意图正好相反）。
+	if err := rules.NormalizeRule(rule); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidRule, err.Error(),
+			map[string]any{"input": req.Pattern})
+		return
+	}
 	if err := validateRule(rule); err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidRule, err.Error(), map[string]any{"input": req.Pattern})
 		return
@@ -287,6 +295,12 @@ func (s *Server) updateRule(w http.ResponseWriter, r *http.Request, global bool)
 	}
 	if req.Enabled != nil {
 		existing.Enabled = *req.Enabled
+	}
+	// 更新路径同样要规范化：否则「新建时规范化、修改时原样存」会让
+	// 同一张表里再次出现多种写法，正是这次要消掉的冗余。
+	if err := rules.NormalizeRule(existing); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidRule, err.Error(), nil)
+		return
 	}
 	if err := validateRule(existing); err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidRule, err.Error(), nil)
@@ -417,21 +431,22 @@ func (s *Server) handleValidateRule(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// canonicalPattern 把解析结果还原成 AdGuard 形式的 pattern。
+// canonicalPattern 把解析结果收敛成「纯域名 + 可选通配」。
 //
-// 统一写法而不是保留原文：同一条规则可能来自 hosts、dnsmasq 或 Adblock 语法，
-// 存成一致形式后，列表、去重、导出都能按同一套规则比较。
+// 以前这里会拼成 AdGuard 形式（allow 拼 @@||x^、其余拼 ||x^），于是规则表里
+// 同一件事有三种写法并存，而匹配时 splitPattern 又会把前缀无条件剥掉 ——
+// 前缀对结果零影响，纯冗余。更糟的是它能和 kind 打架：kind=block 配
+// "@@||x^" 时，@@ 被剥掉、kind 生效，实际变成「拦截 x」，与字面意思相反
+// 且不报错。
+//
+// 现在 kind 是语义的唯一来源，pattern 只存域名。订阅层一直是这个形态
+// （283 万条里 0 条带前缀），规则层跟上。
 func canonicalPattern(p *rules.Parsed) string {
 	domain := p.Domain
 	if p.Wildcard {
-		domain = "*." + domain
+		return "*." + domain
 	}
-	switch p.Kind {
-	case model.KindAllow:
-		return "@@||" + domain + "^"
-	default:
-		return "||" + domain + "^"
-	}
+	return domain
 }
 
 func (s *Server) handleImportRules(w http.ResponseWriter, r *http.Request) {
