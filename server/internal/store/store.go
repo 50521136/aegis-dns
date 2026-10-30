@@ -77,6 +77,7 @@ func cloneSettings(s *model.GlobalSettings) *model.GlobalSettings {
 	cp := *s
 	// 只拷贝会被调用方改动的切片字段，其余是值类型。
 	cp.Upstreams = append([]string(nil), s.Upstreams...)
+	cp.FallbackUpstreams = append([]string(nil), s.FallbackUpstreams...)
 	cp.BootstrapDNS = append([]string(nil), s.BootstrapDNS...)
 	return &cp
 }

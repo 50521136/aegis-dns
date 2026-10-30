@@ -418,7 +418,15 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	// 记进日志：之前 det.ECS 只在 ecsFrom(req) 里填了「客户端自带的」，
 	// 服务端注入的那条从来没回填过，于是 query_log.ecs 永远是空字段，
 	// 谁也没法从面板核实 ECS 到底有没有生效。
-	det.ECS = formatECS(ecsSub)
+	//
+	// 用 formatECSForLog 而不是 formatECS：后者返回注入上游用的网段地址
+	// （主机位已抹），而日志要的是精确地址，否则同一个 /24 里的设备
+	// 在排查时无法区分。
+	var clientIP net.IP
+	if w != nil {
+		clientIP = remoteIP(w.RemoteAddr())
+	}
+	det.ECS = formatECSForLog(ecsSub, clientIP)
 
 	cacheStart := time.Now()
 	if cacheable && cache != nil {
@@ -727,7 +735,14 @@ func (h *Handler) record(userID string, q dns.Question, action, rcode string, du
 	}
 	client := ""
 	if w != nil {
-		client = maskIP(remoteIP(w.RemoteAddr()))
+		// 迁就用精确 IP：脱敏改成在对外出站那一层做（见 redact.go），
+		// 而不是在落库前就把信息抹掉。
+		//
+		// 原因：日志一旦以 /24 存进来，就再也还原不回单个客户端 ——
+		// 而排障时「是这一台设备还是整个网段都在报错」是完全不同的问题。
+		// 脱敏是「给谁看」的问题，应该在出站时按角色决定，不该在采集时
+		// 一刀切。
+		client = ipString(remoteIP(w.RemoteAddr()))
 	}
 	domain := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 
@@ -778,7 +793,13 @@ func trackerLabel(domain string) string {
 	return name + "（" + category + "）"
 }
 
-// ecsFrom 提取 EDNS Client Subnet 选项，形如 "1.2.3.0/24"。
+// ecsFrom 提取 EDNS Client Subnet 选项。
+//
+// 输出形如 "112.111.55.37/24"：前面是精确地址，后面保留客户端声明的掩码。
+// 过去这里只写网段本身（"112.111.55.0/24"），把主机位抹掉了 —— 而 ECS 的
+// 地址本来就是客户端自己上报的网络信息，不是我们采集到的终端地址，
+// 保留精确值既不影响真实脱敏（那是对 client 字段做的），又能让
+// 「同一个 /24 里哪台设备更近 CDN」这类问题查得出来。
 func ecsFrom(req *dns.Msg) string {
 	if req == nil {
 		return ""
@@ -898,6 +919,24 @@ func remoteIP(addr net.Addr) net.IP {
 		host = addr.String()
 	}
 	return net.ParseIP(host)
+}
+
+// ipString 输出精确 IP 字符串。
+//
+// 和 maskIP 的区别：maskIP 把地址抹成 /24 网段，这里保留完整地址。
+// 落库用精确值，对外出站时再按查看者角色决定是否脱敏（见 api/redact.go）。
+// 这样「采集」与「展示」分开：采集时保留全量信息，展示时按权限裁剪。
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	if v6 := ip.To16(); v6 != nil {
+		return v6.String()
+	}
+	return ""
 }
 
 // maskIP 把客户端 IP 脱敏到 /24（IPv4）或 /48（IPv6）。

@@ -193,6 +193,31 @@ func formatECS(sub *dns.EDNS0_SUBNET) string {
 	return addr + "/" + itoa(int(sub.SourceNetmask))
 }
 
+// formatECSForLog 生成写进 query_log 的 ECS 表示。
+//
+// 与 formatECS 的区别：那个返回的是实际发给上游的地址（按 /24 抹过主机位，
+// 因为 ECS 协议本身只承诺网段精度）；这里要的是「这次查询关联到哪个
+// 精确地址」，所以用 clientIP 覆盖掉主机位。
+//
+// 为什么要分开：上游注入必须保持网段（RFC 7871 的语义 + 影响 CDN 命中），
+// 而日志要能回答「同一个 /24 里是哪台设备」，两者目的不同。
+// 掩码部分照旧保留，前端仍能看出这是一条 /24 的 ECS。
+func formatECSForLog(sub *dns.EDNS0_SUBNET, clientIP net.IP) string {
+	if sub == nil {
+		return ""
+	}
+	// 有精确客户端地址就用它，否则退回 ECS 自带的值（客户端自己上报的情形）。
+	addr := net.IP(sub.Address)
+	if clientIP != nil {
+		addr = clientIP
+	}
+	s := addr.String()
+	if s == "<nil>" || s == "" {
+		return ""
+	}
+	return s + "/" + itoa(int(sub.SourceNetmask))
+}
+
 // sharedSubnet 决定一条正常解析的应答该写进缓存的哪一层。
 //
 // 返回 nil = 写主键层（与网段无关，所有客户端共享）；非 nil = 写网段层。

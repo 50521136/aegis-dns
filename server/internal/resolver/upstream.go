@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AdguardTeam/dnsproxy/upstream"
@@ -40,6 +41,16 @@ type Pool struct {
 	mu      sync.RWMutex
 	// closed 标记池是否已关闭（Registry 热更新时会替换掉旧池）。
 	closed bool
+
+	// mode 是上游选择策略，见 model.UpstreamMode*。空串按 hedge 处理。
+	mode string
+	// scores 与 ups 一一对应，只给 fastest 模式用。
+	scores []*upstreamScore
+	// rr 是 load_balance 模式的轮询游标。
+	rr atomic.Uint64
+	// fallback 是备用上游池：只有主池全部失败时才启用。
+	// 与 AdGuard Home 的 fallback_dns 同义。
+	fallback *Pool
 }
 
 // NewPool 按地址列表创建一个上游池。
@@ -86,7 +97,46 @@ func newPool(addrs []string, bootstrap []string, timeout time.Duration) (*Pool, 
 	if len(p.ups) == 0 {
 		return nil, fmt.Errorf("没有任何可用的上游 DNS（尝试过 %v）", p.addrs)
 	}
+	// scores 必须与 ups 一一对应，fastest 模式按下标取用。
+	p.scores = make([]*upstreamScore, len(p.ups))
+	for i := range p.scores {
+		p.scores[i] = &upstreamScore{}
+	}
 	return p, nil
+}
+
+// SetMode 设置上游选择策略。非法值按 hedge 处理（保持旧行为）。
+//
+// 在池建好之后单独设置而不是塞进构造函数：调用方（Registry）拿到的
+// 配置是热更新的，模式可能在没有变化上游地址的情况下单独改变，
+// 这时不该重建整个池（会丢掉 DoH 的 TLS 会话复用）。
+func (p *Pool) SetMode(mode string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.mode = mode
+	p.mu.Unlock()
+}
+
+// Mode 返回当前策略，供日志与诊断使用。
+func (p *Pool) Mode() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.mode
+}
+
+// SetFallback 挂上备用池：主池全部失败时才启用。
+func (p *Pool) SetFallback(fb *Pool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.fallback = fb
+	p.mu.Unlock()
 }
 
 // normalizeAddrs 补全裸 IP 为 udp:// 形式，去重去空。
@@ -158,12 +208,45 @@ func (p *Pool) ExchangeWithSource(ctx context.Context, req *dns.Msg) (*dns.Msg, 
 		return nil, "", errors.New("上游池已关闭")
 	}
 
+	// 按配置的策略分发。备用池只在主池彻底失败后才启用，
+	// 而不是参与首选竞速 —— 它的用途是「主上游全挂」时的兜底。
+	resp, src, err := p.dispatch(ctx, ups, req)
+	if err == nil {
+		return resp, src, nil
+	}
+	if fb := p.fallback; fb != nil {
+		if r2, s2, e2 := fb.ExchangeWithSource(ctx, req); e2 == nil {
+			return r2, s2, nil
+		}
+	}
+	return nil, "", err
+}
+
+// dispatch 按 mode 选择具体策略。
+func (p *Pool) dispatch(ctx context.Context, ups []upstream.Upstream, req *dns.Msg) (*dns.Msg, string, error) {
 	// 单个上游：直接查，没有可竞速的对象。
 	if len(ups) == 1 {
 		resp, err := p.exchangeOne(ctx, ups[0], req)
 		return resp, ups[0].Address(), err
 	}
+	switch p.mode {
+	case "parallel":
+		return p.exchangeParallel(ctx, ups, req)
+	case "fastest":
+		return p.exchangeFastest(ctx, ups, req)
+	case "load_balance":
+		return p.exchangeLoadBalance(ctx, ups, req)
+	}
+	// 默认 hedge：保持旧行为。
+	return p.exchangeHedge(ctx, ups, req)
+}
 
+// exchangeHedge 是旧策略：只问主上游，HedgeDelay 后才拉起其余上游竞速。
+//
+// 保留它的原因：出流量最省。但在「主上游够快但答案不对」的场景下，
+// 备用上游永远不会上场 —— 线上实测 4830 次查询备用只接到 8 次。
+// 想真正用上备用请选 parallel 或 load_balance。
+func (p *Pool) exchangeHedge(ctx context.Context, ups []upstream.Upstream, req *dns.Msg) (*dns.Msg, string, error) {
 	type result struct {
 		resp *dns.Msg
 		src  string
@@ -295,6 +378,10 @@ func NewCache() *Cache {
 func (c *Cache) Get(addrs []string, bootstrap []string) (*Pool, error) {
 	// 池的 key 必须包含引导地址：同一组上游配不同引导是不同行为，
 	// 只按上游做 key 会让后配的引导被先建的池静默复用。
+	//
+	// 不把 mode 放进 key：mode 可以在不改上游地址的情况下单独变化，
+	// 那时应当就地更新已有池（保住 DoH 的 TLS 会话复用），
+	// 而不是重建一个新池把旧连接全丢掉。见 SetMode。
 	key := strings.Join(normalizeAddrs(addrs), ",") + "|" + strings.Join(bootstrap, ",")
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -308,6 +395,27 @@ func (c *Cache) Get(addrs []string, bootstrap []string) (*Pool, error) {
 	}
 	c.pools[key] = p
 	c.refs[key] = 1
+	return p, nil
+}
+
+// GetWithMode 与 Get 相同，额外套用上游选择策略与备用服务器。
+//
+// 备用池单独走一次 Get，这样它能被多个用户共享（引用计数在 Sweep 里
+// 统一回收），而不是每个用户各建一份。
+func (c *Cache) GetWithMode(addrs, fallback []string, mode string, bootstrap []string) (*Pool, error) {
+	p, err := c.Get(addrs, bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	p.SetMode(mode)
+	if len(fallback) > 0 {
+		// 备用池建失败不应让主池也不可用：主上游能用就还能解析。
+		if fb, ferr := c.Get(fallback, bootstrap); ferr == nil {
+			p.SetFallback(fb)
+		}
+	} else {
+		p.SetFallback(nil)
+	}
 	return p, nil
 }
 

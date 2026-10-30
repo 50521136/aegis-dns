@@ -123,6 +123,12 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["upstreams"]; ok && v != "" {
 		set.Upstreams = strings.Split(v, ",")
 	}
+	if v, ok := kv["upstream_mode"]; ok {
+		set.UpstreamMode = v
+	}
+	if v, ok := kv["fallback_upstreams"]; ok && v != "" {
+		set.FallbackUpstreams = strings.Split(v, ",")
+	}
 	if v, ok := kv["proxy_url"]; ok {
 		set.ProxyURL = v
 	}
@@ -360,6 +366,8 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 	pairs := map[string]string{
 		"domain":                  set.Domain,
 		"upstreams":               strings.Join(set.Upstreams, ","),
+		"upstream_mode":           set.UpstreamMode,
+		"fallback_upstreams":      strings.Join(set.FallbackUpstreams, ","),
 		"bootstrap_dns":           strings.Join(set.BootstrapDNS, ","),
 		"proxy_url":               set.ProxyURL,
 		"proxy_enabled":           boolStr(set.ProxyEnabled),

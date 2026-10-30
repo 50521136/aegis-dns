@@ -258,7 +258,13 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 		ur.Rules.Store(rs)
 
 		addrs := upstreamsFor(us.Upstreams, snap.Defaults)
-		pool, err := r.pools.Get(addrs, snap.Defaults.BootstrapDNS)
+		// 用户自定义了上游就只用他的那份，不叠加全局备用池 ——
+		// 否则「自定义上游」会被全局备用悄悄兜底，用户以为生效的其实没生效。
+		var fb []string
+		if len(us.Upstreams) == 0 {
+			fb = snap.Defaults.FallbackUpstreams
+		}
+		pool, err := r.pools.GetWithMode(addrs, fb, snap.Defaults.UpstreamMode, snap.Defaults.BootstrapDNS)
 		if err != nil {
 			return fmt.Errorf("为用户 %s 创建上游池失败: %w", us.UserID, err)
 		}
@@ -280,7 +286,9 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 	if err != nil {
 		fallbackRules, _ = rules.Build(rules.Layers{})
 	}
-	fallbackPool, err := r.pools.Get(snap.Defaults.Upstreams, snap.Defaults.BootstrapDNS)
+	fallbackPool, err := r.pools.GetWithMode(
+		snap.Defaults.Upstreams, snap.Defaults.FallbackUpstreams,
+		snap.Defaults.UpstreamMode, snap.Defaults.BootstrapDNS)
 	if err != nil {
 		return fmt.Errorf("创建默认上游池失败: %w", err)
 	}

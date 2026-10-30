@@ -243,6 +243,11 @@ type UserIP struct {
 type Defaults struct {
 	Domain    string   `json:"domain"`
 	Upstreams []string `json:"upstreams"`
+	// UpstreamMode 决定多个上游之间怎么配合，见 UpstreamMode* 常量。
+	// 空串按 hedge 处理，保持旧快照兼容。
+	UpstreamMode string `json:"upstream_mode"`
+	// FallbackUpstreams 是备用服务器，只有主上游全部失败时才启用。
+	FallbackUpstreams []string `json:"fallback_upstreams"`
 	// BootstrapDNS 用于解析 DoH/DoT 上游里的主机名。
 	//
 	// 只接受 IP 字面量：用 DoH 地址做引导是循环依赖（要先解析才能连）。
@@ -290,8 +295,12 @@ type UserSnap struct {
 	ClientID  string   `json:"client_id"`
 	Enabled   bool     `json:"enabled"`
 	Upstreams []string `json:"upstreams,omitempty"`
-	IPs       []string `json:"ips,omitempty"`
-	Rules     []Rule   `json:"rules,omitempty"`
+	// UpstreamMode 见 GlobalSettings.UpstreamMode。
+	UpstreamMode string `json:"upstream_mode,omitempty"`
+	// FallbackUpstreams 仅在主上游全部失败时启用。
+	FallbackUpstreams []string `json:"fallback_upstreams,omitempty"`
+	IPs               []string `json:"ips,omitempty"`
+	Rules             []Rule   `json:"rules,omitempty"`
 	// UseGlobalRules 为假时，dnsd 不为该用户挂全局层。
 	UseGlobalRules bool `json:"use_global_rules"`
 	// CacheFlushSeq 是该用户自己的「清除缓存」序号。
@@ -360,9 +369,41 @@ const StatusPending = "pending: 同步中"
 const SnapshotSchema = 2
 
 // GlobalSettings 是管理员可改的全局设置（存 meta 表，前缀 setting.）。
+// 上游选择模式。决定池内多个上游之间怎么配合。
+const (
+	// UpstreamModeParallel 对所有上游并发发起请求，第一个成功应答胜出。
+	// AdGuard Home 的默认行为，延迟最低，代价是 N 倍出流量。
+	UpstreamModeParallel = "parallel"
+	// UpstreamModeFastest 并发请求但会累计各上游的近期表现，
+	// 稳定后偏向最快的那一个，属于「并行 + 择优」。
+	UpstreamModeFastest = "fastest"
+	// UpstreamModeLoadBalance 按轮询分散到各上游，不并发。
+	// 出流量最小，代价是单次延迟取决于轮到的那个上游。
+	UpstreamModeLoadBalance = "load_balance"
+	// UpstreamModeHedge 只问主上游，HedgeDelay 后仍无应答才拉起其余的上游。
+	// 这是本项目的旧行为，出流量最省，但备用上游几乎不上场。
+	UpstreamModeHedge = "hedge"
+)
+
+// ValidUpstreamMode 判断模式是否合法。
+func ValidUpstreamMode(m string) bool {
+	switch m {
+	case UpstreamModeParallel, UpstreamModeFastest,
+		UpstreamModeLoadBalance, UpstreamModeHedge:
+		return true
+	}
+	return false
+}
+
 type GlobalSettings struct {
 	Domain    string   `json:"domain"`
 	Upstreams []string `json:"upstreams"`
+	// UpstreamMode 决定多个上游之间怎么配合，取值见 UpstreamMode* 常量。
+	// 空串按 hedge 处理，保持旧快照的兼容性。
+	UpstreamMode string `json:"upstream_mode"`
+	// FallbackUpstreams 是备用服务器：只有主上游全部失败时才启用。
+	// 与 AdGuard Home 的 fallback_dns 同义，用于「主上游被墙/挂了」的场景。
+	FallbackUpstreams []string `json:"fallback_upstreams"`
 	// BootstrapDNS 用于解析 DoH/DoT 上游里的主机名，只接受 IP 字面量。
 	BootstrapDNS []string `json:"bootstrap_dns"`
 	// ProxyURL 是出口代理（http/https/socks5），给在线更新与订阅拉取用。

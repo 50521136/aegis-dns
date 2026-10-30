@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -206,25 +207,27 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 // settingsJSON 补充只读的派生字段。
 func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 	out := map[string]any{
-		"domain":           set.Domain,
-		"upstreams":        set.Upstreams,
-		"bootstrap_dns":    set.BootstrapDNS,
-		"proxy_url":        set.ProxyURL,
-		"proxy_enabled":    set.ProxyEnabled,
-		"blocking_mode":    set.BlockingMode,
-		"custom_ip":        set.CustomIP,
-		"fallback_policy":  set.FallbackPolicy,
-		"cache_size":       set.CacheSize,
-		"cache_min_ttl":    set.CacheMinTTL,
-		"cache_max_ttl":    set.CacheMaxTTL,
-		"rate_limit_qps":   set.RateLimitQPS,
-		"max_inflight":     set.MaxInflight,
-		"query_timeout_ms": set.QueryTimeoutMS,
-		"query_log_size":   set.QueryLogSize,
-		"enable_query_log": set.EnableQueryLog,
-		"enable_doh":       set.EnableDoH,
-		"enable_dot":       set.EnableDoT,
-		"enable_plain_dns": set.EnablePlainDNS,
+		"domain":             set.Domain,
+		"upstreams":          set.Upstreams,
+		"upstream_mode":      upstreamModeOrDefault(set.UpstreamMode),
+		"fallback_upstreams": orEmptyStrings(set.FallbackUpstreams),
+		"bootstrap_dns":      set.BootstrapDNS,
+		"proxy_url":          set.ProxyURL,
+		"proxy_enabled":      set.ProxyEnabled,
+		"blocking_mode":      set.BlockingMode,
+		"custom_ip":          set.CustomIP,
+		"fallback_policy":    set.FallbackPolicy,
+		"cache_size":         set.CacheSize,
+		"cache_min_ttl":      set.CacheMinTTL,
+		"cache_max_ttl":      set.CacheMaxTTL,
+		"rate_limit_qps":     set.RateLimitQPS,
+		"max_inflight":       set.MaxInflight,
+		"query_timeout_ms":   set.QueryTimeoutMS,
+		"query_log_size":     set.QueryLogSize,
+		"enable_query_log":   set.EnableQueryLog,
+		"enable_doh":         set.EnableDoH,
+		"enable_dot":         set.EnableDoT,
+		"enable_plain_dns":   set.EnablePlainDNS,
 		// 描述文件（iOS / macOS）开关。后两个是「描述文件内部允许哪种载荷」，
 		// 受全局协议开关约束：生效值 = 全局 && 本开关（前端据此把开关置灰）。
 		// 生效值的计算只发生在后端 protos() / 前端的表单联动各一处，
@@ -339,22 +342,24 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 // 实测踩到过：改完兜底策略后查询日志再也不更新，从任何日志里都看不出
 // 是「被同一次设置请求顺手关掉了」。
 type settingsPatch struct {
-	Domain         *string   `json:"domain"`
-	Upstreams      *[]string `json:"upstreams"`
-	BootstrapDNS   *[]string `json:"bootstrap_dns"`
-	ProxyURL       *string   `json:"proxy_url"`
-	ProxyEnabled   *bool     `json:"proxy_enabled"`
-	BlockingMode   *string   `json:"blocking_mode"`
-	CustomIP       *string   `json:"custom_ip"`
-	FallbackPolicy *string   `json:"fallback_policy"`
-	CacheSize      *int      `json:"cache_size"`
-	CacheMinTTL    *int      `json:"cache_min_ttl"`
-	CacheMaxTTL    *int      `json:"cache_max_ttl"`
-	RateLimitQPS   *int      `json:"rate_limit_qps"`
-	MaxInflight    *int      `json:"max_inflight"`
-	QueryTimeoutMS *int      `json:"query_timeout_ms"`
-	QueryLogSize   *int      `json:"query_log_size"`
-	EnableQueryLog *bool     `json:"enable_query_log"`
+	Domain            *string   `json:"domain"`
+	Upstreams         *[]string `json:"upstreams"`
+	UpstreamMode      *string   `json:"upstream_mode"`
+	FallbackUpstreams *[]string `json:"fallback_upstreams"`
+	BootstrapDNS      *[]string `json:"bootstrap_dns"`
+	ProxyURL          *string   `json:"proxy_url"`
+	ProxyEnabled      *bool     `json:"proxy_enabled"`
+	BlockingMode      *string   `json:"blocking_mode"`
+	CustomIP          *string   `json:"custom_ip"`
+	FallbackPolicy    *string   `json:"fallback_policy"`
+	CacheSize         *int      `json:"cache_size"`
+	CacheMinTTL       *int      `json:"cache_min_ttl"`
+	CacheMaxTTL       *int      `json:"cache_max_ttl"`
+	RateLimitQPS      *int      `json:"rate_limit_qps"`
+	MaxInflight       *int      `json:"max_inflight"`
+	QueryTimeoutMS    *int      `json:"query_timeout_ms"`
+	QueryLogSize      *int      `json:"query_log_size"`
+	EnableQueryLog    *bool     `json:"enable_query_log"`
 	// 协议开关用指针：漏传 = 不变，不会因为前端没带字段就把协议关掉
 	EnableDoH      *bool `json:"enable_doh"`
 	EnableDoT      *bool `json:"enable_dot"`
@@ -439,6 +444,21 @@ type settingsPatch struct {
 	AllowUserSubs      *bool `json:"allow_user_subs"`
 }
 
+// validateSettingsPatch 校验请求里出现的字段，返回第一条错误。
+//
+// 单独抽出来而不是让 applySettingsPatch 返回 error：后者有几十个字段的
+// 赋值，改成带返回值会牵动所有调用点，而真正需要提前拒绝的只有少数几个
+// 枚举型字段（上游模式就属于这类 —— 写进库里再发现不认识就晚了）。
+func validateSettingsPatch(p *settingsPatch) error {
+	if p.UpstreamMode != nil {
+		m := strings.TrimSpace(*p.UpstreamMode)
+		if m != "" && !model.ValidUpstreamMode(m) {
+			return fmt.Errorf("未知的上游选择模式 %q，可选：parallel / fastest / load_balance / hedge", m)
+		}
+	}
+	return nil
+}
+
 // applySettingsPatch 把请求里出现过的字段写到 dst 上。
 func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	if p.Domain != nil {
@@ -446,6 +466,17 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	}
 	if p.Upstreams != nil {
 		dst.Upstreams = cleanList(*p.Upstreams)
+	}
+	if p.UpstreamMode != nil {
+		// 合法性在 validateSettingsPatch 里先行校验，这里只做归一化。
+		m := strings.TrimSpace(*p.UpstreamMode)
+		if m == "" {
+			m = model.UpstreamModeHedge
+		}
+		dst.UpstreamMode = m
+	}
+	if p.FallbackUpstreams != nil {
+		dst.FallbackUpstreams = cleanList(*p.FallbackUpstreams)
 	}
 	if p.BootstrapDNS != nil {
 		dst.BootstrapDNS = cleanList(*p.BootstrapDNS)
@@ -610,6 +641,24 @@ func setBool(dst *bool, src *bool) {
 }
 
 // cleanList 去空白、去空项；返回非 nil 空切片表示「显式清空」。
+// upstreamModeOrDefault 把空的模式字段补成 hedge（旧行为的默认值），
+// 让前端拿到的永远是四个合法值之一，不必自己处理空串。
+func upstreamModeOrDefault(m string) string {
+	if model.ValidUpstreamMode(m) {
+		return m
+	}
+	return model.UpstreamModeHedge
+}
+
+// orEmptyStrings 保证 JSON 里是 [] 而不是 null。
+// 前端对 null 直接 .map 会抛异常，这个坑在 is_global 上踩过一次。
+func orEmptyStrings(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
+}
+
 func cleanList(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
@@ -626,6 +675,12 @@ func (s *Server) handleAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// 先取当前值，只覆盖请求里出现过的字段。
+	// 先校验再取库：非法枚举值不该等到读库之后才发现，
+	// 而且能避免「读库成功、校验失败」这种半途状态。
+	if err := validateSettingsPatch(&req); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error(), nil)
+		return
+	}
 	cur, err := s.store.GetSettings(r.Context())
 	if err != nil {
 		writeStoreError(w, err, "")
