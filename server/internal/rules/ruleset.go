@@ -138,7 +138,7 @@ func Build(l Layers) (*RuleSet, error) {
 func insertDomains(t *trie, domains []string) {
 	for _, d := range domains {
 		if dom, err := normalizeDomain(d); err == nil {
-			t.insert(dom, false, nil, nil, "")
+			t.insert(dom, false, false, nil, nil, "")
 		}
 	}
 }
@@ -147,7 +147,7 @@ func insertDomains(t *trie, domains []string) {
 //
 // 用传入而非写死 rs.userXxx，是为了让同一套解析逻辑同时服务用户层与全局层。
 func (rs *RuleSet) addRule(r model.Rule, allow, rewrite, block *trie) error {
-	domain, wildcard, err := splitPattern(r.Pattern)
+	domain, wildcard, exactOnly, err := splitPatternFull(r.Pattern)
 	if err != nil {
 		return err
 	}
@@ -155,15 +155,15 @@ func (rs *RuleSet) addRule(r model.Rule, allow, rewrite, block *trie) error {
 
 	switch r.Kind {
 	case model.KindAllow:
-		allow.insert(domain, wildcard, qtypes, nil, "")
+		allow.insert(domain, wildcard, exactOnly, qtypes, nil, "")
 	case model.KindBlock:
-		block.insert(domain, wildcard, qtypes, nil, "")
+		block.insert(domain, wildcard, exactOnly, qtypes, nil, "")
 	case model.KindRewriteA, model.KindRewriteAAAA, model.KindRewriteCNAME:
 		rrs, err := buildRewriteRR(domain, r.Value, r.Kind)
 		if err != nil {
 			return err
 		}
-		rewrite.insert(domain, wildcard, qtypes, rrs, r.Value)
+		rewrite.insert(domain, wildcard, exactOnly, qtypes, rrs, r.Value)
 	default:
 		return fmt.Errorf("未知规则类型 %q", r.Kind)
 	}
@@ -184,16 +184,44 @@ func SplitPattern(pattern string) (string, bool, error) {
 //
 // 同时兼容 AdGuard 的 ||domain^ 写法与裸域名、*.domain 写法。
 func splitPattern(pattern string) (string, bool, error) {
+	dom, wc, _, err := splitPatternFull(pattern)
+	return dom, wc, err
+}
+
+// splitPatternFull 在 splitPattern 之上多返回 exactOnly。
+//
+// 支持的写法：
+//
+//	domain             自身 + 全部子域（最常用）
+//	*.domain           同上（保留写法，语义等价）
+//	|domain|           只匹配 domain 本身，不含子域
+//	||domain^          同上「自身 + 子域」（AdGuard 常见写法）
+//	@@||domain^        前缀被剥掉，放行/拦截由 kind 决定
+func splitPatternFull(pattern string) (string, bool, bool, error) {
 	p := strings.TrimSpace(pattern)
-	// 去掉锚点与修饰符，允许 API 直接传完整 AdGuard 语法。
+	// 先剥 $ 修饰符：`|x|$dnstype=A` 不先剥的话，尾部那个 | 检测不到。
 	if idx := strings.IndexByte(p, '$'); idx >= 0 {
 		p = p[:idx]
 	}
 	p = strings.TrimPrefix(p, "@@")
-	p = strings.TrimPrefix(p, "||")
-	p = strings.TrimSuffix(p, "^")
+
+	exactOnly := false
+	switch {
+	case strings.HasPrefix(p, "||"):
+		// AdGuard 的「域 + 子域」写法，作用域与裸域名一致。
+		p = p[2:]
+	case len(p) > 2 && strings.HasPrefix(p, "|") && strings.HasSuffix(p, "|"):
+		// |domain| 是 Adblock 的精确匹配写法：只匹配该域名本身。
+		exactOnly = true
+		p = p[1 : len(p)-1]
+	default:
+		// 落单的 | 是历史写法，剥掉即可，不改变作用域。
+		p = strings.TrimPrefix(p, "|")
+		p = strings.TrimSuffix(p, "|")
+	}
+	// `||domain|` 是「域 + 子域 + 结尾锚」，作用域与裸域名一致，尾部 | 剥掉。
 	p = strings.TrimSuffix(p, "|")
-	p = strings.TrimPrefix(p, "|")
+	p = strings.TrimSuffix(p, "^")
 	if idx := strings.IndexByte(p, '/'); idx >= 0 {
 		p = p[:idx]
 	}
@@ -204,13 +232,13 @@ func splitPattern(pattern string) (string, bool, error) {
 		p = strings.TrimPrefix(p, "*.")
 	}
 	if strings.Contains(p, "*") {
-		return "", false, fmt.Errorf("模式 %q 含无法在 DNS 层表达的通配符", pattern)
+		return "", false, false, fmt.Errorf("模式 %q 含无法在 DNS 层表达的通配符", pattern)
 	}
 	dom, err := normalizeDomain(p)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
-	return dom, wildcard, nil
+	return dom, wildcard, exactOnly, nil
 }
 
 // buildRewriteRR 在构建期预生成应答记录，使查询路径零分配。

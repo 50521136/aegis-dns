@@ -557,10 +557,16 @@ export default function Rules({ scope = 'user' }: { scope?: Scope }) {
               <Label htmlFor="pattern">匹配规则</Label>
               <Input
                 id="pattern"
-                placeholder="||ads.example.com^ 或 example.com"
+                placeholder="example.com 或 |example.com|"
                 className="font-mono text-sm"
                 {...form.register('pattern')}
               />
+              <p className="text-xs text-muted-foreground">
+                <code>example.com</code> 作用于该域<strong>及其全部子域</strong>；
+                <code>|example.com|</code> 只作用于该域本身，不含子域。
+                前缀 <code>@@</code>、<code>||</code>、后缀 <code>^</code> 都会被忽略，
+                放行还是拦截由上面的「类型」决定。
+              </p>
               {form.formState.errors.pattern && (
                 <p className="text-xs text-danger">{form.formState.errors.pattern.message}</p>
               )}

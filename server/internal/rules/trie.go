@@ -78,7 +78,11 @@ func newTrie() *trie { return &trie{root: &node{}} }
 // `doubleclick.net` 本身 —— 整个列表等于失效，而用户只会看到「订阅加了但没效果」。
 //
 // wildcard 参数保留下来只用于生成规范化 pattern 时的回显，不参与匹配。
-func (t *trie) insert(domain string, wildcard bool, qtypes []string, rrs []dns.RR, value string) {
+//
+// exactOnly 为真表示这条规则只匹配域名本身、不匹配子域（pattern 写成
+// `|domain|`）。这是唯一需要区分 exact / sub 的场景，其余写法一律
+// 「自身 + 全部子域」。
+func (t *trie) insert(domain string, wildcard, exactOnly bool, qtypes []string, rrs []dns.RR, value string) {
 	labels := strings.Split(domain, ".")
 	n := t.root
 	// 从 TLD 向主机名方向建树，所以倒序插入。
@@ -94,9 +98,17 @@ func (t *trie) insert(domain string, wildcard bool, qtypes []string, rrs []dns.R
 		n = child
 	}
 	// exact 管「完整域名命中」，sub 管「该域及其所有子域命中」。
-	// 两者都置位：既匹配自身，也匹配子域。
-	n.sub = true
+	//
+	// exactOnly 时只置 exact：查询子域时 lookup 在中间节点读到 sub=false，
+	// 会跳过本节点继续往下走，于是「只放行裸域名、子域不受影响」成立。
+	//
+	// sub 只在需要时置位、绝不清零：同一个节点可能先被一条普通规则
+	// 置成 sub=true，再来一条 exact-only 规则，这时不能把 sub 改回 false，
+	// 否则先前那条规则的作用域被后来者悄悄缩小。
 	n.exact = true
+	if !exactOnly {
+		n.sub = true
+	}
 	if qtypes != nil {
 		n.qtypes = qtypes
 	}

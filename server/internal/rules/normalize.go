@@ -26,12 +26,18 @@ import (
 //
 // 返回的第二个值用于提示调用方「输入被改写了」，前端可以据此回显。
 func NormalizePattern(pattern string) (string, error) {
-	domain, wildcard, err := splitPattern(pattern)
+	domain, wildcard, exactOnly, err := splitPatternFull(pattern)
 	if err != nil {
 		return "", err
 	}
 	if domain == "" {
 		return "", fmt.Errorf("规则内容里没有可用的域名: %q", pattern)
+	}
+	// exactOnly 必须原样保留 |domain| 形态：它是有语义的，不是冗余前缀。
+	// 改成裸域名会把「只匹配自身」悄悄放大成「匹配全部子域」——
+	// 对 allow 规则来说等于多放行了一整棵子树，且不会有任何报错。
+	if exactOnly {
+		return "|" + domain + "|", nil
 	}
 	if wildcard {
 		return "*." + domain, nil
@@ -76,6 +82,16 @@ func NormalizeRule(r *model.Rule) error {
 func IsNormalized(pattern string) bool {
 	if pattern == "" {
 		return false
+	}
+	// |domain| 是规范化形态之一（精确匹配），先单独判掉。
+	if len(pattern) > 2 && strings.HasPrefix(pattern, "|") &&
+		strings.HasSuffix(pattern, "|") && !strings.HasPrefix(pattern, "||") {
+		inner := pattern[1 : len(pattern)-1]
+		if strings.ContainsAny(inner, "@^|$") {
+			return false
+		}
+		dom, _, exact, err := splitPatternFull(pattern)
+		return err == nil && exact && dom != "" && pattern == "|"+dom+"|"
 	}
 	if strings.ContainsAny(pattern, "@^|$") {
 		return false

@@ -12,7 +12,9 @@ func TestNormalizePatternConverges(t *testing.T) {
 		{"@@||public1.alidns.com^", "public1.alidns.com"},
 		{"||public1.alidns.com^", "public1.alidns.com"},
 		{"public1.alidns.com", "public1.alidns.com"},
-		{"|public1.alidns.com|", "public1.alidns.com"},
+		// |domain| 是有语义的（只匹配自身），不能像前缀那样被剥掉。
+		{"|public1.alidns.com|", "|public1.alidns.com|"},
+		{"||public1.alidns.com|", "public1.alidns.com"},
 		{"@@||*.example.com^", "*.example.com"},
 		{"||*.example.com^", "*.example.com"},
 		{"*.example.com", "*.example.com"},
@@ -92,8 +94,9 @@ func TestNormalizeRuleIdempotent(t *testing.T) {
 
 // IsNormalized 用于迁移后断言存量已清理。
 func TestIsNormalized(t *testing.T) {
-	yes := []string{"example.com", "*.example.com", "a.b.c.example.com"}
-	no := []string{"@@||example.com^", "||example.com^", "|example.com|", "", "*.example.com^"}
+	// |domain| 现在是规范形态（精确匹配），从 no 挪到 yes。
+	yes := []string{"example.com", "*.example.com", "a.b.c.example.com", "|example.com|"}
+	no := []string{"@@||example.com^", "||example.com^", "", "*.example.com^", "|example.com"}
 	for _, p := range yes {
 		if !IsNormalized(p) {
 			t.Errorf("IsNormalized(%q) 应为 true", p)
@@ -121,5 +124,80 @@ func TestNormalizedPatternStillMatches(t *testing.T) {
 		if dom != "pub.example.com" || wildcard {
 			t.Errorf("%q -> domain=%q wildcard=%t, 期望 pub.example.com/false", in, dom, wildcard)
 		}
+	}
+}
+
+// TestExactOnlyPattern 钉住「只匹配裸域名、不匹配子域」的语义。
+//
+// 为什么需要这个能力：DNS 层的规则默认是「自身 + 全部子域」，这在放行
+// 时会把一整棵子树都打开。用户想只放行 apex 域、把子域留给其他规则时，
+// 需要一个能表达「精确匹配」的写法 —— |domain|。
+//
+// 三个断言缺一不可：
+//  1. 裸域名仍然覆盖子域（默认行为不能被改坏）
+//  2. |domain| 只匹配自身
+//  3. |domain| 存进库再读出来仍是 |domain|（否则作用域被悄悄放大）
+func TestExactOnlyPattern(t *testing.T) {
+	const apex = "githubusercontent.com"
+	subs := []string{"github.githubusercontent.com", "raw.githubusercontent.com"}
+
+	// 1. 裸域名：自身 + 子域都放行
+	rs, err := Build(Layers{UserRules: []model.Rule{
+		{Kind: model.KindAllow, Pattern: apex, Enabled: true},
+	}})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	if got := rs.Match(apex, 1).Action; got != ActionAllow {
+		t.Errorf("裸域名自身应放行，实际 %s", got)
+	}
+	for _, s := range subs {
+		if got := rs.Match(s, 1).Action; got != ActionAllow {
+			t.Errorf("裸域名应覆盖子域 %s，实际 %s", s, got)
+		}
+	}
+
+	// 2. |domain|：只有自身
+	rs2, err := Build(Layers{UserRules: []model.Rule{
+		{Kind: model.KindAllow, Pattern: "|" + apex + "|", Enabled: true},
+	}})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	if got := rs2.Match(apex, 1).Action; got != ActionAllow {
+		t.Errorf("|%s| 应放行自身，实际 %s", apex, got)
+	}
+	for _, s := range subs {
+		if got := rs2.Match(s, 1).Action; got == ActionAllow {
+			t.Errorf("|%s| 不应放行子域 %s，实际 %s", apex, s, got)
+		}
+	}
+
+	// 3. 规范化往返
+	norm, err := NormalizePattern("|" + apex + "|")
+	if err != nil {
+		t.Fatalf("规范化失败: %v", err)
+	}
+	if norm != "|"+apex+"|" {
+		t.Errorf("规范化 = %q，期望保持 |%s|（丢掉竖线会把作用域放大到全部子域）", norm, apex)
+	}
+	if !IsNormalized(norm) {
+		t.Errorf("IsNormalized(%q) 应为 true", norm)
+	}
+}
+
+// TestExactOnlyDoesNotShrinkOtherRules 同节点上先有普通规则、再来精确规则时，
+// 普通规则的作用域不能被悄悄缩小。
+func TestExactOnlyDoesNotShrinkOtherRules(t *testing.T) {
+	rs, err := Build(Layers{UserRules: []model.Rule{
+		{Kind: model.KindAllow, Pattern: "example.com", Enabled: true},
+		{Kind: model.KindBlock, Pattern: "|example.com|", Enabled: true},
+	}})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	// allow 层先命中，子域仍应放行 —— block 是精确的，管不到子域。
+	if got := rs.Match("a.example.com", 1).Action; got != ActionAllow {
+		t.Errorf("子域应被 allow 放行，实际 %s", got)
 	}
 }
