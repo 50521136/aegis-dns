@@ -169,7 +169,14 @@ export function QueryLogDetail({
                 名称可能被用户设成任意中文名，塞进半栏必然折行。 */}
             <Group label="客户端">
               <KV k="IP" v={row.client || '—'} mono span />
-              <KV k="名称" v={row.client_name || '—'} span />
+              {/* 「名称」优先显示账号名。
+                  原来这里显示 client_name，但 dnsd 从不给它赋值（永远是空），
+                  结果整行都是「—」，看着像数据丢了。管理员真正想知道的是
+                  「这条查询算在谁头上」，那个信息在 username 里。
+                  口径与列表页一致：user_id 为空是「未识别」，有 id 但取不到
+                  用户名是「已删除用户」。非管理员看自己的日志时这两个字段
+                  都不返回，显示「本人」。 */}
+              <KV k="名称" v={clientLabel(row, isAdmin)} span />
             </Group>
           </div>
 
@@ -291,6 +298,28 @@ function protoLabel(proto: string | undefined): string {
     default:
       return proto ? proto.toUpperCase() : '—'
   }
+}
+
+/**
+ * clientLabel 决定「客户端 → 名称」显示什么。
+ *
+ * 为什么不再直接显示 client_name：dnsd 从来没给它赋过值（恒为空串），
+ * 弹窗里那一行永远是「—」，看起来像数据丢了。管理员真正要的信息是
+ * 「这条查询算在谁头上」，那个在 username / user_id 里。
+ *
+ * 三种情况口径与列表页保持一致：
+ *   user_id 为空      → 未识别（扫描器、没绑来源 IP 的设备）
+ *   有 id 但无用户名  → 已删除用户（用户删了但日志保留）
+ *   正常              → 账号名
+ *
+ * 非管理员看自己的日志时接口不返回这两个字段，显示「本人」更直白。
+ */
+function clientLabel(row: QueryLogItem, isAdmin: boolean): string {
+  if (!isAdmin && !row.user_id && !row.username) return '本人'
+  if (row.user_id === '') return '未识别'
+  if (row.username) return row.username
+  if (row.user_id) return '已删除用户'
+  return row.client_name || '—'
 }
 
 /**

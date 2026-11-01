@@ -316,8 +316,20 @@ export interface QueryLogItem {
   answer?: string
   /** 命中的已知追踪器 */
   tracker?: string
-  /** 客户端备注名 */
+  /** 客户端备注名。目前 dnsd 从不写这个字段（恒为空），保留兼容 */
   client_name?: string
+  /**
+   * 查询归属的账号名。管理员日志接口会返回，用户看自己的日志时不返回。
+   *
+   * 详情弹窗的「名称」优先显示它：client_name 是空的历史字段，
+   * 而「这条查询算在谁头上」才是管理员真正要看的。
+   */
+  username?: string
+  /**
+   * 查询归属的账号 ID。管理员接口返回，用户看自己的日志时不返回。
+   * 空串表示「识别不出租户」（扫描器、没绑来源 IP 的设备）。
+   */
+  user_id?: string
   /** 分流判定结果：domestic（走国内上游）/ overseas（走境外上游） */
   side?: string
 }
