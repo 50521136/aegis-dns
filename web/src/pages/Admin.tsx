@@ -58,6 +58,7 @@ import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Pagination } from '@/components/Pagination'
 import { StatCard } from '@/components/StatCard'
+import { UpstreamCard } from '@/components/UpstreamCard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -88,6 +89,16 @@ import { Textarea } from '@/components/ui/textarea'
 const settingsSchema = z.object({
   domain: z.string().min(1, '请输入主域名'),
   upstreams: z.string(),
+  // 分流：国内/境外上游 + 规则来源。都是字符串，多行用换行分隔。
+  upstreams_cn: z.string(),
+  upstreams_os: z.string(),
+  fallback_upstreams: z.string(),
+  upstream_mode: z.string(),
+  split_rule_url: z.string(),
+  split_rule_preset: z.string(),
+  gfw_rule_url: z.string(),
+  gfw_rule_preset: z.string(),
+  split_rule_auto_update: z.boolean(),
   bootstrap_dns: z.string(),
   proxy_url: z.string(),
   proxy_enabled: z.boolean(),
@@ -194,6 +205,17 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
     form.reset({
       ...s,
       upstreams: (s.upstreams ?? []).join('\n'),
+      // 老配置迁移：upstreams_cn 为空时把旧 upstreams 预填进来。
+      // 后端 upstreamsFor 也有同样的回退，这里只是为了界面上不显示空框。
+      upstreams_cn: ((s.upstreams_cn?.length ? s.upstreams_cn : s.upstreams) ?? []).join('\n'),
+      upstreams_os: (s.upstreams_os ?? []).join('\n'),
+      fallback_upstreams: (s.fallback_upstreams ?? []).join('\n'),
+      upstream_mode: s.upstream_mode || 'fastest',
+      split_rule_url: s.split_rule_url ?? '',
+      split_rule_preset: s.split_rule_preset ?? '',
+      gfw_rule_url: s.gfw_rule_url ?? '',
+      gfw_rule_preset: s.gfw_rule_preset ?? '',
+      split_rule_auto_update: s.split_rule_auto_update ?? true,
       bootstrap_dns: (s.bootstrap_dns ?? []).join('\n'),
       proxy_url: s.proxy_url ?? '',
       proxy_enabled: s.proxy_enabled ?? false,
@@ -209,6 +231,9 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
         ...values,
         bootstrap_dns: values.bootstrap_dns.split('\n').map((v) => v.trim()).filter(Boolean),
         upstreams: values.upstreams.split('\n').map((u) => u.trim()).filter(Boolean),
+        upstreams_cn: values.upstreams_cn.split('\n').map((u) => u.trim()).filter(Boolean),
+        upstreams_os: values.upstreams_os.split('\n').map((u) => u.trim()).filter(Boolean),
+        fallback_upstreams: values.fallback_upstreams.split('\n').map((u) => u.trim()).filter(Boolean),
       }
       // 空密码不发：后端也会忽略，但请求体里带空串容易被日志误读成「清空了密码」
       if (!payload.smtp_pass) delete payload.smtp_pass
@@ -244,8 +269,8 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
         <>
           <Card>
             <CardHeader>
-              <CardTitle>域名与上游</CardTitle>
-              <CardDescription>主域名用于生成用户专属子域名，上游为默认解析服务器。</CardDescription>
+              <CardTitle>域名与引导 DNS</CardTitle>
+              <CardDescription>主域名用于生成用户专属子域名。上游服务器已移至上方独立卡片。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
@@ -254,24 +279,40 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
                 {err.domain && <p className="text-xs text-danger">{err.domain.message}</p>}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="upstreams">上游服务器（每行一个）</Label>
-                <Textarea id="upstreams" rows={4} className="font-mono text-sm" {...form.register('upstreams')} />
-                <p className="text-xs text-muted-foreground">
-                  支持 UDP/TCP（<code>223.5.5.5</code>）、DoT（<code>tls://…</code>）、DoH（<code>https://…/dns-query</code>）。
-                  第一个为主，其余在对冲延迟后并发竞速。国内机房实测：UDP 5–7ms，DoH 41–56ms。
-                </p>
-                {err.upstreams && <p className="text-xs text-danger">{err.upstreams.message}</p>}
-              </div>
-              <div className="space-y-2">
                 <Label htmlFor="bootstrap_dns">引导 DNS（每行一个 IP）</Label>
                 <Textarea id="bootstrap_dns" rows={2} className="font-mono text-sm" {...form.register('bootstrap_dns')} />
                 <p className="text-xs text-muted-foreground">
                   只接受 IP：用来解析 DoH/DoT 上游里的主机名。用域名做引导是循环依赖。
                 </p>
               </div>
-              <UpstreamTester upstream={form.watch('upstreams')} bootstrap={form.watch('bootstrap_dns')} />
+              <UpstreamTester upstream={form.watch('upstreams_cn')} bootstrap={form.watch('bootstrap_dns')} />
             </CardContent>
           </Card>
+
+          <UpstreamCard
+            cn={form.watch('upstreams_cn') ?? ''}
+            os={form.watch('upstreams_os') ?? ''}
+            fallback={form.watch('fallback_upstreams') ?? ''}
+            mode={form.watch('upstream_mode') ?? 'fastest'}
+            preset={form.watch('split_rule_preset') ?? ''}
+            url={form.watch('split_rule_url') ?? ''}
+            gfwPreset={form.watch('gfw_rule_preset') ?? ''}
+            gfwUrl={form.watch('gfw_rule_url') ?? ''}
+            autoUpdate={Boolean(form.watch('split_rule_auto_update'))}
+            domesticPresets={settingsQuery.data?.domestic_presets ?? []}
+            gfwPresets={settingsQuery.data?.gfw_presets ?? []}
+            updatedAt={settingsQuery.data?.split_rule_updated_at ?? 0}
+            count={settingsQuery.data?.split_rule_count ?? 0}
+            error={settingsQuery.data?.split_rule_error ?? ''}
+            gfwUpdatedAt={settingsQuery.data?.gfw_rule_updated_at ?? 0}
+            gfwCount={settingsQuery.data?.gfw_rule_count ?? 0}
+            gfwError={settingsQuery.data?.gfw_rule_error ?? ''}
+            onChange={(patch) => {
+              for (const [k, v] of Object.entries(patch)) {
+                form.setValue(k as never, v as never, { shouldDirty: true })
+              }
+            }}
+          />
 
           <DnsPortCard />
 

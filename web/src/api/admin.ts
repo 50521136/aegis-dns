@@ -42,6 +42,37 @@ export async function getSettings(): Promise<AdminSettings> {
   return data
 }
 
+/** 分流规则预览结果 */
+export interface SplitRulePreview {
+  ok: boolean
+  format: string
+  total: number
+  inverse: boolean
+  size_bytes: number
+  sample: string[]
+  truncated: boolean
+  fetched_url: string
+}
+
+/**
+ * 预览分流规则的解析结果。
+ *
+ * 只读、不落库：管理员填了地址后先确认「能不能拉到、解析出多少条」，
+ * 比直接保存再发现是空的要好排查。
+ */
+export async function previewSplitRule(url: string, preset: string): Promise<SplitRulePreview> {
+  const { data } = await api.get<SplitRulePreview>('/admin/split-rule/preview', {
+    params: { url, preset },
+  })
+  return data
+}
+
+/** 立即拉取并应用分流规则 */
+export async function refreshSplitRule(): Promise<{ ok: boolean; count: number; message: string }> {
+  const { data } = await api.post('/admin/split-rule/refresh')
+  return data
+}
+
 export async function updateSettings(patch: Partial<AdminSettings>): Promise<AdminSettings> {
   const { data } = await api.put<AdminSettings>('/admin/settings', patch)
   return data

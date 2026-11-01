@@ -320,6 +320,9 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/settings", s.handleAdminGetSettings)
 				r.Put("/settings", s.handleAdminUpdateSettings)
 				r.Post("/snapshot/rebuild", s.handleAdminRebuildSnapshot)
+				// 分流规则：手动刷新 + 预览解析结果
+				r.Post("/split-rule/refresh", s.handleRefreshSplitRule)
+				r.Get("/split-rule/preview", s.handlePreviewSplitRule)
 				// 清除解析缓存：只发指令，真正清空发生在 dnsd 进程
 				r.Post("/cache/flush", s.handleFlushCache)
 				r.Get("/system", s.handleAdminSystem)

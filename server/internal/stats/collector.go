@@ -84,6 +84,8 @@ type Event struct {
 	Answer     string
 	Tracker    string
 	ClientName string
+	// Side 标记这次查询走的哪一侧上游：domestic / overseas。
+	Side string
 }
 
 // New 创建一个收集器。
@@ -194,6 +196,7 @@ func (c *Collector) Record(ev Event) {
 			Answer:     ev.Answer,
 			Tracker:    ev.Tracker,
 			ClientName: ev.ClientName,
+			Side:       ev.Side,
 		})
 	}
 }

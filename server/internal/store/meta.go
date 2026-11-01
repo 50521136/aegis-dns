@@ -129,6 +129,53 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["fallback_upstreams"]; ok && v != "" {
 		set.FallbackUpstreams = strings.Split(v, ",")
 	}
+	if v, ok := kv["upstreams_cn"]; ok && v != "" {
+		set.UpstreamsCN = strings.Split(v, ",")
+	}
+	if v, ok := kv["upstreams_os"]; ok && v != "" {
+		set.UpstreamsOS = strings.Split(v, ",")
+	}
+	if v, ok := kv["split_rule_url"]; ok {
+		set.SplitRuleURL = v
+	}
+	if v, ok := kv["split_rule_preset"]; ok {
+		set.SplitRulePreset = v
+	}
+	if v, ok := kv["split_rule_auto_update"]; ok {
+		set.SplitRuleAutoUpdate = v == "1" || v == "true"
+	}
+	if v, ok := kv["split_rule_updated_at"]; ok {
+		set.SplitRuleUpdatedAt = parseInt64(v)
+	}
+	if v, ok := kv["split_rule_count"]; ok {
+		set.SplitRuleCount = int(parseInt64(v))
+	}
+	if v, ok := kv["split_rule_error"]; ok {
+		set.SplitRuleError = v
+	}
+	if v, ok := kv["gfw_rule_url"]; ok {
+		set.GfwRuleURL = v
+	}
+	if v, ok := kv["gfw_rule_preset"]; ok {
+		set.GfwRulePreset = v
+	}
+	if v, ok := kv["gfw_rule_updated_at"]; ok {
+		set.GfwRuleUpdatedAt = parseInt64(v)
+	}
+	if v, ok := kv["gfw_rule_count"]; ok {
+		set.GfwRuleCount = int(parseInt64(v))
+	}
+	if v, ok := kv["gfw_rule_error"]; ok {
+		set.GfwRuleError = v
+	}
+	// 域名列表用换行分隔存：逗号在域名里不出现，但换行更省解析开销，
+	// 且单条记录能装下 11 万条（JSON 数组会触发 SQLite 的字段长度压力）。
+	if v, ok := kv["overseas_domains"]; ok && v != "" {
+		set.OverseasDomains = strings.Split(v, "\n")
+	}
+	if v, ok := kv["gfw_domains"]; ok && v != "" {
+		set.GfwDomains = strings.Split(v, "\n")
+	}
 	if v, ok := kv["proxy_url"]; ok {
 		set.ProxyURL = v
 	}
@@ -368,6 +415,21 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"upstreams":               strings.Join(set.Upstreams, ","),
 		"upstream_mode":           set.UpstreamMode,
 		"fallback_upstreams":      strings.Join(set.FallbackUpstreams, ","),
+		"upstreams_cn":            strings.Join(set.UpstreamsCN, ","),
+		"upstreams_os":            strings.Join(set.UpstreamsOS, ","),
+		"split_rule_url":          set.SplitRuleURL,
+		"split_rule_preset":       set.SplitRulePreset,
+		"split_rule_auto_update":  boolStr(set.SplitRuleAutoUpdate),
+		"split_rule_updated_at":   itoa64(set.SplitRuleUpdatedAt),
+		"split_rule_count":        itoa64(int64(set.SplitRuleCount)),
+		"split_rule_error":        set.SplitRuleError,
+		"overseas_domains":        strings.Join(set.OverseasDomains, "\n"),
+		"gfw_domains":             strings.Join(set.GfwDomains, "\n"),
+		"gfw_rule_url":            set.GfwRuleURL,
+		"gfw_rule_preset":         set.GfwRulePreset,
+		"gfw_rule_updated_at":     itoa64(set.GfwRuleUpdatedAt),
+		"gfw_rule_count":          itoa64(int64(set.GfwRuleCount)),
+		"gfw_rule_error":          set.GfwRuleError,
 		"bootstrap_dns":           strings.Join(set.BootstrapDNS, ","),
 		"proxy_url":               set.ProxyURL,
 		"proxy_enabled":           boolStr(set.ProxyEnabled),
@@ -499,6 +561,48 @@ func boolStr(b bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// parseInt64 宽容解析：解析失败按 0 处理。
+//
+// 设置项是从 meta 表读的，历史数据可能缺失或格式不对。
+// 这里不该因为一个字段坏了就让整份设置读取失败 —— 那会导致所有
+// 解析参数退回默认值，影响面远大于单个字段。
+func parseInt64(s string) int64 {
+	var n int64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			if n == 0 && c == '-' {
+				continue
+			}
+			return n
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return n
+}
+
+// itoa64 是 strconv.FormatInt 的本地包装，避免为几处调用引入依赖。
+func itoa64(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	var b [20]byte
+	i := len(b)
+	for v > 0 {
+		i--
+		b[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
 }
 
 // === 在线更新清单 ===

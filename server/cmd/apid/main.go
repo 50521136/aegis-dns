@@ -177,6 +177,10 @@ func main() {
 	// --- API 服务 ---
 	srv := api.New(cfg, st, cd, subsMgr, certs, log)
 
+	// 分流规则每日自动刷新。放在 srv 建好之后：它要用到 srv 的拉取与
+	// 快照重建能力。首次执行延迟 30 秒，避开进程启动高峰。
+	srv.StartBackgroundJobs(ctx)
+
 	// 订阅收录需要判定「两个链接是不是同一份内容」。
 	//
 	// store 不能直接 import subsub（subsub 已经依赖 store，反向会成环），

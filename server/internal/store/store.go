@@ -18,9 +18,9 @@ import (
 	"io/fs"
 	"os"
 	"sort"
-	"sync"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // 纯 Go 驱动，CGO_ENABLED=0 也能交叉编译
@@ -76,9 +76,18 @@ func cloneSettings(s *model.GlobalSettings) *model.GlobalSettings {
 	}
 	cp := *s
 	// 只拷贝会被调用方改动的切片字段，其余是值类型。
+	//
+	// 分流相关的四份列表一定要拷：refreshSplitRule 会整体替换
+	// OverseasDomains/GfwDomains，而 GetSettings 的缓存里留着同一份
+	// 底层数组；不深拷贝的话，一次拉取就会把缓存里的旧名单一起改掉，
+	// 命中缓存的调用方会拿到「已更新但代际未变」的脏数据。
 	cp.Upstreams = append([]string(nil), s.Upstreams...)
+	cp.UpstreamsCN = append([]string(nil), s.UpstreamsCN...)
+	cp.UpstreamsOS = append([]string(nil), s.UpstreamsOS...)
 	cp.FallbackUpstreams = append([]string(nil), s.FallbackUpstreams...)
 	cp.BootstrapDNS = append([]string(nil), s.BootstrapDNS...)
+	cp.OverseasDomains = append([]string(nil), s.OverseasDomains...)
+	cp.GfwDomains = append([]string(nil), s.GfwDomains...)
 	return &cp
 }
 

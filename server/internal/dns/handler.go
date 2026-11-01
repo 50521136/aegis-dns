@@ -14,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
+	"github.com/50521136/aegis-dns/server/internal/resolver"
 	"github.com/50521136/aegis-dns/server/internal/rules"
 	"github.com/50521136/aegis-dns/server/internal/stats"
 )
@@ -373,6 +374,12 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		return
 	}
 
+	// 分流判定放在缓存之前：缓存命中的查询也要记「解析来源」，
+	// 否则日志里缓存命中的行全是空的，反而最需要看的那批（高频域名）
+	// 看不到它走的是国内还是境外。判定只是一次后缀二分查找（~1µs），
+	// 提前算不影响热路径。
+	det.Side = sideOf(user.PoolOverseas, snap, q.Name)
+
 	// Stage 3 缓存查询。
 	cache := h.cache.Load()
 	// cacheKey 在 Stage 5 的并发合并里还要用（同一域名合并成一次上游查询），
@@ -524,7 +531,17 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 
 	// Stage 5 上游解析。
+	//
+	// 按域名归属选池：境外域名交给境外上游，其余走国内上游。
+	//
+	// 为什么必须在选池这一层做，而不是给上游加 fallback：国内 DNS 解析
+	// 境外域名时，递归查询本身是明文跨境 UDP，GFW 会抢先注入假应答
+	// （实测从根服务器做完整递归，最后一步问权威服务器同样被注入）。
+	// 只有让查询的「出口」不在墙内才能拿到真实答案，所以这是换池而不是重试。
 	pool := user.Pool
+	if det.Side == sideOverseas {
+		pool = user.PoolOverseas
+	}
 	if pool == nil {
 		pool = snap.Fallback().Pool
 	}
@@ -618,6 +635,47 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 	h.record(user.UserID, q, status, dns.RcodeToString[resp.Rcode], time.Since(start), w, det)
 	writeMsg(w, req, resp)
+}
+
+// 解析来源标记，写进查询日志的 side 字段。
+const (
+	sideDomestic = "domestic"
+	sideOverseas = "overseas"
+)
+
+// useOverseas 按三层规则决定一个查询是否走境外上游。
+//
+//  1. 命中国内白名单            → 国内
+//  2. 否则命中被墙黑名单        → 境外
+//  3. 都没命中                  → 国内（安全默认）
+//
+// 为什么要三层而不是单表：白名单永远不全 —— 实测 dnsmasq-china-list
+// 里没有 qq.com.cn，只查白名单会让 *.qq.com.cn 绕道境外解析。
+// 加上黑名单后，未收录的国内域名回到国内；未收录的境外域名最多解析
+// 失败，而不会让本来正常的国内域名变慢。
+//
+// 国内白名单优先于黑名单：两个列表偶尔会重叠（例如某国内 CDN 域名
+// 被误收进 gfw），这时按「国内」处理更安全 —— 走境外会拿到非最优节点。
+func sideOf(overseasPool *resolver.Pool, snap *registrySnapshot, qname string) string {
+	// 没配境外上游就不分流，全部走国内池。
+	if overseasPool == nil {
+		return sideDomestic
+	}
+	// 第 1 层：国内白名单命中 → 国内。
+	if snap.DomesticSet.Match(qname) {
+		return sideDomestic
+	}
+	// 第 2 层：被墙黑名单命中 → 境外。
+	if snap.GfwSet.Match(qname) {
+		return sideOverseas
+	}
+	// 第 3 层：都没命中 → 国内。
+	return sideDomestic
+}
+
+// useOverseas 是 sideOf 的布尔形式，保留给测试与旧调用点。
+func useOverseas(overseasPool *resolver.Pool, snap *registrySnapshot, qname string) bool {
+	return sideOf(overseasPool, snap, qname) == sideOverseas
 }
 
 // identify 按文档 3.2 的优先级识别租户。
@@ -715,6 +773,10 @@ func (h *Handler) allow(userID string, qps int) bool {
 // 但它们必须在解析时采集，事后没有任何地方能补回来。
 type qdetail struct {
 	Proto string // udp|tcp|dot|doh
+	// Side 标记这次查询走的哪一侧上游：domestic / overseas。
+	// 写进查询日志后，排障时能直接看出「这个域名被判成国内还是境外」，
+	// 而不必去翻分流规则表反推。
+	Side string
 	// CacheHit 标记这次应答来自缓存。它是「状态」的修饰，不是状态本身。
 	CacheHit   bool
 	ECS        string // EDNS Client Subnet
@@ -774,6 +836,7 @@ func (h *Handler) record(userID string, q dns.Question, action, rcode string, du
 		Answer:     det.Answer,
 		Tracker:    trackerLabel(domain),
 		ClientName: det.ClientName,
+		Side:       det.Side,
 	})
 }
 

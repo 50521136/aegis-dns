@@ -318,6 +318,8 @@ export interface QueryLogItem {
   tracker?: string
   /** 客户端备注名 */
   client_name?: string
+  /** 分流判定结果：domestic（走国内上游）/ overseas（走境外上游） */
+  side?: string
 }
 
 export interface QueryLogResponse {
@@ -353,9 +355,47 @@ export interface AdminUserListResponse {
   page_size: number
 }
 
+/** 分流规则预设来源 */
+export interface SplitRulePreset {
+  id: string
+  name: string
+  url: string
+  desc: string
+  format: string
+  /** domestic（白名单）| gfw（黑名单） */
+  kind: string
+}
+
 export interface AdminSettings {
   domain: string
   upstreams: string[]
+  /** 国内上游：未命中分流规则时使用，追求低延迟 */
+  upstreams_cn: string[]
+  /** 境外上游：命中分流规则时使用，追求抗污染 */
+  upstreams_os: string[]
+  /** 备用上游：主上游全部失败时才启用，只作用于国内侧 */
+  fallback_upstreams: string[]
+  /** 池内多上游的配合方式：fastest | hedge | parallel | load_balance */
+  upstream_mode: string
+  /** 国内白名单地址：命中走国内 */
+  split_rule_url: string
+  split_rule_preset: string
+  /** 被墙黑名单地址：白名单未命中时再查，命中走境外 */
+  gfw_rule_url: string
+  gfw_rule_preset: string
+  split_rule_auto_update: boolean
+  split_rule_updated_at: number
+  split_rule_count: number
+  split_rule_error: string
+  gfw_rule_updated_at: number
+  gfw_rule_count: number
+  gfw_rule_error: string
+  /** 全部预设（兼容旧前端） */
+  split_rule_presets: SplitRulePreset[]
+  /** 白名单预设，前端第一栏用 */
+  domestic_presets: SplitRulePreset[]
+  /** 黑名单预设，前端第二栏用 */
+  gfw_presets: SplitRulePreset[]
   /** 引导 DNS：只接受 IP，用于解析 DoH/DoT 上游的主机名 */
   bootstrap_dns: string[]
   /** 出口代理（http/https/socks5），给在线更新与订阅拉取用 */

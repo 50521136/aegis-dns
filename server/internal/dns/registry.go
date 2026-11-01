@@ -10,6 +10,7 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/model"
 	"github.com/50521136/aegis-dns/server/internal/resolver"
 	"github.com/50521136/aegis-dns/server/internal/rules"
+	"github.com/50521136/aegis-dns/server/internal/splitrule"
 )
 
 // Registry 保存全部用户的运行时配置，是 dnsd 的核心数据结构。
@@ -35,6 +36,10 @@ type registrySnapshot struct {
 	fallback   *UserRuntime
 	defaults   model.Defaults
 	loadedAt   time.Time
+	// DomesticSet 是国内域名白名单：命中走国内上游。
+	DomesticSet *splitrule.Set
+	// GfwSet 是被墙域名黑名单：白名单未命中时再查，命中走境外上游。
+	GfwSet *splitrule.Set
 	// users 是全部租户（含禁用的），供管理统计使用。
 	users []*UserRuntime
 }
@@ -53,6 +58,9 @@ type UserRuntime struct {
 	Upstreams []string
 	// Pool 是该用户实际使用的上游池（可能与其他用户共享）。
 	Pool *resolver.Pool
+	// PoolOverseas 是境外域名专用的上游池。为 nil 表示未配置分流，
+	// 此时所有查询都走 Pool，行为与引入分流前完全一致。
+	PoolOverseas *resolver.Pool
 	// RuleStats 保存构建时的规则条数统计，供 UI 展示。
 	RuleStats rules.Stats
 	// DailyQueries 是该用户的每日请求量上限，0 表示不限。
@@ -60,6 +68,32 @@ type UserRuntime struct {
 	DailyQueries int64
 	// MemberUntil 仅用于排障展示。
 	MemberUntil int64
+}
+
+// overseasPoolFor 返回境外域名专用的上游池。
+//
+// 返回 nil 表示不分流，调用方应退回用默认池 —— 这样「没配境外上游」
+// 与「引入分流功能之前」的行为完全一致，不会因为新代码改变现有部署。
+//
+// 用户自定义了上游时也返回 nil：用户显式指定了上游，就该只用他的，
+// 不该被全局的境外上游悄悄接管（否则他会发现「我配的上游没生效」）。
+func overseasPoolFor(r *Registry, snap *model.Snapshot, userUpstreams []string) *resolver.Pool {
+	if len(userUpstreams) > 0 {
+		return nil
+	}
+	d := snap.Defaults
+	if len(d.UpstreamsOS) == 0 {
+		return nil
+	}
+	// 境外池不挂 fallback：它的用途是「解析境外域名」，而 fallback 是
+	// 「主上游全挂」时的兜底，两者语义不同。给境外池配 fallback 会让
+	// 它悄悄回退到国内上游，等于分流失效却看不出来。
+	p, err := r.pools.GetWithMode(d.UpstreamsOS, nil, d.UpstreamMode, d.BootstrapDNS)
+	if err != nil {
+		// 建池失败不影响主流程：退化成全部走国内池，解析仍然可用。
+		return nil
+	}
+	return p
 }
 
 // NewRegistry 创建一个空的 Registry。
@@ -197,14 +231,21 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 	// 必须放在用户循环之外，放进去就变成每个用户建一份，等于没改。
 	sharedGlobal := rules.BuildGlobal(&snap.Global)
 
+	// 分流集合每次重建都重新构建：规则文件每天更新，而快照重建本身
+	// 是低频操作（只在配置变更时发生），没必要为它做增量。
+	domesticSet := splitrule.NewSet(snap.Defaults.DomesticDomains, false)
+	gfwSet := splitrule.NewSet(snap.Defaults.GfwDomains, false)
+
 	newSnap := &registrySnapshot{
-		version:    snap.Version,
-		byClientID: make(map[string]*UserRuntime, len(snap.Users)),
-		byUserID:   make(map[string]*UserRuntime, len(snap.Users)),
-		byIP:       newCIDRIndex(),
-		defaults:   snap.Defaults,
-		loadedAt:   time.Now(),
-		users:      make([]*UserRuntime, 0, len(snap.Users)),
+		version:     snap.Version,
+		byClientID:  make(map[string]*UserRuntime, len(snap.Users)),
+		byUserID:    make(map[string]*UserRuntime, len(snap.Users)),
+		byIP:        newCIDRIndex(),
+		defaults:    snap.Defaults,
+		DomesticSet: domesticSet,
+		GfwSet:      gfwSet,
+		loadedAt:    time.Now(),
+		users:       make([]*UserRuntime, 0, len(snap.Users)),
 	}
 
 	for i := range snap.Users {
@@ -269,6 +310,7 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 			return fmt.Errorf("为用户 %s 创建上游池失败: %w", us.UserID, err)
 		}
 		ur.Pool = pool
+		ur.PoolOverseas = overseasPoolFor(r, snap, us.Upstreams)
 
 		newSnap.byClientID[cid] = ur
 		newSnap.byUserID[us.UserID] = ur
@@ -293,11 +335,12 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 		return fmt.Errorf("创建默认上游池失败: %w", err)
 	}
 	fallback := &UserRuntime{
-		UserID:    "",
-		ClientID:  "",
-		Enabled:   true,
-		Pool:      fallbackPool,
-		RuleStats: fallbackRules.Stats,
+		UserID:       "",
+		ClientID:     "",
+		Enabled:      true,
+		Pool:         fallbackPool,
+		PoolOverseas: overseasPoolFor(r, snap, nil),
+		RuleStats:    fallbackRules.Stats,
 	}
 	fallback.Rules.Store(fallbackRules)
 	newSnap.fallback = fallback
@@ -319,6 +362,11 @@ func (r *Registry) Build(snap *model.Snapshot) error {
 func upstreamsFor(user []string, def model.Defaults) []string {
 	if len(user) > 0 {
 		return user
+	}
+	// 配了国内上游就用它当主力。没配则退回旧的 Upstreams 字段，
+	// 保证已有部署升级后行为不变。
+	if len(def.UpstreamsCN) > 0 {
+		return def.UpstreamsCN
 	}
 	return def.Upstreams
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/50521136/aegis-dns/server/internal/model"
 	"github.com/50521136/aegis-dns/server/internal/resolver"
 	"github.com/50521136/aegis-dns/server/internal/selfupdate"
+	"github.com/50521136/aegis-dns/server/internal/splitrule"
 	"github.com/50521136/aegis-dns/server/internal/version"
 )
 
@@ -211,23 +212,41 @@ func (s *Server) settingsJSON(set *model.GlobalSettings) map[string]any {
 		"upstreams":          set.Upstreams,
 		"upstream_mode":      upstreamModeOrDefault(set.UpstreamMode),
 		"fallback_upstreams": orEmptyStrings(set.FallbackUpstreams),
-		"bootstrap_dns":      set.BootstrapDNS,
-		"proxy_url":          set.ProxyURL,
-		"proxy_enabled":      set.ProxyEnabled,
-		"blocking_mode":      set.BlockingMode,
-		"custom_ip":          set.CustomIP,
-		"fallback_policy":    set.FallbackPolicy,
-		"cache_size":         set.CacheSize,
-		"cache_min_ttl":      set.CacheMinTTL,
-		"cache_max_ttl":      set.CacheMaxTTL,
-		"rate_limit_qps":     set.RateLimitQPS,
-		"max_inflight":       set.MaxInflight,
-		"query_timeout_ms":   set.QueryTimeoutMS,
-		"query_log_size":     set.QueryLogSize,
-		"enable_query_log":   set.EnableQueryLog,
-		"enable_doh":         set.EnableDoH,
-		"enable_dot":         set.EnableDoT,
-		"enable_plain_dns":   set.EnablePlainDNS,
+		// 国内外分流：cn 为默认池，os 仅在命中分流规则时使用。
+		"upstreams_cn":           orEmptyStrings(set.UpstreamsCN),
+		"upstreams_os":           orEmptyStrings(set.UpstreamsOS),
+		"split_rule_url":         set.SplitRuleURL,
+		"split_rule_preset":      set.SplitRulePreset,
+		"gfw_rule_url":           set.GfwRuleURL,
+		"gfw_rule_preset":        set.GfwRulePreset,
+		"gfw_rule_updated_at":    set.GfwRuleUpdatedAt,
+		"gfw_rule_count":         set.GfwRuleCount,
+		"gfw_rule_error":         set.GfwRuleError,
+		"split_rule_auto_update": set.SplitRuleAutoUpdate,
+		"split_rule_updated_at":  set.SplitRuleUpdatedAt,
+		"split_rule_count":       set.SplitRuleCount,
+		"split_rule_error":       set.SplitRuleError,
+		"split_rule_presets":     splitrule.Presets,
+		// 分栏返回：前端白名单/黑名单各用一个下拉，不用自己过滤。
+		"domestic_presets": splitrule.PresetsByKind(splitrule.KindDomestic),
+		"gfw_presets":      splitrule.PresetsByKind(splitrule.KindGfw),
+		"bootstrap_dns":    set.BootstrapDNS,
+		"proxy_url":        set.ProxyURL,
+		"proxy_enabled":    set.ProxyEnabled,
+		"blocking_mode":    set.BlockingMode,
+		"custom_ip":        set.CustomIP,
+		"fallback_policy":  set.FallbackPolicy,
+		"cache_size":       set.CacheSize,
+		"cache_min_ttl":    set.CacheMinTTL,
+		"cache_max_ttl":    set.CacheMaxTTL,
+		"rate_limit_qps":   set.RateLimitQPS,
+		"max_inflight":     set.MaxInflight,
+		"query_timeout_ms": set.QueryTimeoutMS,
+		"query_log_size":   set.QueryLogSize,
+		"enable_query_log": set.EnableQueryLog,
+		"enable_doh":       set.EnableDoH,
+		"enable_dot":       set.EnableDoT,
+		"enable_plain_dns": set.EnablePlainDNS,
 		// 描述文件（iOS / macOS）开关。后两个是「描述文件内部允许哪种载荷」，
 		// 受全局协议开关约束：生效值 = 全局 && 本开关（前端据此把开关置灰）。
 		// 生效值的计算只发生在后端 protos() / 前端的表单联动各一处，
@@ -346,20 +365,28 @@ type settingsPatch struct {
 	Upstreams         *[]string `json:"upstreams"`
 	UpstreamMode      *string   `json:"upstream_mode"`
 	FallbackUpstreams *[]string `json:"fallback_upstreams"`
-	BootstrapDNS      *[]string `json:"bootstrap_dns"`
-	ProxyURL          *string   `json:"proxy_url"`
-	ProxyEnabled      *bool     `json:"proxy_enabled"`
-	BlockingMode      *string   `json:"blocking_mode"`
-	CustomIP          *string   `json:"custom_ip"`
-	FallbackPolicy    *string   `json:"fallback_policy"`
-	CacheSize         *int      `json:"cache_size"`
-	CacheMinTTL       *int      `json:"cache_min_ttl"`
-	CacheMaxTTL       *int      `json:"cache_max_ttl"`
-	RateLimitQPS      *int      `json:"rate_limit_qps"`
-	MaxInflight       *int      `json:"max_inflight"`
-	QueryTimeoutMS    *int      `json:"query_timeout_ms"`
-	QueryLogSize      *int      `json:"query_log_size"`
-	EnableQueryLog    *bool     `json:"enable_query_log"`
+	// 分流：国内/境外上游 + 规则来源。
+	UpstreamsCN         *[]string `json:"upstreams_cn"`
+	UpstreamsOS         *[]string `json:"upstreams_os"`
+	SplitRuleURL        *string   `json:"split_rule_url"`
+	SplitRulePreset     *string   `json:"split_rule_preset"`
+	GfwRuleURL          *string   `json:"gfw_rule_url"`
+	GfwRulePreset       *string   `json:"gfw_rule_preset"`
+	SplitRuleAutoUpdate *bool     `json:"split_rule_auto_update"`
+	BootstrapDNS        *[]string `json:"bootstrap_dns"`
+	ProxyURL            *string   `json:"proxy_url"`
+	ProxyEnabled        *bool     `json:"proxy_enabled"`
+	BlockingMode        *string   `json:"blocking_mode"`
+	CustomIP            *string   `json:"custom_ip"`
+	FallbackPolicy      *string   `json:"fallback_policy"`
+	CacheSize           *int      `json:"cache_size"`
+	CacheMinTTL         *int      `json:"cache_min_ttl"`
+	CacheMaxTTL         *int      `json:"cache_max_ttl"`
+	RateLimitQPS        *int      `json:"rate_limit_qps"`
+	MaxInflight         *int      `json:"max_inflight"`
+	QueryTimeoutMS      *int      `json:"query_timeout_ms"`
+	QueryLogSize        *int      `json:"query_log_size"`
+	EnableQueryLog      *bool     `json:"enable_query_log"`
 	// 协议开关用指针：漏传 = 不变，不会因为前端没带字段就把协议关掉
 	EnableDoH      *bool `json:"enable_doh"`
 	EnableDoT      *bool `json:"enable_dot"`
@@ -477,6 +504,27 @@ func applySettingsPatch(dst *model.GlobalSettings, p *settingsPatch) {
 	}
 	if p.FallbackUpstreams != nil {
 		dst.FallbackUpstreams = cleanList(*p.FallbackUpstreams)
+	}
+	if p.UpstreamsCN != nil {
+		dst.UpstreamsCN = cleanList(*p.UpstreamsCN)
+	}
+	if p.UpstreamsOS != nil {
+		dst.UpstreamsOS = cleanList(*p.UpstreamsOS)
+	}
+	if p.SplitRuleURL != nil {
+		dst.SplitRuleURL = strings.TrimSpace(*p.SplitRuleURL)
+	}
+	if p.SplitRulePreset != nil {
+		dst.SplitRulePreset = strings.TrimSpace(*p.SplitRulePreset)
+	}
+	if p.GfwRuleURL != nil {
+		dst.GfwRuleURL = strings.TrimSpace(*p.GfwRuleURL)
+	}
+	if p.GfwRulePreset != nil {
+		dst.GfwRulePreset = strings.TrimSpace(*p.GfwRulePreset)
+	}
+	if p.SplitRuleAutoUpdate != nil {
+		dst.SplitRuleAutoUpdate = *p.SplitRuleAutoUpdate
 	}
 	if p.BootstrapDNS != nil {
 		dst.BootstrapDNS = cleanList(*p.BootstrapDNS)

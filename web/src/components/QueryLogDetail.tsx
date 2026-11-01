@@ -175,6 +175,15 @@ export function QueryLogDetail({
 
           <Group label="响应">
             <KV k="上游" v={row.upstream || '—'} mono />
+            {/* 解析来源：分流判定结果。只在真的分了流时才显示 ——
+                老记录和未启用分流的部署里 side 是空串，显示「—」是噪音。 */}
+            {row.side ? (
+              <KV
+                k="来源"
+                v={row.side === 'overseas' ? '国外' : '国内'}
+                tone={row.side === 'overseas' ? undefined : 'success'}
+              />
+            ) : null}
             <KV
               k="耗时"
               v={`${row.latency_ms} ms`}

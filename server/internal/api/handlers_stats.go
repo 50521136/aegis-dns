@@ -202,14 +202,16 @@ func (s *Server) handleQueryLog(w http.ResponseWriter, r *http.Request) {
 			"latency_ms": l.LatencyMS,
 			// 详情字段：列表页不显示，点开单条时才用到。
 			// 老记录这些列是空串，前端按空处理。
-			"proto":       l.Proto,
-			"ecs":         l.ECS,
+			"proto": l.Proto,
+			"ecs":   l.ECS,
 			// 上游只给协议类型：完整地址里带接入方的账号标识
 			// （个人版 DoH 的订阅 ID 就在主机名里），不属于用户数据。
 			"upstream":    redactUpstream(l.Upstream),
 			"answer":      l.Answer,
 			"tracker":     l.Tracker,
 			"client_name": l.ClientName,
+			// 分流判定结果：domestic / overseas。空串表示老记录或未启用分流。
+			"side": l.Side,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -331,14 +333,16 @@ func (s *Server) handleAdminQueryLog(w http.ResponseWriter, r *http.Request) {
 			"latency_ms": l.LatencyMS,
 			// 详情字段：列表页不显示，点开单条时才用到。
 			// 老记录这些列是空串，前端按空处理。
-			"proto":    l.Proto,
-			"ecs":      l.ECS,
+			"proto": l.Proto,
+			"ecs":   l.ECS,
 			// 管理员看完整地址：他要判断的是「主上游还是备用在答」，
 			// 只给协议类型就没法定位故障源。脱敏只针对普通用户。
 			"upstream":    l.Upstream,
 			"answer":      l.Answer,
 			"tracker":     l.Tracker,
 			"client_name": l.ClientName,
+			// 分流判定结果：domestic / overseas。空串表示老记录或未启用分流。
+			"side": l.Side,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -246,6 +246,13 @@ type Defaults struct {
 	// UpstreamMode 决定多个上游之间怎么配合，见 UpstreamMode* 常量。
 	// 空串按 hedge 处理，保持旧快照兼容。
 	UpstreamMode string `json:"upstream_mode"`
+	// UpstreamsCN / UpstreamsOS 实现按域名归属选上游，见 GlobalSettings 里的说明。
+	UpstreamsCN []string `json:"upstreams_cn"`
+	UpstreamsOS []string `json:"upstreams_os"`
+	// DomesticDomains 是国内域名白名单：命中即走国内上游。
+	DomesticDomains []string `json:"domestic_domains"`
+	// GfwDomains 是被墙域名黑名单：白名单未命中时再查它，命中走境外上游。
+	GfwDomains []string `json:"gfw_domains"`
 	// FallbackUpstreams 是备用服务器，只有主上游全部失败时才启用。
 	FallbackUpstreams []string `json:"fallback_upstreams"`
 	// BootstrapDNS 用于解析 DoH/DoT 上游里的主机名。
@@ -401,6 +408,50 @@ type GlobalSettings struct {
 	// UpstreamMode 决定多个上游之间怎么配合，取值见 UpstreamMode* 常量。
 	// 空串按 hedge 处理，保持旧快照的兼容性。
 	UpstreamMode string `json:"upstream_mode"`
+	// UpstreamsCN / UpstreamsOS 实现「按域名归属选上游」的分流。
+	//
+	// 为什么需要它：国内 DNS 服务器解析境外域名时，递归查询本身是明文
+	// 跨境 UDP，GFW 会抢先注入假应答 —— 实测从根服务器做完整递归，
+	// 最后一步问权威服务器时同样被注入（google.com → 185.45.5.35）。
+	// 加密只能保护「客户端↔上游」，保护不了「上游↔权威」。
+	// 所以境外域名必须交给一个出口不在墙内的上游来解析。
+	//
+	// 默认（未命中分流规则）走 UpstreamsCN：国内域名占流量九成以上，
+	// 走 6ms 的国内上游最优；规则表若拉取失败，退化成「全部走国内」，
+	// 等于当前行为，不会比现状更差。
+	UpstreamsCN []string `json:"upstreams_cn"`
+	UpstreamsOS []string `json:"upstreams_os"`
+	// SplitRuleURL 是主规则地址（白名单语义）：命中即走国内上游。
+	// 推荐用 Loyalsoldier/v2ray-rules-dat 的 china-list.txt。
+	SplitRuleURL string `json:"split_rule_url"`
+	// GfwRuleURL 是补充规则地址（黑名单语义）：命中即走境外上游。
+	// 推荐用同一仓库的 gfw.txt（约 4500 条，纯域名）。
+	//
+	// 为什么要两张表：白名单永远不全。实测 dnsmasq-china-list 里没有
+	// qq.com.cn，于是 *.qq.com.cn 全被当成境外域名绕道境外解析。
+	// 加上黑名单后，三层决策变成「白名单→国内；黑名单→境外；其余→国内」，
+	// 未收录的国内域名回到国内，未收录的境外域名最多解析失败而不会变慢。
+	GfwRuleURL string `json:"gfw_rule_url"`
+	// GfwRulePreset 记录黑名单选用的预设，仅用于前端回显。
+	GfwRulePreset string `json:"gfw_rule_preset"`
+	// SplitRulePreset 记录当前选用的预设（gfwlist / dnsmasq-china 等），
+	// 仅用于前端回显；真正的地址以 SplitRuleURL 为准。
+	SplitRulePreset string `json:"split_rule_preset"`
+	// SplitRuleAutoUpdate 控制是否每天自动刷新分流规则。
+	SplitRuleAutoUpdate bool `json:"split_rule_auto_update"`
+	// OverseasDomains 是拉取并解析后的域名列表，由 refreshSplitRule 写入，
+	// 构建快照时整份带给 dnsd。约 11 万条，序列化后约 3MB。
+	OverseasDomains []string `json:"overseas_domains"`
+	// SplitRuleUpdatedAt / SplitRuleCount 是最近一次拉取的结果，供 UI 展示。
+	SplitRuleUpdatedAt int64  `json:"split_rule_updated_at"`
+	SplitRuleCount     int    `json:"split_rule_count"`
+	SplitRuleError     string `json:"split_rule_error"`
+	// GfwRuleUpdatedAt / GfwRuleCount / GfwRuleError 是黑名单的拉取状态。
+	GfwRuleUpdatedAt int64  `json:"gfw_rule_updated_at"`
+	GfwRuleCount     int    `json:"gfw_rule_count"`
+	GfwRuleError     string `json:"gfw_rule_error"`
+	// GfwDomains 是黑名单域名列表，构建快照时带给 dnsd。
+	GfwDomains []string `json:"gfw_domains"`
 	// FallbackUpstreams 是备用服务器：只有主上游全部失败时才启用。
 	// 与 AdGuard Home 的 fallback_dns 同义，用于「主上游被墙/挂了」的场景。
 	FallbackUpstreams []string `json:"fallback_upstreams"`
@@ -833,9 +884,12 @@ type QueryLogRow struct {
 	LatencyMS int64  `json:"latency_ms"`
 	// 详情字段：列表页用不到，点开单条时才需要。
 	// 老记录这些列是空的，前端按空处理即可。
-	Proto      string `json:"proto,omitempty"`       // udp|tcp|dot|doh
-	ECS        string `json:"ecs,omitempty"`         // EDNS Client Subnet
-	Upstream   string `json:"upstream,omitempty"`    // 实际应答的上游
+	Proto    string `json:"proto,omitempty"`    // udp|tcp|dot|doh
+	ECS      string `json:"ecs,omitempty"`      // EDNS Client Subnet
+	Upstream string `json:"upstream,omitempty"` // 实际应答的上游
+	// Side 是分流判定结果：domestic（走国内上游）/ overseas（走境外上游）。
+	// 空串表示老记录或未启用分流。
+	Side       string `json:"side,omitempty"`
 	Answer     string `json:"answer,omitempty"`      // 应答内容（截断）
 	Tracker    string `json:"tracker,omitempty"`     // 命中的已知追踪器
 	ClientName string `json:"client_name,omitempty"` // 客户端备注名
