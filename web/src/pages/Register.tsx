@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { QRCodeSVG } from 'qrcode.react'
-import { ArrowRight, CheckCircle2, Eye, EyeOff, PartyPopper } from 'lucide-react'
+import { ArrowRight, CheckCircle2, ChevronDown, Eye, EyeOff, PartyPopper } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -227,17 +227,23 @@ export default function Register() {
           <Label htmlFor="email">邮箱</Label>
           {allowedDomains.length > 0 ? (
             <>
-              {/* 后台配了允许的后缀：输入框只填 @ 前面那部分，
-                  后缀贴在输入框右侧（不是单独占一列），
-                  所以输入区宽度不受后缀长短影响。后缀只能从下拉里选。 */}
-              <div className="relative">
+              {/* 后台配了允许的后缀：输入框只填 @ 前面那部分，后缀做成
+                  输入框右侧的**可见**下拉。
+
+                  这里踩过两个坑：
+                  1. placeholder 原来写的是「用户名」，用户以为这个框要填用户名，
+                     直接把账号名打进去，然后卡在「请输入有效的邮箱地址」。
+                  2. 后缀选择器原来是 appearance-none + bg-transparent，视觉上
+                     和普通文字没区别，没人知道它能点，于是所有人都用了默认后缀。
+                  现在：placeholder 明说是邮箱前缀，后缀做成带边框和箭头的下拉。 */}
+              <div className="flex items-stretch gap-2">
                 <Input
                   id="email"
                   type="text"
-                  autoComplete="username"
-                  placeholder="用户名"
-                  className="pr-[calc(0.75rem+var(--suffix-w,7rem))]"
-                  style={{ ['--suffix-w' as string]: `${Math.max(6, Math.max(...allowedDomains.map((d) => d.length)) + 2)}ch` }}
+                  autoComplete="email"
+                  inputMode="email"
+                  placeholder="邮箱前缀，如 alice"
+                  className="min-w-0 flex-1"
                   value={emailLocal}
                   onChange={(e) => {
                     const v = e.target.value.replace(/@.*$/, '')
@@ -245,32 +251,39 @@ export default function Register() {
                     setValue('email', v ? `${v}@${emailDomain}` : '', { shouldValidate: true })
                   }}
                 />
-                <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
-                  <span>@</span>
+                <div className="flex shrink-0 items-center rounded-lg border border-border bg-muted/60 px-1 text-sm">
+                  <span className="pl-1.5 pr-0.5 text-muted-foreground">@</span>
                   {allowedDomains.length === 1 ? (
-                    <span className="max-w-[9rem] truncate">{allowedDomains[0]}</span>
+                    <span className="px-1.5 py-2 font-medium">{allowedDomains[0]}</span>
                   ) : (
-                    <select
-                      className="pointer-events-auto max-w-[9rem] cursor-pointer appearance-none bg-transparent text-sm text-foreground outline-none"
-                      value={emailDomain}
-                      onChange={(e) => {
-                        setEmailDomain(e.target.value)
-                        setValue('email', emailLocal ? `${emailLocal}@${e.target.value}` : '', {
-                          shouldValidate: true,
-                        })
-                      }}
-                    >
-                      {allowedDomains.map((d) => (
-                        <option key={d} value={d}>
-                          {d}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative">
+                      <select
+                        aria-label="选择邮箱后缀"
+                        className="cursor-pointer appearance-none rounded-md bg-transparent py-2 pl-1.5 pr-7 text-sm font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        value={emailDomain}
+                        onChange={(e) => {
+                          setEmailDomain(e.target.value)
+                          setValue('email', emailLocal ? `${emailLocal}@${e.target.value}` : '', {
+                            shouldValidate: true,
+                          })
+                        }}
+                      >
+                        {allowedDomains.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                      {/* appearance-none 去掉了原生箭头，必须自己补一个，
+                          否则下拉看起来就是一段静态文字。 */}
+                      <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    </div>
                   )}
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                本站只接受这些邮箱后缀：{allowedDomains.map((d) => '@' + d).join('、')}
+                只需填 @ 前面那部分，后缀从右侧下拉选择。本站接受：
+                {allowedDomains.map((d) => '@' + d).join('、')}
               </p>
             </>
           ) : (

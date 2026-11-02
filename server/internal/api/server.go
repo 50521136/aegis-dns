@@ -528,6 +528,24 @@ func isAssetLikePath(rel string) bool {
 	return assetExts[strings.ToLower(base[dot:])]
 }
 
+// geetestOrigins 是极验 v4 需要的所有来源。
+//
+// 不加白名单会直接把验证组件打死，而报错只是前端一句「极验脚本加载失败」，
+// 从现象上完全看不出是 CSP 干的：
+//   · script-src 少 static.geetest.com   → gt4.js 加载被拦
+//   · connect-src 少 api.geetest.com     → 初始化/校验 XHR 被拦
+//   · frame-src 缺省回落到 default-src   → 验证弹窗的 iframe 被拦
+//   · img-src 少 static.geetest.com      → 拼图题图片出不来
+//   · style-src 少 static.geetest.com    → 弹窗样式丢失
+//
+// 这里不按「验证开关是否开启」动态裁剪：CSP 是响应头，逐请求读配置只会让
+// 行为和后台开关产生隐式耦合（开关一开就坏，且极难定位）。固定放行这一个
+// 厂商域名，风险面很小 —— 它只是允许加载极验的脚本，并不允许任意脚本执行。
+const (
+	geetestScriptSrc  = "https://static.geetest.com"
+	geetestConnectSrc = "https://api.geetest.com https://gcaptcha4.geetest.com https://static.geetest.com"
+)
+
 // setHTMLSecurityHeaders 给所有返回 HTML 的响应统一加安全头。
 //
 // 抽成函数是因为「前端未内嵌」的占位页也走 HTML，之前它只设了
@@ -538,8 +556,16 @@ func isAssetLikePath(rel string) bool {
 func setHTMLSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// CSP 限制脚本来源为自身，挡住注入的第三方脚本。
+	// 唯一的外部例外是极验（人机验证），见 geetestScriptSrc 上面的说明。
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+		"default-src 'self'; "+
+			"script-src 'self' 'unsafe-inline' "+geetestScriptSrc+"; "+
+			"style-src 'self' 'unsafe-inline' "+geetestScriptSrc+"; "+
+			"img-src 'self' data: blob: "+geetestScriptSrc+"; "+
+			"font-src 'self' data: "+geetestScriptSrc+"; "+
+			"connect-src 'self' "+geetestConnectSrc+"; "+
+			"frame-src 'self' "+geetestScriptSrc+"; "+
+			"frame-ancestors 'none'; base-uri 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 }
