@@ -93,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	// 否则内层中间件自己的 panic 无人接管。
 	r.Use(s.middlewareRecover)
 	r.Use(s.middlewareRequestID)
+	// 紧跟 requestID：必须比 rateLimit / 认证更外层，否则 429、401
+	// 这些早期返回的响应拿不到 no-store，仍可能被 CDN 缓存。
+	r.Use(s.middlewareNoStore)
 	// 压缩放在 logger 之前（更外层）：日志里记的是压缩前体积，
 	// 排查「响应为什么这么大」时那个数字才有意义。
 	r.Use(s.middlewareCompress)

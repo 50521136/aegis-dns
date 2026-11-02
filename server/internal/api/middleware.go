@@ -159,6 +159,48 @@ func (s *Server) middlewareCORS(next http.Handler) http.Handler {
 	})
 }
 
+// addVary 幂等地追加一个 Vary 字段。
+//
+// 直接 Add 会产生多行 Vary（RFC 允许，但部分缓存实现按字面串比较，
+// 多行反而失效），所以先检查已有值。
+func addVary(h http.Header, field string) {
+	for _, v := range h.Values("Vary") {
+		for _, part := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), field) {
+				return
+			}
+		}
+	}
+	h.Add("Vary", field)
+}
+
+// middlewareNoStore 禁止路径上任何一层缓存保存 API 响应。
+//
+// 背景（线上真实事故，2026-11）：站点前置了 CDN，CDN 的默认规则把
+// 没有 Cache-Control 的 200 响应当成可缓存对象存了 1 小时。
+// /api/v1/me 因此被缓存下来 —— 未登录访客、拿随机 token 的请求，
+// 全都拿到上一个登录用户的完整资料（用户名、client_id、会员等级）。
+// 这是跨账号数据泄漏，比「登录状态错乱」严重得多。
+//
+// 关键点：修在 CDN 上不够，因为源站没给任何缓存指令时，每一层
+// 中间缓存都可以自行决定缓存多久。必须在源站明确 no-store。
+//
+// Vary: Authorization / Cookie 是第二道保险：万一某层缓存忽略
+// no-store，也会按凭证分桶，不会把 A 的响应喂给 B。
+func (s *Server) middlewareNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h := w.Header()
+			h.Set("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
+			h.Set("Pragma", "no-cache")
+			h.Set("Expires", "0")
+			addVary(h, "Authorization")
+			addVary(h, "Cookie")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // ipLimiter 是单 IP 令牌桶集合。
 type ipLimiter struct {
 	mu       sync.Mutex
