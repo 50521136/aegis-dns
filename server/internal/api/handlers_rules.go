@@ -270,7 +270,7 @@ func (s *Server) updateRule(w http.ResponseWriter, r *http.Request, global bool)
 	u := currentUser(r)
 	rid := chi.URLParam(r, "id")
 
-	existing, err := s.store.GetRule(r.Context(), u.ID, rid)
+	existing, err := s.store.GetRule(r.Context(), u.ID, rid, global)
 	if err != nil {
 		writeStoreError(w, err, "规则不存在")
 		return
@@ -330,7 +330,7 @@ func (s *Server) deleteRule(w http.ResponseWriter, r *http.Request, global bool)
 	rid := chi.URLParam(r, "id")
 
 	// 先取一次确认作用域，避免用个人路由删掉全局规则。
-	existing, err := s.store.GetRule(r.Context(), u.ID, rid)
+	existing, err := s.store.GetRule(r.Context(), u.ID, rid, global)
 	if err != nil {
 		writeStoreError(w, err, "规则不存在")
 		return
@@ -339,7 +339,7 @@ func (s *Server) deleteRule(w http.ResponseWriter, r *http.Request, global bool)
 		writeError(w, http.StatusNotFound, CodeNotFound, "规则不存在", nil)
 		return
 	}
-	if err := s.store.DeleteRule(r.Context(), u.ID, rid); err != nil {
+	if err := s.store.DeleteRule(r.Context(), u.ID, rid, global); err != nil {
 		writeStoreError(w, err, "规则不存在")
 		return
 	}
@@ -378,7 +378,7 @@ func (s *Server) bulkDeleteRules(w http.ResponseWriter, r *http.Request, global 
 	// 只删本作用域的：逐条确认归属，把跨作用域的 ID 过滤掉而不是整体报错。
 	allowed := make([]string, 0, len(req.IDs))
 	for _, rid := range req.IDs {
-		rule, err := s.store.GetRule(r.Context(), u.ID, rid)
+		rule, err := s.store.GetRule(r.Context(), u.ID, rid, global)
 		if err != nil || rule.IsGlobal != global {
 			continue
 		}
@@ -389,7 +389,7 @@ func (s *Server) bulkDeleteRules(w http.ResponseWriter, r *http.Request, global 
 		return
 	}
 
-	n, err := s.store.DeleteRules(r.Context(), u.ID, allowed)
+	n, err := s.store.DeleteRules(r.Context(), u.ID, allowed, global)
 	if err != nil {
 		writeStoreError(w, err, "")
 		return

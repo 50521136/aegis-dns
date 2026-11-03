@@ -64,12 +64,26 @@ func joinQTypes(q []string) string {
 	return strings.Join(out, ",")
 }
 
-// ListRules 分页列出某个用户的规则。
+// ListRules 分页列出规则。
+//
+// **全局层不按 user_id 过滤。** 全局规则的生效范围是全站（所有开 UseGlobalRules
+// 的用户共享 `AllGlobalRules` 那一份），`user_id` 只是「谁加的」这条审计信息。
+// 按当前登录人过滤会漏掉别人（含 AI 自动放行）建的全局规则：AI 写规则时
+// user_id 记的是提反馈的那个普通用户，管理员在面板上于是既看不到、也删不掉，
+// 而这些规则正在对全站生效 —— 与全局订阅那次踩的是同一个坑。
+//
+// 个人层则必须严格按归属过滤。
 //
 // kind 为空表示不筛选；q 为关键字模糊匹配 pattern 与 value。
 func (s *Store) ListRules(ctx context.Context, uid string, global bool, kind, q string, enabled *bool, limit, offset int) ([]*model.Rule, int, error) {
-	where := []string{"user_id = ?", "is_global = ?"}
-	args := []any{uid, boolInt(global)}
+	var where []string
+	var args []any
+	if global {
+		where = []string{"is_global = 1"}
+	} else {
+		where = []string{"user_id = ?", "is_global = 0"}
+		args = append(args, uid)
+	}
 	if kind != "" {
 		where = append(where, "kind = ?")
 		args = append(args, kind)
@@ -245,9 +259,19 @@ func (s *Store) BulkCreateRules(ctx context.Context, rules []*model.Rule) (int, 
 	return created, nil
 }
 
-// GetRule 按 ID 查询（带归属校验，防止越权访问他人规则）。
-func (s *Store) GetRule(ctx context.Context, uid, rid string) (*model.Rule, error) {
-	row := s.read.QueryRowContext(ctx, `SELECT `+ruleCols+` FROM rules WHERE id = ? AND user_id = ?`, rid, uid)
+// GetRule 按 ID 查询并校验作用域。
+//
+// 全局层不限定 user_id：它是一份全站共享的规则集，user_id 只用于记录来源。
+// 个人层必须同时匹配归属与 `is_global = 0`，否则任何用户都能用 `/rules/{id}`
+// 读到或改动别人的规则。
+func (s *Store) GetRule(ctx context.Context, uid, rid string, global bool) (*model.Rule, error) {
+	q := `SELECT ` + ruleCols + ` FROM rules WHERE id = ? AND is_global = 1`
+	args := []any{rid}
+	if !global {
+		q = `SELECT ` + ruleCols + ` FROM rules WHERE id = ? AND user_id = ? AND is_global = 0`
+		args = append(args, uid)
+	}
+	row := s.read.QueryRowContext(ctx, q, args...)
 	r, err := scanRule(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -259,10 +283,16 @@ func (s *Store) GetRule(ctx context.Context, uid, rid string) (*model.Rule, erro
 }
 
 // UpdateRule 全量更新一条规则的字段。
+//
+// 与 GetRule 同样的作用域口径：全局层按 `is_global = 1` 定位，个人层必须带归属。
 func (s *Store) UpdateRule(ctx context.Context, r *model.Rule) error {
-	res, err := s.write.ExecContext(ctx,
-		`UPDATE rules SET kind=?, pattern=?, value=?, qtypes=?, enabled=? WHERE id=? AND user_id=? AND is_global=?`,
-		r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), r.ID, r.UserID, boolInt(r.IsGlobal))
+	q := `UPDATE rules SET kind=?, pattern=?, value=?, qtypes=?, enabled=? WHERE id=? AND is_global = 1`
+	args := []any{r.Kind, r.Pattern, r.Value, joinQTypes(r.QTypes), boolInt(r.Enabled), r.ID}
+	if !r.IsGlobal {
+		q = `UPDATE rules SET kind=?, pattern=?, value=?, qtypes=?, enabled=? WHERE id=? AND user_id=? AND is_global = 0`
+		args = append(args, r.UserID)
+	}
+	res, err := s.write.ExecContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("更新规则失败: %w", err)
 	}
@@ -273,8 +303,16 @@ func (s *Store) UpdateRule(ctx context.Context, r *model.Rule) error {
 }
 
 // DeleteRule 删除一条规则。
-func (s *Store) DeleteRule(ctx context.Context, uid, rid string) error {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM rules WHERE id = ? AND user_id = ?`, rid, uid)
+//
+// 全局层按 `is_global = 1` 定位（谁加的不影响能否删），个人层必须带归属。
+func (s *Store) DeleteRule(ctx context.Context, uid, rid string, global bool) error {
+	q := `DELETE FROM rules WHERE id = ? AND is_global = 1`
+	args := []any{rid}
+	if !global {
+		q = `DELETE FROM rules WHERE id = ? AND user_id = ? AND is_global = 0`
+		args = append(args, uid)
+	}
+	res, err := s.write.ExecContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("删除规则失败: %w", err)
 	}
@@ -285,19 +323,31 @@ func (s *Store) DeleteRule(ctx context.Context, uid, rid string) error {
 }
 
 // DeleteRules 批量删除规则，返回实际删除条数。
-func (s *Store) DeleteRules(ctx context.Context, uid string, ids []string) (int, error) {
+//
+// 作用域口径与 DeleteRule 一致：全局层不按归属过滤，个人层必须带归属。
+func (s *Store) DeleteRules(ctx context.Context, uid string, ids []string, global bool) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
+	q := `DELETE FROM rules WHERE id = ? AND is_global = 1`
+	if !global {
+		q = `DELETE FROM rules WHERE id = ? AND user_id = ? AND is_global = 0`
+	}
 	deleted := 0
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.PrepareContext(ctx, `DELETE FROM rules WHERE id = ? AND user_id = ?`)
+		stmt, err := tx.PrepareContext(ctx, q)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, rid := range ids {
-			res, err := stmt.ExecContext(ctx, rid, uid)
+			var res sql.Result
+			var err error
+			if global {
+				res, err = stmt.ExecContext(ctx, rid)
+			} else {
+				res, err = stmt.ExecContext(ctx, rid, uid)
+			}
 			if err != nil {
 				return err
 			}
@@ -310,14 +360,20 @@ func (s *Store) DeleteRules(ctx context.Context, uid string, ids []string) (int,
 	return deleted, err
 }
 
-// CountRules 返回某用户在指定 scope 下的规则总数（配额判定用）。
+// CountRules 返回指定 scope 下的规则总数。
 //
-// global=false 数个人规则，global=true 数全局规则。两者分开计数，
-// 否则管理员自己的个人规则会被算进全局配额里。
+// global=false 数某个人的个人规则，global=true 数**全站**的全局规则 ——
+// 全局层是一份共享规则集，按人计数会让「全局规则有多少条」取决于谁在问。
 func (s *Store) CountRules(ctx context.Context, uid string, global bool) (int, error) {
 	var n int
-	err := s.read.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM rules WHERE user_id = ? AND is_global = ?`, uid, boolInt(global)).Scan(&n)
+	var err error
+	if global {
+		err = s.read.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM rules WHERE is_global = 1`).Scan(&n)
+	} else {
+		err = s.read.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM rules WHERE user_id = ? AND is_global = 0`, uid).Scan(&n)
+	}
 	return n, err
 }
 

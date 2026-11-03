@@ -68,7 +68,8 @@ func (s *Server) handleAdminDeleteUserRule(w http.ResponseWriter, r *http.Reques
 			"这是全局规则，请到全局规则页删除", nil)
 		return
 	}
-	if err := s.store.DeleteRule(r.Context(), rule.UserID, id); err != nil {
+	// 走到这里 rule.IsGlobal 必为 false（上面已拦掉），显式传 false 表明作用域。
+	if err := s.store.DeleteRule(r.Context(), rule.UserID, id, rule.IsGlobal); err != nil {
 		writeStoreError(w, err, "")
 		return
 	}
