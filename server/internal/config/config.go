@@ -34,8 +34,23 @@ type DNS struct {
 	// ListenDOH3 是 DoH over HTTP/3 的监听地址，走 UDP，通常与 DoH 同端口。
 	// 默认空 = 不启用。启用后 DoH（TCP）响应会带上 Alt-Svc，客户端据此切到 H3。
 	ListenDOH3 string `yaml:"listen_doh3"`
-	CertFile   string `yaml:"cert_file"`
-	KeyFile    string `yaml:"key_file"`
+	// FrontendUpstream 是可选的「前端反代目标」，形如 http://127.0.0.1:3000。
+	//
+	// 443 被 DoH 占用、控制台在 apid 的另一个端口上，所以想让
+	// https://<domain> 直接打开控制台，只能由 dnsd 在 443 上按路径分流：
+	// /dns-query* 归 DoH，其余转给这个上游。这正是 AdGuard Home 的结构
+	// （同端口、同证书、一个 mux），不是给面板另开端口。
+	//
+	// 留空 = 不启用，443 根路径维持原来的「这是 DoH 端点」提示。
+	FrontendUpstream string `yaml:"frontend_upstream"`
+	// FrontendHosts 是允许通过 443 打开前端的 Host 白名单，精确匹配。
+	//
+	// 留空时只认 domain 那一个裸域名。**刻意不支持通配**：租户子域
+	// <client_id>.<domain> 是给 DoH 客户端用的，让它也能打开管理后台
+	// 等于把控制台入口摊到每个租户名下，既无意义又扩大暴露面。
+	FrontendHosts []string `yaml:"frontend_hosts"`
+	CertFile      string   `yaml:"cert_file"`
+	KeyFile       string   `yaml:"key_file"`
 	// DevTLS 为 true 时，若无证书则自签一张内存证书，方便内网测试。
 	DevTLS bool `yaml:"dev_tls"`
 	ACME   ACME `yaml:"acme"`
@@ -228,6 +243,50 @@ func (c *Config) normalize() error {
 		c.Upstreams = []string{"1.1.1.1", "8.8.8.8"}
 	}
 	c.Domain = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(c.Domain)), ".")
+
+	if err := c.normalizeFrontend(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// normalizeFrontend 规整并校验 443 上的前端反代配置。
+//
+// 归一化必须和 dns 包的 normalizeHost 对齐（小写、去尾点）：白名单里写成
+// "AdGuardHome.lv10.ren." 而请求头是 "adguardhome.lv10.ren"，字符串比对就会
+// 直接不相等，表现为「配了但打不开」。
+func (c *Config) normalizeFrontend() error {
+	c.DNS.FrontendUpstream = strings.TrimSpace(c.DNS.FrontendUpstream)
+
+	hosts := make([]string, 0, len(c.DNS.FrontendHosts))
+	seen := make(map[string]struct{}, len(c.DNS.FrontendHosts))
+	for _, h := range c.DNS.FrontendHosts {
+		h = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(h)), ".")
+		if h == "" {
+			continue
+		}
+		// 白名单只装主机名。带了端口或路径说明配置写错了 —— 静默截断会让
+		// 用户以为生效了，而实际匹配的是一段残缺字符串，不如直接报错。
+		if strings.ContainsAny(h, ":/") {
+			return fmt.Errorf("frontend_hosts 里的 %q 只能是主机名，不能带端口或路径", h)
+		}
+		if _, dup := seen[h]; dup {
+			continue
+		}
+		seen[h] = struct{}{}
+		hosts = append(hosts, h)
+	}
+
+	// 没显式写白名单时退到 domain（裸域名）。这是最常见的用法，
+	// 也让老配置文件只需要加一行 frontend_upstream 就能用上。
+	if len(hosts) == 0 && c.Domain != "" {
+		hosts = []string{c.Domain}
+	}
+	c.DNS.FrontendHosts = hosts
+
+	if c.DNS.FrontendUpstream != "" && len(hosts) == 0 {
+		return fmt.Errorf("配置了 dns.frontend_upstream 但没有任何可用的 frontend_hosts，且 domain 为空")
+	}
 	return nil
 }
 

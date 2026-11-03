@@ -43,6 +43,10 @@ type Server struct {
 	dohPlain *http.Server
 	doh3     *http3.Server
 
+	// frontend 是 443 上「/dns-query 以外」请求的去处（控制台反代）。
+	// nil 表示未启用，根路径维持「这是 DoH 端点」提示。
+	frontend *frontendProxy
+
 	// 启动错误汇总，便于在自检里一次性看到「哪个端口没起来」。
 	startErrs []error
 }
@@ -67,6 +71,19 @@ func NewServer(cfg *config.Config, h *Handler, certs *certmgr.Manager, log *slog
 // 但若一个都没起来，返回错误让 systemd 拉起失败可见。
 func (s *Server) Start(ctx context.Context) error {
 	started := 0
+
+	// 前端反代要在建 mux 之前准备好：443 的根 handler 直接闭包引用它。
+	if f, err := newFrontendProxy(s.cfg.DNS.FrontendUpstream, s.cfg.DNS.FrontendHosts, s.log); err != nil {
+		// 配置写错不该让整个 dnsd 起不来 —— 解析比控制台重要得多。
+		// 但必须吵出来，否则用户只会看到「配了没生效」。
+		s.log.Error("前端反代配置无效，443 根路径维持 DoH 提示", "err", err)
+	} else if f != nil {
+		s.frontend = f
+		s.log.Info("443 根路径已反代到控制台",
+			"upstream", s.cfg.DNS.FrontendUpstream,
+			"hosts", strings.Join(s.cfg.DNS.FrontendHosts, ","),
+		)
+	}
 
 	// --- UDP 53 ---
 	if addr := s.cfg.DNS.ListenUDP; addr != "" {
@@ -124,7 +141,10 @@ func (s *Server) Start(ctx context.Context) error {
 			mux := http.NewServeMux()
 			mux.HandleFunc("/dns-query", s.handleDoH)
 			mux.HandleFunc("/dns-query/", s.handleDoH)
-			mux.HandleFunc("/", s.handleDoHRoot)
+			// 根路径按 Host 分流：白名单命中 → 控制台，否则维持 DoH 提示。
+			// 与 AdGuard Home 同构（一个端口、一张证书、一个 mux），
+			// 差别是这里只对指定域名开放，不对任意 Host 开放。
+			mux.HandleFunc("/", s.handleRoot)
 
 			s.dohTLS = &http.Server{
 				Addr:              addr,
@@ -184,7 +204,13 @@ func (s *Server) Start(ctx context.Context) error {
 			mux := http.NewServeMux()
 			mux.HandleFunc("/dns-query", s.handleDoH)
 			mux.HandleFunc("/dns-query/", s.handleDoH)
-			mux.HandleFunc("/", s.handleDoHRoot)
+			// 与 DoH 用同一个根 handler。
+			//
+			// 不能只在 443 上开前端：handleDoH 会回 Alt-Svc，告诉客户端
+			// 「本源的 h3 在 9443」。浏览器按**源**（host:port）缓存 Alt-Svc，
+			// 一旦同一个源上出现过 DoH 请求，后续页面导航也可能被升到 h3 走
+			// 9443，那时根路径如果还是 404，控制台就会时好时坏。
+			mux.HandleFunc("/", s.handleRoot)
 			s.doh3 = &http3.Server{
 				Addr:       addr,
 				Handler:    mux,
@@ -394,8 +420,29 @@ func (w *streamResponseWriter) Hijack()                     {}
 // 同时挡住用超大 body 打内存的尝试（文档 10.3 DoS 防护）。
 const maxDoHBody = 8 << 10
 
-// handleDoHRoot 处理非 /dns-query 路径：给出明确提示而不是 404 空白页。
-func (s *Server) handleDoHRoot(w http.ResponseWriter, r *http.Request) {
+// handleRoot 处理 443 / 9443 上 /dns-query 以外的请求。
+//
+// 结构与 AdGuard Home 一致：同一个端口、同一张证书、同一个 mux，按路径分流。
+// 差别在 Host 判定 —— AGH 是任意 Host 都能打开后台，这里只认白名单
+// （见 frontendProxy.allows），租户子域仍然只做 DoH。
+//
+// 未启用前端反代时行为与以前完全一样：返回「这是 DoH 端点」提示。
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if s.frontend.allows(r) {
+		s.frontend.proxy.ServeHTTP(w, r)
+		return
+	}
+	s.writeDoHRootNotice(w)
+}
+
+// handleDoHRoot 是 handleRoot 的降级形态，保留给未启用反代的路径与测试。
+func (s *Server) handleDoHRoot(w http.ResponseWriter, _ *http.Request) {
+	s.writeDoHRootNotice(w)
+}
+
+// writeDoHRootNotice 是根路径的兜底响应：明确告诉访问者「这是 DoH 端点」，
+// 而不是回一个空白的 404 让人以为服务挂了。
+func (s *Server) writeDoHRootNotice(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, "这是 DoH 端点。请在 /dns-query 发起 DNS-over-HTTPS 查询。\n")
