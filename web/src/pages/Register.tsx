@@ -96,7 +96,10 @@ export default function Register() {
     }
     setSending(true)
     try {
-      await sendEmailCode(emailValue, 'register')
+      // 人机验证在「发码」这一步做（与后端 handleSendEmailCode 一致）：
+      // 这个接口能给任意邮箱发信，是垃圾邮件放大器，必须挡在这里。
+      // 注册提交时不再验第二次 —— 验证码本身就是「已过验证」的凭证。
+      await gate.run((captcha) => sendEmailCode(emailValue, 'register', captcha))
       toast.success('验证码已发出', `请查收 ${emailValue}`)
       setCountdown(60)
     } catch (err) {
@@ -127,20 +130,23 @@ export default function Register() {
    * 直接用状态会把 agree_terms: false 发出去，然后被后端 422 打回来。
    */
   const doRegister = async (values: FormValues, agreedOverride: boolean) => {
+    const payload = {
+      username: values.username,
+      email: values.email,
+      password: values.password,
+      invite_code: values.invite_code?.trim() || undefined,
+      email_code: values.email_code?.trim() || undefined,
+      agree_terms: cfg?.terms_enabled ? agreedOverride : undefined,
+    }
     try {
-      // 人机验证在真正提交前弹：需要在最前面挡住脚本批量注册，
-      // 又不想让用户填完表单才发现要验证两次。
-      const res = await gate.run((captcha) =>
-        registerUser({
-          username: values.username,
-          email: values.email,
-          password: values.password,
-          invite_code: values.invite_code?.trim() || undefined,
-          email_code: values.email_code?.trim() || undefined,
-          captcha,
-          agree_terms: cfg?.terms_enabled ? agreedOverride : undefined,
-        }),
-      )
+      // 人机验证在这里分两种情况（与后端 handleRegister 保持一致）：
+      //   · 开了邮箱验证 → 验证早在「获取验证码」时就做过了，这里直接提交，
+      //     否则用户刚收完验证码还要再滑一次，很多人会放弃；
+      //   · 没开邮箱验证 → 没有发码这一步，人机边界只能守在这里。
+      // 两种配置下都恰好只有一道验证。
+      const res = cfg?.require_email_verify
+        ? await registerUser(payload)
+        : await gate.run((captcha) => registerUser({ ...payload, captcha }))
       toast.success('注册成功', '你的专属 DNS 地址已生成')
       if (res.dns_config) {
         setDnsConfig(res.dns_config)

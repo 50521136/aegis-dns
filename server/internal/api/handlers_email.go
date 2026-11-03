@@ -38,15 +38,6 @@ func (s *Server) handleSendEmailCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 找回密码的发码接口是真正的滥用入口：它能给任意邮箱发信。
-	// 注册的发码不在这里挡 —— 注册本身已经有验证，重复验两道只会劝退用户。
-	if strings.TrimSpace(req.Purpose) == store.EmailPurposeReset {
-		if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneForgot, req.Captcha); !ok {
-			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
-			return
-		}
-	}
-
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	if !looksLikeEmail(email) {
 		writeError(w, http.StatusBadRequest, CodeValidationFailed, "邮箱格式不正确", nil)
@@ -65,6 +56,31 @@ func (s *Server) handleSendEmailCode(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "")
 		return
 	}
+
+	// 人机验证：找回密码与注册的发码都是「能给任意邮箱发信」的入口，
+	// 是最典型的垃圾邮件放大器，必须在**发码**这一步挡住。
+	//
+	// 注册的验证刻意放在这里，而不是最后提交那一步：
+	//   · 用户点「获取验证码」时就验，符合直觉（他本来就在等一个动作结果）；
+	//   · 提交时不再重复验 —— 邮箱验证码本身已经证明是真人，
+	//     连着验两道只会劝退正常用户；
+	//   · 而验证码是唯一能走到提交的凭证，所以挡在发码处等价于挡住了整个流程。
+	//
+	// 放在 GetSettings 之后是因为要知道「注册邮箱验证有没有开」：没开就没有发码
+	// 这一步，验证仍然留在提交处（见 handleRegister）。settings 只是一次轻量
+	// 读取，不影响「先挡后做事」的原则。
+	if purpose == store.EmailPurposeReset ||
+		(purpose == store.EmailPurposeRegister && set.EmailVerifyRegister) {
+		scene := CaptchaSceneForgot
+		if purpose == store.EmailPurposeRegister {
+			scene = CaptchaSceneRegister
+		}
+		if ok, msg := s.verifyCaptchaByScene(r, scene, req.Captcha); !ok {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
+			return
+		}
+	}
+
 	cfg := mailConfig(set)
 	if !cfg.Enabled {
 		writeError(w, http.StatusServiceUnavailable, CodeFeatureDisabled, "本站未启用邮件服务", nil)

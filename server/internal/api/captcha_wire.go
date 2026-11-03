@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -148,6 +149,43 @@ type captchaBody struct {
 	CaptchaOutput string `json:"captcha_output"`
 	PassToken     string `json:"pass_token"`
 	GenTime       string `json:"gen_time"`
+}
+
+// UnmarshalJSON 让 captcha 子对象对未知字段宽容。
+//
+// 为什么不能只靠「把字段全列出来」：这一段的内容由极验决定，不是我们的契约。
+// 极验官方文档里 captcha_id 就是随验证结果一起回传的参数之一（必填项），
+// 而外层 decodeJSON 开了 DisallowUnknownFields —— 于是前端只要多带一个
+// captcha_id，登录就整体 400：
+//
+//	{"code":"INVALID_REQUEST","message":"请求体不是合法的 JSON: json: unknown field \"captcha_id\""}
+//
+// 这个报错指向 JSON 解析，跟「人机验证」八竿子打不着，线上极难定位；
+// 而且用户是完全无法登录的硬故障。
+//
+// 所以分层处理：外层请求体保持严格（我们自己定义的字段写错了应该立刻报错），
+// captcha 这一段按「第三方数据」对待，只挑我们认识的那几个字段，其余忽略。
+func (b *captchaBody) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	pick := func(key string) string {
+		v, ok := raw[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		_ = json.Unmarshal(v, &s)
+		return s
+	}
+	b.LotNumber = pick("lot_number")
+	b.CaptchaOutput = pick("captcha_output")
+	b.PassToken = pick("pass_token")
+	b.GenTime = pick("gen_time")
+	// captcha_id 极验也会回传，但它只是公开的验证 ID（/public/config 里本来就有），
+	// 二次校验用不到 —— 显式忽略，避免以后再被它绊一次。
+	return nil
 }
 
 // captchaPublicConfig 返回给前端的验证配置。

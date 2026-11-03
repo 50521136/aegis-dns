@@ -45,13 +45,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	req.Username = strings.TrimSpace(req.Username)
 	req.Email = strings.TrimSpace(req.Email)
 
-	// 人机验证放在最前面：脚本刷注册时不该消耗后面的任何资源
-	// （bcrypt 一次就是几十毫秒，还带内存）。
-	if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneRegister, req.Captcha); !ok {
-		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
-		return
-	}
-
 	if err := validateUsername(req.Username); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, err.Error(), nil)
 		return
@@ -81,6 +74,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, CodeTermsRequired,
 			"请先阅读并同意"+termsTitleOrDefault(settings.TermsTitle), nil)
 		return
+	}
+
+	// 人机验证的位置取决于「注册邮箱验证」开没开：
+	//
+	//   · 开了 → 验证已经在「获取验证码」那一步做过了（见 handleSendEmailCode）。
+	//     邮箱验证码是唯一能走到这里的凭证，拿不到码就进不来，所以提交处
+	//     再弹一次纯属重复打扰 —— 用户刚验完码又要滑一次，很多人会直接放弃。
+	//   · 没开 → 没有发码这一步，人机边界只能守在这里。
+	//
+	// 两种配置下都恰好只有一道验证，不会出现「连过两关」或「一关都没有」。
+	if !settings.EmailVerifyRegister {
+		if ok, msg := s.verifyCaptchaByScene(r, CaptchaSceneRegister, req.Captcha); !ok {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed, msg, nil)
+			return
+		}
 	}
 	// 邮箱后缀白名单：挡掉一次性邮箱。
 	// 在「注册送会员」的配置下，放开后缀等于把这笔赠送白送出去。
