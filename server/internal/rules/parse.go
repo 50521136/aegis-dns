@@ -38,6 +38,9 @@ type Parsed struct {
 	Domain string
 	// Wildcard 为 true 表示模式是 *.domain 形式：只匹配子域，不匹配 domain 本身。
 	Wildcard bool
+	// Glob 为 true 表示 Domain 是一条含 * 的通配模式（如 at*.doubanio.com），
+	// 只能交给 globSet 匹配，不能进 trie 或 suffixSet。
+	Glob bool
 	// Value 是改写目标（仅 rewrite_* 有值）。
 	Value string
 	// QTypes 为空表示适用于所有记录类型。
@@ -67,6 +70,20 @@ func ParseLine(raw string) (*Parsed, error) {
 //
 // 除 hosts 一行多域名外，绝大多数写法只产生一条。
 func ParseLineAll(raw string) ([]*Parsed, error) {
+	return parseLineAll(raw, false)
+}
+
+// ParseLineAllForSubscription 与 ParseLineAll 相同，但保留含 * 的通配模式。
+//
+// 订阅层有 globSet 能真正匹配 `||at*.doubanio.com^` 这类写法，而用户手写
+// 规则走的是 trie（不支持中间通配）。所以通配支持只在订阅解析这一侧打开：
+// 以前订阅里的通配行一律 ErrSkip，实测一份源里 258 行因此静默失效。
+func ParseLineAllForSubscription(raw string) ([]*Parsed, error) {
+	return parseLineAll(raw, true)
+}
+
+// parseLineAll 是两种入口的共同实现。allowGlob 决定含 * 的行是保留还是跳过。
+func parseLineAll(raw string, allowGlob bool) ([]*Parsed, error) {
 	line := strings.TrimSpace(raw)
 	if line == "" {
 		return nil, ErrSkip
@@ -167,17 +184,29 @@ func ParseLineAll(raw string) ([]*Parsed, error) {
 		wildcard = true
 		body = strings.TrimPrefix(body, "*.")
 	}
-	// 其他位置的 * 无法在 DNS 层表达（如 ad*.example.com），保守跳过。
+
+	// 其余位置的 * 在 trie 里无法表达（如 ad*.example.com），
+	// 但订阅层有 globSet 能匹配，因此这里按入口决定是保留还是跳过。
+	glob := false
+	var domain string
 	if strings.Contains(body, "*") {
-		return nil, ErrSkip
+		if !allowGlob {
+			return nil, ErrSkip
+		}
+		g, err := normalizeGlobDomain(body)
+		if err != nil {
+			return nil, err
+		}
+		domain, glob = g, true
+	} else {
+		d, err := normalizeDomain(body)
+		if err != nil {
+			return nil, err
+		}
+		domain = d
 	}
 
-	domain, err := normalizeDomain(body)
-	if err != nil {
-		return nil, err
-	}
-
-	p := &Parsed{Kind: kind, Domain: domain, Wildcard: wildcard}
+	p := &Parsed{Kind: kind, Domain: domain, Wildcard: wildcard, Glob: glob}
 
 	// 解析修饰符。
 	if modifiers != "" {

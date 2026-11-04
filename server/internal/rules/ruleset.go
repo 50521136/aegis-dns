@@ -39,6 +39,12 @@ type RuleSet struct {
 	// 优先级 8：用户自己的订阅 blocklist
 	subBlock *suffixSet
 
+	// 订阅层里含 * 的通配模式（`||at*.doubanio.com^` 这类）。
+	// suffixSet 只能存整域名，通配模式交给 globSet；两者同层，
+	// allow 仍然先于 block 判定。以前这些行在解析阶段就被丢掉了。
+	subWildAllow *globSet
+	subWildBlock *globSet
+
 	// Stats 是规则条数统计，供 UI 展示。
 	Stats Stats
 }
@@ -106,14 +112,23 @@ func Build(l Layers) (*RuleSet, error) {
 
 		subAllow: newSuffixSet(),
 		subBlock: newSuffixSet(),
+
+		subWildAllow: newGlobSet(),
+		subWildBlock: newGlobSet(),
 	}
 
 	for _, r := range l.UserRules {
 		// 记录型错误不影响其它规则；这里不返回错误，只跳过。
 		_ = rs.addRule(r, rs.userAllow, rs.userRewrite, rs.userBlock)
 	}
-	rs.subAllow.add(l.SubAllow)
-	rs.subBlock.add(l.SubBlock)
+	// 订阅条目按「整域名 / 通配模式」分流：suffixSet 会静默丢弃含 * 的条目，
+	// 所以必须先拆开，否则通配规则又会被无声吃掉。
+	subAllowLit, subAllowGlob := splitGlobEntries(l.SubAllow)
+	subBlockLit, subBlockGlob := splitGlobEntries(l.SubBlock)
+	rs.subAllow.add(subAllowLit)
+	rs.subBlock.add(subBlockLit)
+	rs.subWildAllow.add(subAllowGlob)
+	rs.subWildBlock.add(subBlockGlob)
 
 	if l.Global != nil {
 		rs.global = BuildGlobal(l.Global)
@@ -123,15 +138,32 @@ func Build(l Layers) (*RuleSet, error) {
 	// 二分结果无意义。
 	rs.subAllow.finish()
 	rs.subBlock.finish()
+	rs.subWildAllow.finish()
+	rs.subWildBlock.finish()
 
 	rs.Stats = Stats{
 		UserAllow:   rs.userAllow.size,
 		UserBlock:   rs.userBlock.size,
 		UserRewrite: rs.userRewrite.size,
-		SubAllow:    rs.subAllow.size,
-		SubBlock:    rs.subBlock.size,
+		SubAllow:    rs.subAllow.size + rs.subWildAllow.size,
+		SubBlock:    rs.subBlock.size + rs.subWildBlock.size,
 	}
 	return rs, nil
+}
+
+// splitGlobEntries 把条目拆成「整域名」与「含 * 的通配模式」两组。
+func splitGlobEntries(in []string) (literal, glob []string) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	for _, d := range in {
+		if isGlobPattern(d) {
+			glob = append(glob, d)
+		} else {
+			literal = append(literal, d)
+		}
+	}
+	return literal, glob
 }
 
 // insertDomains 把一批域名插进指定的 Trie，非法域名跳过。
@@ -333,7 +365,13 @@ subLayer:
 	if ok, _, _ := rs.subAllow.lookup(domain, qtype); ok {
 		return Decision{Action: ActionAllow, Source: "sub_allow"}
 	}
+	if ok, _, _ := rs.subWildAllow.lookup(domain, qtype); ok {
+		return Decision{Action: ActionAllow, Source: "sub_allow"}
+	}
 	if ok, _, _ := rs.subBlock.lookup(domain, qtype); ok {
+		return Decision{Action: ActionBlock, Source: "sub_block"}
+	}
+	if ok, _, _ := rs.subWildBlock.lookup(domain, qtype); ok {
 		return Decision{Action: ActionBlock, Source: "sub_block"}
 	}
 
@@ -342,7 +380,13 @@ subLayer:
 		if ok, _, _ := rs.global.subAllow.lookup(domain, qtype); ok {
 			return Decision{Action: ActionAllow, Source: "global_sub_allow"}
 		}
+		if ok, _, _ := rs.global.subWildAllow.lookup(domain, qtype); ok {
+			return Decision{Action: ActionAllow, Source: "global_sub_allow"}
+		}
 		if ok, _, _ := rs.global.subBlock.lookup(domain, qtype); ok {
+			return Decision{Action: ActionBlock, Source: "global_sub_block"}
+		}
+		if ok, _, _ := rs.global.subWildBlock.lookup(domain, qtype); ok {
 			return Decision{Action: ActionBlock, Source: "global_sub_block"}
 		}
 	}
@@ -392,6 +436,9 @@ type GlobalLayer struct {
 	// 订阅层用排序数组（见 suffixset.go）
 	subAllow *suffixSet
 	subBlock *suffixSet
+	// 订阅层里的通配模式（见 globset.go），与 subAllow/subBlock 同层
+	subWildAllow *globSet
+	subWildBlock *globSet
 
 	globalAllowSize   int
 	globalBlockSize   int
@@ -410,6 +457,9 @@ func BuildGlobal(g *model.GlobalSnap) *GlobalLayer {
 		block:    newTrie(),
 		subAllow: newSuffixSet(),
 		subBlock: newSuffixSet(),
+
+		subWildAllow: newGlobSet(),
+		subWildBlock: newGlobSet(),
 	}
 	if g == nil {
 		return gl
@@ -419,16 +469,22 @@ func BuildGlobal(g *model.GlobalSnap) *GlobalLayer {
 	for _, r := range g.Rules {
 		_ = tmp.addRule(r, gl.allow, gl.rewrite, gl.block)
 	}
-	gl.subAllow.add(g.SubAllow)
-	gl.subBlock.add(g.SubBlock)
+	gAllowLit, gAllowGlob := splitGlobEntries(g.SubAllow)
+	gBlockLit, gBlockGlob := splitGlobEntries(g.SubBlock)
+	gl.subAllow.add(gAllowLit)
+	gl.subBlock.add(gBlockLit)
+	gl.subWildAllow.add(gAllowGlob)
+	gl.subWildBlock.add(gBlockGlob)
 	gl.subAllow.finish()
 	gl.subBlock.finish()
+	gl.subWildAllow.finish()
+	gl.subWildBlock.finish()
 
 	gl.globalAllowSize = gl.allow.size
 	gl.globalRewriteSize = gl.rewrite.size
 	gl.globalBlockSize = gl.block.size
-	gl.gsubAllowSize = gl.subAllow.size
-	gl.gsubBlockSize = gl.subBlock.size
+	gl.gsubAllowSize = gl.subAllow.size + gl.subWildAllow.size
+	gl.gsubBlockSize = gl.subBlock.size + gl.subWildBlock.size
 	return gl
 }
 

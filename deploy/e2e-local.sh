@@ -391,6 +391,27 @@ t() {
   fi
 }
 
+# tn 断言「没有被拦截」：出现 0.0.0.0 或 REFUSED 就是被拦了。
+#
+# 判据只取这两个标记，是因为用例用的 .example 域名上游必然 NXDOMAIN ——
+# 那是「没被拦、上游说没有」而不是「被拦成 NXDOMAIN」。这一条不会假通过：
+# 真出 bug 时答案恰好就是 0.0.0.0。
+#
+# 同时先确认探针拿到了有效应答：探针崩溃 / token 失效时输出里什么都不含，
+# 只判「不含 0.0.0.0」会直接假通过（这类假绿章踩过）。
+tn() {
+  local desc="$1"; shift 1
+  local out
+  out=$($PROBE "$@" 2>&1 | tail -1)
+  if [[ "$out" == *"0.0.0.0"* || "$out" == *"REFUSED"* ]]; then
+    bad "$desc → $out（不该被拦截）"
+  elif [[ "$out" == *"OK"* || "$out" == *"NOERROR"* || "$out" == *"NXDOMAIN"* ]]; then
+    ok "$desc → $out"
+  else
+    bad "$desc → $out（探针没拿到有效应答，无法判断）"
+  fi
+}
+
 t "自定义 block"          "0.0.0.0"      udp 127.0.0.1:15353 ads.example.com
 t "子域继承"              "0.0.0.0"      udp 127.0.0.1:15353 x.ads.example.com
 t "白名单优先"            "NOERROR"      udp 127.0.0.1:15353 safe.ads.example.com
@@ -680,6 +701,12 @@ for i in range(40):
 lines.append("0.0.0.0 multimulti1.example multimulti2.example multimulti3.example")
 # @@ 放行例外（旧实现按单一 kind 整批写入，这类条目被静默丢弃）
 lines.append("@@||mixallow.example^")
+# 通配模式（旧实现解析阶段就返回 ErrSkip，整条静默消失）
+lines.append("||mixglob*.doubanio.example^")
+# hosts 指向真实 IP：意图是「指定优选 IP」，不是拦截。
+# 旧实现把它降级成 block，线上因此把 mtalk.google.com / dl.google.com
+# 拦成了 0.0.0.0（Google 推送、APK 下载全断）。这条必须被忽略而不是入库。
+lines.append("142.250.157.188 mixrealip.example")
 open(p, "w").write("\n".join(lines) + "\n")
 PYEOF
 MIXPORT=18993  # 与 SUBLIST_PORT(18991)、其它本地探针端口错开
@@ -714,11 +741,12 @@ else:
     print(0)
 ' 2>/dev/null)
 done
-# 60 hosts + 40 adblock + 3 多域名 + 1 放行 = 104 条，一条都不能少
-if [[ "${MIXCNT:-0}" -eq 104 ]]; then
-  ok "混合格式订阅全部入库（104 条：hosts 60 + adblock 40 + 一行多域名 3 + 放行 1）"
+# 60 hosts + 40 adblock + 3 多域名 + 1 放行 + 1 通配 = 105 条，一条都不能少；
+# 指向真实 IP 的 hosts 行必须被忽略，不能算进条目数。
+if [[ "${MIXCNT:-0}" -eq 105 ]]; then
+  ok "混合格式订阅全部入库（105 条：hosts 60 + adblock 40 + 一行多域名 3 + 放行 1 + 通配 1）"
 else
-  bad "混合格式订阅丢条目：期望 104，实际 ${MIXCNT:-0}（hosts/adblock/放行 有被丢的）"
+  bad "混合格式订阅条目数不对：期望 105，实际 ${MIXCNT:-0}（hosts/adblock/放行/通配 有被丢的，或真实 IP 行被误入库）"
 fi
 
 # 同一份订阅里的 @@ 放行条目必须真的落库并生效 —— 不能只进 block。
@@ -736,6 +764,59 @@ if echo "$MIXALLOW" | grep -q "'allow'"; then
 else
   bad "@@ 放行条目被丢弃（$MIXALLOW）—— 用户写了放行却仍会被拦"
 fi
+
+# 通配模式必须真的入库并生效（旧实现整条静默消失）。
+# 入库看 domain 列，不能看 kind 计数 —— 计数里根本不含域名。
+MIXGLOBDOM=$(python3 - "$RUN/data/aegis.db" "$MIXID" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+row = db.execute("select domain from sub_entries where sub_id=? and domain like 'mixglob%'", (sys.argv[2],)).fetchone()
+print(row[0] if row else "")
+PYEOF
+)
+if [[ -n "$MIXGLOBDOM" ]]; then
+  ok "订阅里的通配模式已落库（$MIXGLOBDOM）"
+else
+  bad "通配模式被丢弃 —— ||a*.example^ 这类规则永远不生效"
+fi
+# 这份订阅是 **admin 的私有订阅**，而明文 udp 探针不带身份、按来源 IP 归到
+# 注册用户头上 —— 用它验 admin 的订阅必然「一条都不生效」。必须用 admin 的
+# client_id 走 DoT 才落在同一个租户里。
+ADMCID=$(curl -fsS "$API/me" -H "Authorization: Bearer $ADMTOK" \
+  | grep -o '"client_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+echo "  admin client_id=$ADMCID（混合订阅属于他）"
+mixprobe() { $PROBE dot 127.0.0.1:18853 "$1" A --sni "$ADMCID.dns.e2e.local" --insecure 2>&1 | tail -1; }
+
+# 等快照重建（dnsd 靠 fsnotify/轮询感知订阅变化），先轮询到通配真的拦上，
+# 否则后面的「不该被拦」断言会在规则还没加载时白通过。
+MIXGLOK=0
+for _ in $(seq 1 25); do
+  if [[ "$(mixprobe mixglob1.doubanio.example)" == *"0.0.0.0"* ]]; then
+    MIXGLOK=1; break
+  fi
+  sleep 1
+done
+if [[ "$MIXGLOK" == "1" ]]; then
+  ok "订阅通配模式生效（mixglob1.doubanio.example → 0.0.0.0）"
+else
+  bad "通配模式入库了但没生效（mixglob1.doubanio.example 未被拦截）—— 检查 globSet 是否被接进 Match"
+fi
+# 通配不能连累同后缀的其它域名
+tn "订阅通配模式不误伤同后缀（doubanio.example）" dot 127.0.0.1:18853 doubanio.example --sni "$ADMCID.dns.e2e.local" --insecure
+# 指向真实 IP 的 hosts 行必须被忽略：既不入库，也不能被拦
+MIXREAL=$(python3 - "$RUN/data/aegis.db" "$MIXID" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+row = db.execute("select kind from sub_entries where sub_id=? and domain='mixrealip.example'", (sys.argv[2],)).fetchone()
+print(row[0] if row else "")
+PYEOF
+)
+if [[ -n "$MIXREAL" ]]; then
+  bad "指向真实 IP 的 hosts 行被当成了拦截规则（$MIXREAL）—— 这类行是「指定优选 IP」，拦了会打断正常服务"
+else
+  ok "指向真实 IP 的 hosts 行已被忽略（没有误判成拦截）"
+fi
+tn "真实 IP 的 hosts 行没有被拦成 0.0.0.0（mixrealip.example）" dot 127.0.0.1:18853 mixrealip.example --sni "$ADMCID.dns.e2e.local" --insecure
 [[ -n "$MIXID" ]] && curl -s -o /dev/null -X DELETE "$API/subscriptions/$MIXID" -H "Authorization: Bearer $ADMTOK"
 kill "$MIXPID" 2>/dev/null
 rm -rf "$MIXDIR"

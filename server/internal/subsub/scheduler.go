@@ -240,6 +240,16 @@ func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bo
 	if parsed.RewriteDowngraded > 0 {
 		status = fmt.Sprintf("ok: 含 %d 条改写降级为拦截", parsed.RewriteDowngraded)
 	}
+	// 「改写目标指向真实地址」的行被忽略时必须写进状态：这类行表达的是
+	// 加速（指定优选 IP），订阅层承载不了改写，忽略是对的；但不说明的话，
+	// 用户对比源里的条数会觉得「少了一些规则」。
+	if parsed.RewriteIgnored > 0 {
+		if status == "ok" {
+			status = fmt.Sprintf("ok: 忽略 %d 条指向固定 IP 的改写", parsed.RewriteIgnored)
+		} else {
+			status = fmt.Sprintf("%s，忽略 %d 条指向固定 IP 的改写", status, parsed.RewriteIgnored)
+		}
+	}
 	if err := m.st.UpdateSubStatus(ctx, sub.ID, fr.ETag, fr.LastModified, status, now, count, 0); err != nil {
 		m.log.Warn("更新订阅状态失败", "sub", sub.ID, "err", err)
 	}
@@ -255,6 +265,7 @@ func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bo
 		"entries", count,
 		"skipped", parsed.Skipped,
 		"rewrite_downgraded", parsed.RewriteDowngraded,
+		"rewrite_ignored", parsed.RewriteIgnored,
 		"format", parsed.Detected,
 		"truncated", fr.Truncated,
 		"took_ms", res.DurationMS,
