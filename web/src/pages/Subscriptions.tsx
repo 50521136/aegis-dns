@@ -27,6 +27,7 @@ import {
   updateSubscription,
 } from '@/api/subscriptions'
 import { errorMessage } from '@/api/client'
+import { getMe } from '@/api/me'
 import { lookupGlobalSubByURL } from '@/api/notifications'
 import type {
   ListType,
@@ -182,6 +183,12 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
   //
   // 这只是**提示**，真正的拦截在服务端（createSub 里再查一次）：
   // 光靠前端挡不住直接调 API，而重复添加会让用户的快照里同一份域名翻倍。
+  //
+  // **关掉全局层（use_global_rules=false）的用户不查也不提示** ——
+  // 全局订阅对他不生效，拦着他加等于让他连自己想订的列表都用不上。
+  // 服务端 createSub / global-lookup 用的是同一个判断，三处口径必须一致。
+  const meQuery = useQuery({ queryKey: ['me'], queryFn: getMe })
+  const globalLayerOn = meQuery.data?.use_global_rules !== false
   const [globalHit, setGlobalHit] = useState<{ name: string; entries?: number } | null>(null)
   const [checkingGlobal, setCheckingGlobal] = useState(false)
 
@@ -457,9 +464,11 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                 {...form.register('url', {
                   // 离开输入框时查一次全局订阅。放在 blur 而不是 onChange：
                   // 每敲一个字发一次请求既浪费也没意义（半截 URL 查不到东西）。
+                  // 关掉全局层时不查：这份列表对他只有自己订阅在生效，
+                  // 提示「已存在」会让他白白放弃。
                   onBlur: (e) => {
                     const v = String((e.target as HTMLInputElement).value || '').trim()
-                    if (!v || !/^https?:\/\//i.test(v)) {
+                    if (!v || !/^https?:\/\//i.test(v) || !globalLayerOn) {
                       setGlobalHit(null)
                       return
                     }
@@ -483,8 +492,9 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                 </p>
               )}
               {/* 命中就明确说清楚「已经生效了」并给出规模 ——
-                  只说「已存在」，用户会以为是自己列表里的重复项。 */}
-              {globalHit && (
+                  只说「已存在」，用户会以为是自己列表里的重复项。
+                  关掉全局层时不渲染：此时全局订阅对他不生效，提示会误导。 */}
+              {globalLayerOn && globalHit && (
                 <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/8 px-3 py-2">
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
                   <div className="min-w-0">
@@ -577,7 +587,8 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
               loading={saveMutation.isPending}
               // 命中全局订阅时禁用：服务端也会拒（409），
               // 这里先挡住是为了让用户不必提交一次才看到失败。
-              disabled={scope === 'user' && !!globalHit}
+              // 关掉全局层时不禁用 —— 那种情况下服务端也放行。
+              disabled={scope === 'user' && globalLayerOn && !!globalHit}
             >
                 {editing ? '保存' : '添加'}
               </Button>

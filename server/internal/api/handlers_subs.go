@@ -289,7 +289,13 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request, global bool) 
 	//
 	// 用归一键比对而不是字符串相等：用户抄的链接形态不同
 	// （GitHub raw / jsDelivr / github.com raw），内容却是同一份。
-	if !global {
+	//
+	// **但只对「叠加了全局层」的用户生效。** 关掉全局规则的租户（
+	// `use_global_rules = false`）根本收不到全局订阅，对他而言这份内容
+	// 与全局层没有任何重叠 —— 拦下来只会让他连自己想订的列表都加不进去，
+	// 而他加完之后确实是靠自己的订阅在拦。判断必须用**当前用户**的开关，
+	// 不能看全局订阅是否存在。
+	if !global && u.UseGlobalRules {
 		if hit := s.lookupGlobalSubByURL(r.Context(), sub.URL); hit != nil {
 			writeError(w, http.StatusConflict, CodeValidationFailed,
 				"全局订阅已存在此规则：「"+hit.Name+"」。它已对所有用户生效，无需重复添加。",

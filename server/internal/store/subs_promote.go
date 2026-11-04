@@ -30,9 +30,10 @@ type PromoteCandidate struct {
 //
 // 只从**用户私有订阅**里找：
 //   - 已经是全局订阅的不用再收（IsGlobal = 1）；
-//   - 同一用户自己建了两份等价链接不算「多人」，所以按用户去重后计数。
-//
-// 返回的每组的 UserIDs 已去重且有序，Subs 保留全部（含同一用户的重复）。
+//   - 同一用户自己建了两份等价链接不算「多人」，所以按用户去重后计数；
+//   - **关掉全局层的用户（use_global_rules = 0）不参与**：收录会把他的订阅
+//     删掉、内容转到全局层，而全局层对他不生效 —— 等于凭管理员一次整理
+//     把他的防护静默抹掉。这类用户既不计数，也不会被删订阅。
 func (s *Store) ListPromotionCandidates(ctx context.Context, minUsers int) ([]*PromoteCandidate, error) {
 	if minUsers < 2 {
 		minUsers = 2
@@ -40,7 +41,8 @@ func (s *Store) ListPromotionCandidates(ctx context.Context, minUsers int) ([]*P
 	rows, err := s.read.QueryContext(ctx, `
 		SELECT `+subCols+`
 		FROM subscriptions
-		WHERE is_global = 0 AND enabled = 1`)
+		WHERE is_global = 0 AND enabled = 1
+		  AND user_id IN (SELECT id FROM users WHERE use_global_rules = 1)`)
 	if err != nil {
 		return nil, fmt.Errorf("读取订阅失败: %w", err)
 	}

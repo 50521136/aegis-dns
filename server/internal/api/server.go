@@ -198,6 +198,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/subscriptions", s.handleListSubs)
 			r.Post("/subscriptions", s.handleCreateSub)
 			r.Get("/subscriptions/presets", s.handlePresets)
+			// 填链接时的「全局订阅已存在」预检。
+			//
+			// 必须挂在**用户**路由上：提示的实际受众是普通用户，而它原来只在
+			// /admin/ 下，普通用户调用直接 403、前端 catch 后静默不显示 ——
+			// 等于这个提示只对管理员有效，普通用户永远收不到。
+			r.Get("/subscriptions/global-lookup", s.handleGlobalSubByURL)
 			r.Post("/subscriptions/refresh-all", s.handleRefreshAllSubs)
 			r.Put("/subscriptions/{id}", s.handleUpdateSub)
 			r.Delete("/subscriptions/{id}", s.handleDeleteSub)
@@ -286,7 +292,7 @@ func (s *Server) Handler() http.Handler {
 				// 手动合并一组重复订阅（保留一条，其余删除）。
 				r.Post("/subscriptions/merge", s.handleAdminMergeDuplicateSubs)
 				// 按 URL 查这条内容是否已有全局订阅（用户添加前提示用）。
-				r.Get("/subscriptions/global-lookup", s.handleAdminGlobalSubByURL)
+				r.Get("/subscriptions/global-lookup", s.handleGlobalSubByURL)
 				r.Get("/ai/settings", s.handleAdminGetAISettings)
 				r.Put("/ai/settings", s.handleAdminUpdateAISettings)
 				// 用 1 次真实调用验证模型连通性，避免「保存了但一跑就失败」

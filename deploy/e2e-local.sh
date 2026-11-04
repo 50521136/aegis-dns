@@ -511,6 +511,48 @@ curl -s -X PUT "$API/me/preferences" -H "Authorization: Bearer $TOKEN" -H 'Conte
   -d '{"use_global_rules":false}' >/dev/null
 GL3=$(curl -fsS "$API/me/global-layer" -H "Authorization: Bearer $TOKEN")
 echo "$GL3" | grep -q '"has_rules":false' && ok "用户关闭全局层后不再提示" || bad "关闭全局层后仍在提示: $GL3"
+
+# ── 关闭全局层 → 不参与全局订阅查重（提示 + 拦截都要放行）──────────────
+# 关掉全局规则的租户根本收不到全局订阅，此时还按「全局已有此内容」回 409，
+# 等于让他连自己想订的列表都加不进去。三处口径（创建 409、提示接口、前端）必须一致。
+GDEDUP_URL="https://raw.githubusercontent.com/e2e/global-dedupe/main/list.txt"
+GDEDUP_SAME="https://cdn.jsdelivr.net/gh/e2e/global-dedupe@main/list.txt"
+GSUB=$(curl -s -X POST "$API/admin/subscriptions" -H "Authorization: Bearer $ADMTOK" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"e2e 全局查重源\",\"url\":\"$GDEDUP_URL\",\"list_type\":\"blocklist\",\"format\":\"auto\",\"enabled\":true}")
+GSUBID=$(echo "$GSUB" | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("id") or "")' 2>/dev/null)
+if [[ -n "$GSUBID" ]]; then
+  # 提示接口：关着全局层时必须 exists=false，并带上「为什么没查」
+  LK=$(curl -s "$API/subscriptions/global-lookup?url=$GDEDUP_SAME" -H "Authorization: Bearer $TOKEN")
+  echo "$LK" | grep -q '"exists":false' && ok "关闭全局层时提示接口返回 exists=false" \
+    || bad "关闭全局层时仍在提示全局订阅已存在: $(echo "$LK" | head -c 200)"
+  echo "$LK" | grep -q '"global_layer_off":true' && ok "关闭全局层时提示接口带 global_layer_off=true" \
+    || bad "缺少 global_layer_off 标记，排障时会以为接口漏查: $(echo "$LK" | head -c 200)"
+  # 创建接口：必须 201 放行
+  code=$(curl -s -o /tmp/e2e_gdedup.json -w '%{http_code}' -X POST "$API/subscriptions" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"关闭全局层后自建\",\"url\":\"$GDEDUP_SAME\",\"list_type\":\"blocklist\",\"format\":\"auto\",\"enabled\":false}")
+  [[ "$code" == "201" ]] && ok "关闭全局层时可添加与全局订阅等价的内容（201）" \
+    || bad "关闭全局层仍被全局查重拦住: $code $(head -c 200 /tmp/e2e_gdedup.json)"
+  MYGID=$(python3 -c 'import json;print((json.load(open("/tmp/e2e_gdedup.json")) or {}).get("id") or "")' 2>/dev/null)
+  [[ -n "$MYGID" ]] && curl -s -o /dev/null -X DELETE "$API/subscriptions/$MYGID" -H "Authorization: Bearer $TOKEN"
+
+  # 反过来：打开全局层后必须恢复拦截（否则等于把查重整个关掉了）
+  curl -s -X PUT "$API/me/preferences" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"use_global_rules":true}' >/dev/null
+  LK2=$(curl -s "$API/subscriptions/global-lookup?url=$GDEDUP_SAME" -H "Authorization: Bearer $TOKEN")
+  echo "$LK2" | grep -q '"exists":true' && ok "打开全局层后提示接口恢复 exists=true" \
+    || bad "打开全局层后没恢复提示: $(echo "$LK2" | head -c 200)"
+  code=$(curl -s -o /tmp/e2e_gdedup2.json -w '%{http_code}' -X POST "$API/subscriptions" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"开全局层后重复\",\"url\":\"$GDEDUP_SAME\",\"list_type\":\"blocklist\",\"format\":\"auto\",\"enabled\":false}")
+  [[ "$code" == "409" ]] && ok "打开全局层后重复添加被拒（409）" \
+    || bad "打开全局层后没有拦住重复添加: $code $(head -c 200 /tmp/e2e_gdedup2.json)"
+  curl -s -o /dev/null -X DELETE "$API/admin/subscriptions/$GSUBID" -H "Authorization: Bearer $ADMTOK"
+  rm -f /tmp/e2e_gdedup.json /tmp/e2e_gdedup2.json
+else
+  bad "建 e2e 全局查重源失败: $(echo "$GSUB" | head -c 200)"
+fi
+
 curl -s -X PUT "$API/me/preferences" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"use_global_rules":true}' >/dev/null
 curl -s -X DELETE "$API/admin/rules" -H "Authorization: Bearer $ADMTOK" \

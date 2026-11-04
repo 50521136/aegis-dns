@@ -90,7 +90,8 @@ export async function lookupGlobalSubByURL(url: string): Promise<{
   url?: string
   entries?: number
 }> {
-  const { data } = await api.get('/admin/subscriptions/global-lookup', {
+  // 走用户路由：这个提示的受众是普通用户，/admin/ 那条会 403。
+  const { data } = await api.get('/subscriptions/global-lookup', {
     params: { url },
   })
   return data

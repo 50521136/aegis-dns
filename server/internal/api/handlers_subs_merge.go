@@ -233,18 +233,38 @@ func (s *Server) finishMerge(ctx context.Context, res *store.MergeResult, total 
 		"sub", res.KeepID, "删除", len(res.RemovedSubs), "通知", notified)
 }
 
-// handleAdminGlobalSubByURL 按 URL 查这条内容是否已有全局订阅（需求 3）。
+// handleGlobalSubByURL 按 URL 查这条内容是否已有全局订阅（需求 3）。
 //
 // 用户在订阅页填链接时调这个接口，命中就提示「全局订阅已存在此规则」，
 // 避免他重复添加一份内容与全局层完全相同的私有订阅 ——
 // 那既占自己的订阅配额，也让订阅条目在他的快照里翻倍。
-func (s *Server) handleAdminGlobalSubByURL(w http.ResponseWriter, r *http.Request) {
+//
+// 同时挂在用户路由（/subscriptions/global-lookup）和管理员路由
+// （/admin/subscriptions/global-lookup）上：前者才是真正受众 ——
+// 这个提示以前只在 admin 下，普通用户调用 403、前端静默吞掉，
+// 等于只对管理员有效。
+//
+// **关掉全局层的调用者一律返回 exists=false。** 全局订阅对他不生效，
+// 提示「已存在、无需重复添加」只会让他放弃一份其实只有他自己在用的列表；
+// 创建接口那边同样按这个开关放行，两边口径必须一致，否则会出现
+// 「提示说不用加、但加了也不会被拒」的自相矛盾。
+func (s *Server) handleGlobalSubByURL(w http.ResponseWriter, r *http.Request) {
 	raw := r.URL.Query().Get("url")
 	if raw == "" {
 		writeError(w, http.StatusBadRequest, CodeValidationFailed, "缺少 url 参数", nil)
 		return
 	}
 	ctx := r.Context()
+
+	if u := currentUser(r); u != nil && !u.UseGlobalRules {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"exists": false,
+			// 明确告知「为什么没查」：前端据此不显示提示，
+			// 也让脚本/排障的人知道这不是漏查。
+			"global_layer_off": true,
+		})
+		return
+	}
 
 	key := subsub.CanonicalURL(raw)
 
