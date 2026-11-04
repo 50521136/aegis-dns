@@ -13,11 +13,11 @@ import (
 
 // fakeUpstream 是可编程的假上游：指定延迟、是否失败、返回什么 rcode。
 type fakeUpstream struct {
-	addr   string
-	delay  time.Duration
-	fail   bool
+	addr     string
+	delay    time.Duration
+	fail     bool
 	servfail bool
-	calls  atomic.Int64
+	calls    atomic.Int64
 }
 
 func (f *fakeUpstream) Address() string { return f.addr }

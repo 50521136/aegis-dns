@@ -13,15 +13,15 @@ func TestBucketOfBoundaries(t *testing.T) {
 		want int
 	}{
 		{0, 0},
-		{500 * time.Nanosecond, 0},   // <1µs
-		{1 * time.Microsecond, 1},    // 1µs  -> 桶1 [1,2)
-		{1500 * time.Nanosecond, 1},  // 1.5µs
-		{2 * time.Microsecond, 2},    // [2,4)
+		{500 * time.Nanosecond, 0},  // <1µs
+		{1 * time.Microsecond, 1},   // 1µs  -> 桶1 [1,2)
+		{1500 * time.Nanosecond, 1}, // 1.5µs
+		{2 * time.Microsecond, 2},   // [2,4)
 		{3 * time.Microsecond, 2},
-		{4 * time.Microsecond, 3},    // [4,8)
+		{4 * time.Microsecond, 3},     // [4,8)
 		{1000 * time.Microsecond, 10}, // 1000µs=2^10 附近
-		{6 * time.Millisecond, 13},   // 6000µs，2^12=4096, 2^13=8192
-		{64 * time.Millisecond, 16},  // 64000µs，2^15=32768, 2^16=65536
+		{6 * time.Millisecond, 13},    // 6000µs，2^12=4096, 2^13=8192
+		{64 * time.Millisecond, 16},   // 64000µs，2^15=32768, 2^16=65536
 	}
 	for _, c := range cases {
 		got := bucketOf(c.d)

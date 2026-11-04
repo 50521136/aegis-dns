@@ -532,11 +532,12 @@ func isAssetLikePath(rel string) bool {
 //
 // 不加白名单会直接把验证组件打死，而报错只是前端一句「极验脚本加载失败」，
 // 从现象上完全看不出是 CSP 干的：
-//   · script-src 少 static.geetest.com   → gt4.js 加载被拦
-//   · connect-src 少 api.geetest.com     → 初始化/校验 XHR 被拦
-//   · frame-src 缺省回落到 default-src   → 验证弹窗的 iframe 被拦
-//   · img-src 少 static.geetest.com      → 拼图题图片出不来
-//   · style-src 少 static.geetest.com    → 弹窗样式丢失
+//
+//	· script-src 少 static.geetest.com   → gt4.js 加载被拦
+//	· connect-src 少 api.geetest.com     → 初始化/校验 XHR 被拦
+//	· frame-src 缺省回落到 default-src   → 验证弹窗的 iframe 被拦
+//	· img-src 少 static.geetest.com      → 拼图题图片出不来
+//	· style-src 少 static.geetest.com    → 弹窗样式丢失
 //
 // 这里不按「验证开关是否开启」动态裁剪：CSP 是响应头，逐请求读配置只会让
 // 行为和后台开关产生隐式耦合（开关一开就坏，且极难定位）。固定放行这一个

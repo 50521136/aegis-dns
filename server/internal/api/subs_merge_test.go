@@ -176,7 +176,7 @@ func TestGlobalSubLookupBlocksDuplicate(t *testing.T) {
 
 	globalSub := &model.Subscription{
 		UserID: u1, ListType: model.ListBlock, Name: "AdGuard DNS Filter",
-		URL: "https://raw.githubusercontent.com/AdguardTeam/Filters/main/f.txt",
+		URL:    "https://raw.githubusercontent.com/AdguardTeam/Filters/main/f.txt",
 		Format: "auto", Enabled: true, IsGlobal: true, LastCount: 12345,
 	}
 	if err := s.store.CreateSub(ctx, globalSub); err != nil {

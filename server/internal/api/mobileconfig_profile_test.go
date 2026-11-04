@@ -19,11 +19,11 @@ import (
 
 func settingsWith(doh, dot, profile, profileDoH, profileDoT bool) *model.GlobalSettings {
 	return &model.GlobalSettings{
-		EnableDoH:      doh,
-		EnableDoT:      dot,
-		EnableProfile:  profile,
-		ProfileDoH:     profileDoH,
-		ProfileDoT:     profileDoT,
+		EnableDoH:     doh,
+		EnableDoT:     dot,
+		EnableProfile: profile,
+		ProfileDoH:    profileDoH,
+		ProfileDoT:    profileDoT,
 	}
 }
 

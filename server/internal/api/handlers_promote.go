@@ -218,12 +218,12 @@ func (s *Server) handleAdminPromotionPreview(w http.ResponseWriter, r *http.Requ
 			users = append(users, name)
 		}
 		items = append(items, map[string]any{
-			"urls":      c.URLs,
-			"users":     users,
+			"urls":       c.URLs,
+			"users":      users,
 			"user_count": len(c.UserIDs),
-			"subs":      len(c.Subs),
-			"list_type": c.ListType,
-			"threshold": promoteThreshold,
+			"subs":       len(c.Subs),
+			"list_type":  c.ListType,
+			"threshold":  promoteThreshold,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

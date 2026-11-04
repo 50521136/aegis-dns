@@ -51,10 +51,10 @@ func TestSetMatchSuffix(t *testing.T) {
 		{"example.com", true},
 		{"www.example.com", true},
 		{"a.b.c.example.com", true},
-		{"WWW.EXAMPLE.COM", true},   // 大小写不敏感
-		{"www.example.com.", true},  // 尾点
-		{"notexample.com", false},   // 不能误匹配
-		{"example.com.cn", false},   // 不能误匹配
+		{"WWW.EXAMPLE.COM", true},  // 大小写不敏感
+		{"www.example.com.", true}, // 尾点
+		{"notexample.com", false},  // 不能误匹配
+		{"example.com.cn", false},  // 不能误匹配
 		{"google.com", true},
 		{"www.qq.com", false},
 		{"", false},
