@@ -703,6 +703,9 @@ lines.append("0.0.0.0 multimulti1.example multimulti2.example multimulti3.exampl
 lines.append("@@||mixallow.example^")
 # 通配模式（旧实现解析阶段就返回 ErrSkip，整条静默消失）
 lines.append("||mixglob*.doubanio.example^")
+# 通配符紧跟在 * 后面带连字符：分桶键不能取完整字面后缀（`-ad-sign.x.com`
+# 不是任何标签边界后缀），线上实测这类模式会整片漏拦。
+lines.append("||mixhyph*-ad.example^")
 # hosts 指向真实 IP：意图是「指定优选 IP」，不是拦截。
 # 旧实现把它降级成 block，线上因此把 mtalk.google.com / dl.google.com
 # 拦成了 0.0.0.0（Google 推送、APK 下载全断）。这条必须被忽略而不是入库。
@@ -741,12 +744,12 @@ else:
     print(0)
 ' 2>/dev/null)
 done
-# 60 hosts + 40 adblock + 3 多域名 + 1 放行 + 1 通配 = 105 条，一条都不能少；
+# 60 hosts + 40 adblock + 3 多域名 + 1 放行 + 2 通配 = 106 条，一条都不能少；
 # 指向真实 IP 的 hosts 行必须被忽略，不能算进条目数。
-if [[ "${MIXCNT:-0}" -eq 105 ]]; then
-  ok "混合格式订阅全部入库（105 条：hosts 60 + adblock 40 + 一行多域名 3 + 放行 1 + 通配 1）"
+if [[ "${MIXCNT:-0}" -eq 106 ]]; then
+  ok "混合格式订阅全部入库（106 条：hosts 60 + adblock 40 + 一行多域名 3 + 放行 1 + 通配 2）"
 else
-  bad "混合格式订阅条目数不对：期望 105，实际 ${MIXCNT:-0}（hosts/adblock/放行/通配 有被丢的，或真实 IP 行被误入库）"
+  bad "混合格式订阅条目数不对：期望 106，实际 ${MIXCNT:-0}（hosts/adblock/放行/通配 有被丢的，或真实 IP 行被误入库）"
 fi
 
 # 同一份订阅里的 @@ 放行条目必须真的落库并生效 —— 不能只进 block。
@@ -803,6 +806,17 @@ else
 fi
 # 通配不能连累同后缀的其它域名
 tn "订阅通配模式不误伤同后缀（doubanio.example）" dot 127.0.0.1:18853 doubanio.example --sni "$ADMCID.dns.e2e.local" --insecure
+# * 后面紧跟连字符的写法（线上漏拦过）
+MIXHYPH=0
+for _ in $(seq 1 25); do
+  if [[ "$(mixprobe mixhyph1-ad.example)" == *"0.0.0.0"* ]]; then MIXHYPH=1; break; fi
+  sleep 1
+done
+if [[ "$MIXHYPH" == "1" ]]; then
+  ok "连字符通配生效（mixhyph1-ad.example → 0.0.0.0）"
+else
+  bad "连字符通配没生效（mixhyph1-ad.example 未被拦截）—— 检查 globSet 分桶键"
+fi
 # 指向真实 IP 的 hosts 行必须被忽略：既不入库，也不能被拦
 MIXREAL=$(python3 - "$RUN/data/aegis.db" "$MIXID" <<'PYEOF'
 import sqlite3, sys

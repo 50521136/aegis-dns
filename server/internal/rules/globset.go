@@ -84,8 +84,8 @@ func (s *globSet) add(patterns []string) {
 			continue
 		}
 		p := newGlobPattern(norm)
-		key := strings.TrimPrefix(p.tail, ".")
-		if key == "" || strings.Contains(key, "*") {
+		key := globBucketKey(p.tail)
+		if key == "" {
 			// 最后一个 * 之后没有字面量（`missav.*`）：没有可用桶键。
 			s.wildSuffix = append(s.wildSuffix, p)
 		} else {
@@ -96,6 +96,36 @@ func (s *globSet) add(patterns []string) {
 		}
 		s.size++
 	}
+}
+
+// globBucketKey 从模式最后一个 * 之后的字面后缀里取分桶键。
+//
+// 键必须是**某个标签边界后缀**，否则查询按点遍历主机名后缀时永远对不上。
+// 字面后缀可能从标签中间开始（`*-ad-sign.byteimg.com` 的 tail 是
+// `-ad-sign.byteimg.com`），所以先丢掉首段残缺标签，再取最后两段：
+//
+//	.doubanio.example      → doubanio.example
+//	-ad-sign.byteimg.com   → byteimg.com
+//	-ad.adbkwai.com        → adbkwai.com
+//	.com                   → com
+//	.*                     → ""（交给 wildSuffix）
+//
+// 线上实测：不丢残缺首段时，`*-ad-sign.byteimg.com`、
+// `*-applog.fqnovel.com`、`*-ad.wtzw.com` 这几条整片漏拦。
+func globBucketKey(tail string) string {
+	key := strings.TrimPrefix(tail, ".")
+	if key == "" || strings.Contains(key, "*") {
+		return ""
+	}
+	segs := strings.Split(key, ".")
+	// 首段以 - 开头说明它是标签的后半截（标签被 * 从中间切开），不能用。
+	if len(segs) > 1 && strings.HasPrefix(segs[0], "-") {
+		segs = segs[1:]
+	}
+	if len(segs) >= 2 {
+		return segs[len(segs)-2] + "." + segs[len(segs)-1]
+	}
+	return segs[0]
 }
 
 // finish 保留给与 suffixSet 一致的调用点：globSet 不需要排序。

@@ -145,6 +145,42 @@ func TestGlobSetWildcardTLD(t *testing.T) {
 	}
 }
 
+// TestGlobSetHyphenAfterStar 验证 `*` 后面紧跟连字符的写法也能命中。
+//
+// 线上实测漏拦：`*-ad-sign.byteimg.com`、`*-applog.fqnovel.com`、
+// `*-ad.wtzw.com` 这几条在真实订阅里存在，但 test-ad-sign.byteimg.com
+// 照样解析出去。根因是分桶键取的是「最后一个 * 之后的完整字面后缀」
+// （`-ad-sign.byteimg.com`），而查询按标签边界遍历主机名后缀
+// （`ad-sign.byteimg.com`、`byteimg.com`…），键永远对不上。
+func TestGlobSetHyphenAfterStar(t *testing.T) {
+	s := newGlobSet()
+	s.add([]string{"*-ad-sign.byteimg.com", "*-applog.fqnovel.com", "*-ad.wtzw.com"})
+	s.finish()
+
+	hits := []string{
+		"test-ad-sign.byteimg.com",
+		"a-ad-sign.byteimg.com",
+		"x-applog.fqnovel.com",
+		"cdn-ad.wtzw.com",
+	}
+	for _, h := range hits {
+		if ok, _, _ := s.lookup(h, dns.TypeA); !ok {
+			t.Errorf("%q 应命中通配模式", h)
+		}
+	}
+	misses := []string{
+		"brand.byteimg.com",
+		"ad-sign.byteimg.com",
+		"applog.fqnovel.com",
+		"wtzw.com",
+	}
+	for _, h := range misses {
+		if ok, _, _ := s.lookup(h, dns.TypeA); ok {
+			t.Errorf("%q 不应命中，实际命中", h)
+		}
+	}
+}
+
 // BenchmarkGlobSetLookupMiss 衡量「未命中」这条热路径的开销。
 //
 // 未命中是最常见的情况：拦截规则命中的查询在更早的层就返回了，
