@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,11 +148,22 @@ func (m *Manager) refresh(ctx context.Context, sub *model.Subscription, force bo
 
 	if fr.NotModified {
 		res.NotModified = true
-		res.LastStatus = "ok"
+		// 304 时**保留原有的 ok 后缀**，不要一律写成 "ok"。
+		//
+		// 状态里的「忽略 N 条指向固定 IP 的改写」「含 N 条改写降级为拦截」
+		// 描述的是这份源的内容特征，内容没变这些特征就没变。写成裸 "ok"
+		// 会把它抹掉 —— 实测升级解析器后强制刷新，304 一覆盖，
+		// 管理员再也看不出这份源里还有 147 行改写被忽略。
+		// 原状态是 error（上次失败）时才需要恢复成 ok。
+		status := sub.LastStatus
+		if status == "" || strings.HasPrefix(status, "error") || strings.HasPrefix(status, model.StatusPending) {
+			status = "ok"
+		}
+		res.LastStatus = status
 		res.LastCount = sub.LastCount
 		res.FetchedAt = time.Now().Unix()
 		res.DurationMS = time.Since(start).Milliseconds()
-		if uerr := m.st.UpdateSubStatus(ctx, sub.ID, pick(fr.ETag, sub.LastETag), pick(fr.LastModified, sub.LastModified), "ok", res.FetchedAt, sub.LastCount, 0); uerr != nil {
+		if uerr := m.st.UpdateSubStatus(ctx, sub.ID, pick(fr.ETag, sub.LastETag), pick(fr.LastModified, sub.LastModified), status, res.FetchedAt, sub.LastCount, 0); uerr != nil {
 			m.log.Warn("更新订阅状态失败", "sub", sub.ID, "err", uerr)
 		}
 		m.log.Debug("订阅未变更（304）", "sub", sub.ID)

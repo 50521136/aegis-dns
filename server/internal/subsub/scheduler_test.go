@@ -128,6 +128,45 @@ func TestRefreshNotifiesOnChangedOnceAndSkips304(t *testing.T) {
 	if n := len(calls()); n != 1 {
 		t.Fatalf("304 未变更不该触发快照重建，onChanged 调用数从 1 变成了 %d", n)
 	}
+
+	// 304 必须保留状态里的「忽略 N 条…」后缀，不能一律写成裸 "ok"。
+	//
+	// 这个后缀描述的是源的内容特征，内容没变它就没变。写成 "ok" 会把它抹掉 ——
+	// 实测升级解析器后强制刷新，304 一覆盖，管理员再也看不出这份源里
+	// 还有 147 行改写被忽略。
+	const keepStatus = "ok: 忽略 147 条指向固定 IP 的改写"
+	if err := st.SetSubStatus(ctx, sub.ID, keepStatus); err != nil {
+		t.Fatalf("写入状态失败: %v", err)
+	}
+	again, err := st.GetSub(ctx, u.ID, sub.ID)
+	if err != nil {
+		t.Fatalf("重读订阅失败: %v", err)
+	}
+	res3, err := m.Refresh(ctx, again)
+	if err != nil {
+		t.Fatalf("三次刷新失败: %v", err)
+	}
+	if !res3.NotModified {
+		t.Fatalf("前置条件不成立：三次刷新应当是 304，实际 status=%q", res3.LastStatus)
+	}
+	if res3.LastStatus != keepStatus {
+		t.Fatalf("304 不该覆盖状态后缀：期望 %q，实际 %q", keepStatus, res3.LastStatus)
+	}
+	// 但上次是 error 时必须恢复成 ok，否则界面会一直显示失败。
+	if err := st.SetSubStatus(ctx, sub.ID, "error: 拉取超时"); err != nil {
+		t.Fatalf("写入状态失败: %v", err)
+	}
+	failed, err := st.GetSub(ctx, u.ID, sub.ID)
+	if err != nil {
+		t.Fatalf("重读订阅失败: %v", err)
+	}
+	res4, err := m.Refresh(ctx, failed)
+	if err != nil {
+		t.Fatalf("四次刷新失败: %v", err)
+	}
+	if res4.LastStatus != "ok" {
+		t.Fatalf("上次是 error 时 304 应恢复成 ok，实际 %q", res4.LastStatus)
+	}
 }
 
 func TestRefreshNotifiesGlobalScopeForGlobalSub(t *testing.T) {
