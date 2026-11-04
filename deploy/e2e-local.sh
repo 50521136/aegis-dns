@@ -330,6 +330,16 @@ add_rule '{"kind":"block","pattern":"||ads.example.com^","value":"","qtypes":[]}
 add_rule '{"kind":"allow","pattern":"||safe.ads.example.com^","value":"","qtypes":[]}'
 add_rule '{"kind":"rewrite_a","pattern":"||nas.home^","value":"192.168.1.10","qtypes":["A"]}'
 add_rule '{"kind":"block","pattern":"||onlyaaaa.test^","value":"","qtypes":["AAAA"]}'
+# hosts 写法（用户从 hosts 文件抄一行填进规则框）必须能建：
+# 旧实现直接拿整串去 normalizeDomain，报「含非法字符 " "」，看起来像格式不支持。
+add_rule '{"kind":"block","pattern":"127.0.0.1 hostline.test","value":"","qtypes":[]}'
+add_rule '{"kind":"block","pattern":"0.0.0.0 hostline2.test","value":"","qtypes":[]}'
+# 反向：hosts 行里的 IP 若不是黑洞地址，语义是改写，必须报错而不是静默当成拦截
+# （静默当成拦截会把一个加速条目变成封锁 —— 线上 mtalk.google.com 就是这么被拦死的）。
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/rules" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"kind":"block","pattern":"142.250.157.188 mtalk.google.com","value":""}')
+[[ "$code" == "400" ]] && ok "hosts 行里非黑洞 IP 被拒绝（400）" || bad "hosts 行里非黑洞 IP 没拦住：$code"
+
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/rules" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"kind":"block","pattern":"||^","value":""}')
 [[ "$code" == "400" ]] && ok "非法规则被拒绝（400）" || bad "非法规则未被拒绝：$code"
@@ -423,6 +433,9 @@ t "dnstype 限定拦 AAAA"   "0000:0000"    udp 127.0.0.1:15353 onlyaaaa.test AA
 t "dnstype 限定放行 A"    "NXDOMAIN"     udp 127.0.0.1:15353 onlyaaaa.test A
 t "导入规则生效"          "0.0.0.0"      udp 127.0.0.1:15353 import1.test
 t "导入 hosts 行"         "0.0.0.0"      udp 127.0.0.1:15353 import2.test
+# 规则框里直接填 hosts 写法（127.0.0.1 / 0.0.0.0 前缀）必须真的生效
+t "规则框 hosts 写法(127)" "0.0.0.0"      udp 127.0.0.1:15353 hostline.test
+t "规则框 hosts 写法(0)"   "0.0.0.0"      udp 127.0.0.1:15353 hostline2.test
 t "正常域名转发"          "NOERROR"      udp 127.0.0.1:15353 example.com
 t "不存在的域名"          "EMPTY"        udp 127.0.0.1:15353 nonexistent-xyz-12345.test
 
@@ -752,6 +765,12 @@ lines.append("||mixhyph*-ad.example^")
 # 旧实现把它降级成 block，线上因此把 mtalk.google.com / dl.google.com
 # 拦成了 0.0.0.0（Google 推送、APK 下载全断）。这条必须被忽略而不是入库。
 lines.append("142.250.157.188 mixrealip.example")
+# 标签中间带下划线：真实域名（upload_data.qq.com 这类），必须入库。
+lines.append("127.0.0.1 mix_under_score.example")
+# 以 _ 开头是服务记录 / CSS 片段，必须丢弃（不计入条目数）。
+lines.append("0.0.0.0 _dmarc.mix.example")
+# hosts 行里的通配：旧实现走 normalizeDomain 必然失败、整行静默消失。
+lines.append("0.0.0.0 mixglobhost*.example")
 open(p, "w").write("\n".join(lines) + "\n")
 PYEOF
 MIXPORT=18993  # 与 SUBLIST_PORT(18991)、其它本地探针端口错开
@@ -786,12 +805,12 @@ else:
     print(0)
 ' 2>/dev/null)
 done
-# 60 hosts + 40 adblock + 3 多域名 + 1 放行 + 2 通配 = 106 条，一条都不能少；
-# 指向真实 IP 的 hosts 行必须被忽略，不能算进条目数。
-if [[ "${MIXCNT:-0}" -eq 106 ]]; then
-  ok "混合格式订阅全部入库（106 条：hosts 60 + adblock 40 + 一行多域名 3 + 放行 1 + 通配 2）"
+# 60 hosts + 40 adblock + 3 多域名 + 1 放行 + 3 通配（含 1 条 hosts 通配）
+# + 1 下划线域名 = 108 条。真实 IP 行与 `_` 开头的那行必须被排除，不计入。
+if [[ "${MIXCNT:-0}" -eq 108 ]]; then
+  ok "混合格式订阅全部入库（108 条：hosts 60 + adblock 40 + 多域名 3 + 放行 1 + 通配 3 + 下划线 1）"
 else
-  bad "混合格式订阅条目数不对：期望 106，实际 ${MIXCNT:-0}（hosts/adblock/放行/通配 有被丢的，或真实 IP 行被误入库）"
+  bad "混合格式订阅条目数不对：期望 108，实际 ${MIXCNT:-0}（hosts/adblock/放行/通配/下划线 有被丢的，或真实 IP / _开头 的行被误入库）"
 fi
 
 # 同一份订阅里的 @@ 放行条目必须真的落库并生效 —— 不能只进 block。
@@ -859,6 +878,22 @@ if [[ "$MIXHYPH" == "1" ]]; then
 else
   bad "连字符通配没生效（mixhyph1-ad.example 未被拦截）—— 检查 globSet 分桶键"
 fi
+# hosts 行里的通配（0.0.0.0 mixglobhost*.example）必须生效
+MIXHG=0
+for _ in $(seq 1 25); do
+  if [[ "$(mixprobe mixglobhost1.example)" == *"0.0.0.0"* ]]; then MIXHG=1; break; fi
+  sleep 1
+done
+[[ "$MIXHG" == "1" ]] && ok "hosts 行里的通配生效（mixglobhost1.example → 0.0.0.0）" \
+  || bad "hosts 行里的通配没生效（mixglobhost1.example 未被拦截）"
+# 下划线域名必须被拦（真实域名，不是 CSS 片段）
+MIXUS=0
+for _ in $(seq 1 25); do
+  if [[ "$(mixprobe mix_under_score.example)" == *"0.0.0.0"* ]]; then MIXUS=1; break; fi
+  sleep 1
+done
+[[ "$MIXUS" == "1" ]] && ok "标签中间带下划线的域名生效（mix_under_score.example → 0.0.0.0）" \
+  || bad "下划线域名没生效（mix_under_score.example 未被拦截）—— 检查 plausibleDomain"
 # 指向真实 IP 的 hosts 行必须被忽略：既不入库，也不能被拦
 MIXREAL=$(python3 - "$RUN/data/aegis.db" "$MIXID" <<'PYEOF'
 import sqlite3, sys

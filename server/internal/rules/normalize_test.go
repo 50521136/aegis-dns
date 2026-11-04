@@ -18,7 +18,12 @@ func TestNormalizePatternConverges(t *testing.T) {
 		{"@@||*.example.com^", "*.example.com"},
 		{"||*.example.com^", "*.example.com"},
 		{"*.example.com", "*.example.com"},
-		{"0.0.0.0 ad.example.com", ""}, // hosts 行不是 NormalizePattern 的输入
+		// hosts 行现在会被归一成域名：用户从 hosts 文件抄一行填进规则框是最
+		// 常见的动作，旧行为是报「含非法字符 " "」，看起来像格式不支持。
+		// 只接受黑洞 IP，真实 IP 仍要报错（那是改写语义）——见下一条。
+		{"0.0.0.0 ad.example.com", "ad.example.com"},
+		{"127.0.0.1 ad.example.com", "ad.example.com"},
+		{"142.250.157.188 mtalk.google.com", ""}, // 真实 IP 不是黑洞地址，必须报错
 	}
 	for _, c := range cases {
 		got, err := NormalizePattern(c.in)

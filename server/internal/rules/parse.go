@@ -140,6 +140,18 @@ func parseLineAll(raw string, allowGlob bool) ([]*Parsed, error) {
 			if strings.HasPrefix(f, "#") {
 				break
 			}
+			// hosts 行里也会出现通配（`0.0.0.0 log*.aliyuncs.com`、
+			// `0.0.0.0 *.bjmantis.net`）。旧实现一律走 normalizeDomain，
+			// 含 * 的必然报错然后被 `continue` 掉 —— 整行静默消失。
+			// 订阅层有 globSet 能匹配，所以按入口决定保留还是跳过。
+			if strings.Contains(f, "*") && allowGlob {
+				g, err := normalizeGlobDomain(f)
+				if err != nil {
+					continue
+				}
+				out = append(out, &Parsed{Kind: kind, Domain: g, Glob: true, Value: value})
+				continue
+			}
 			domain, err := normalizeDomain(f)
 			if err != nil {
 				// 单个域名非法不该让整行失败：一行里可能有合法域名。

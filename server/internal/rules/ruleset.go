@@ -237,6 +237,38 @@ func splitPatternFull(pattern string) (string, bool, bool, error) {
 	}
 	p = strings.TrimPrefix(p, "@@")
 
+	// hosts 写法（`127.0.0.1 ads.example.com`、`0.0.0.0 ads.example.com`）：
+	// 用户从 hosts 文件抄一行过来填进规则框是最常见的动作，而旧实现直接
+	// 拿整串去 normalizeDomain，报「含非法字符 " "」—— 看起来像格式不支持。
+	//
+	// 只接受**黑洞 IP**：`0.0.0.0` / `::` 是标准拦截写法，`127.0.0.1` 在
+	// hosts 语境下也是「拦到本地」。其它 IP 是「指到某个地址」，语义是改写，
+	// 与规则类型无关，这里必须报错让他改用改写类型 —— 静默当成拦截会把
+	// 一个加速条目变成封锁。
+	if fields := strings.Fields(p); len(fields) >= 2 && net.ParseIP(fields[0]) != nil {
+		ip := net.ParseIP(fields[0])
+		if !ip.IsUnspecified() && !ip.IsLoopback() && !ip.Equal(net.IPv4bcast) {
+			return "", false, false, fmt.Errorf(
+				"hosts 行里的 IP %q 不是黑洞地址：要指到该 IP 请用改写类型并填目标值", fields[0])
+		}
+		// 截掉行尾的 `# 注释`。
+		rest := fields[1:]
+		for i, f := range rest {
+			if strings.HasPrefix(f, "#") {
+				rest = rest[:i]
+				break
+			}
+		}
+		if len(rest) == 0 {
+			return "", false, false, fmt.Errorf("hosts 行里没有域名: %q", pattern)
+		}
+		if len(rest) > 1 {
+			return "", false, false, fmt.Errorf(
+				"一行含 %d 个域名，规则框只能填一个；批量添加请用「导入规则」", len(rest))
+		}
+		p = rest[0]
+	}
+
 	exactOnly := false
 	switch {
 	case strings.HasPrefix(p, "||"):

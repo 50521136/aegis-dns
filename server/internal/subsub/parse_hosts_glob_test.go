@@ -126,3 +126,41 @@ func TestParseRejectsDangerousWildcard(t *testing.T) {
 		t.Fatalf("应只保留 safe.example.com 与 at*.com，实际 %+v", res.Entries)
 	}
 }
+
+// TestParseKeepsUnderscoreDomains 验证标签中间带下划线的域名能入库。
+//
+// 公共 hosts 列表里大量出现 `upload_data.qq.com`、`aphone_pv_log.kltb.com.cn`、
+// `1980_s.gw.irs03.com` 这类真实域名（虽然不符合 RFC 主机名规范，但确实在解析）。
+// 旧实现把它们当 CSS 片段一律丢掉 —— 实测一份源 22 条因此整行消失。
+// 但以 `_` 开头的标签是服务记录 / CSS 片段（`_dmarc.qq.com`、`_300x250.js`），
+// 继续拒绝。
+func TestParseKeepsUnderscoreDomains(t *testing.T) {
+	content := "127.0.0.1 upload_data.qq.com\n" +
+		"127.0.0.1 aphone_pv_log.kltb.com.cn\n" +
+		"0.0.0.0 1980_s.gw.irs03.com\n" +
+		"127.0.0.1 _dmarc.qq.com\n" +
+		"0.0.0.0 _300x250.js\n"
+
+	res, err := Parse([]byte(content), FormatHosts, "blocklist")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range res.Entries {
+		got[e.Domain] = true
+	}
+	for _, want := range []string{
+		"upload_data.qq.com",
+		"aphone_pv_log.kltb.com.cn",
+		"1980_s.gw.irs03.com",
+	} {
+		if !got[want] {
+			t.Errorf("%q 应入库（下划线在标签中间是真域名）", want)
+		}
+	}
+	for _, bad := range []string{"_dmarc.qq.com", "_300x250.js"} {
+		if got[bad] {
+			t.Errorf("%q 不应入库（以 _ 开头是服务记录/CSS 片段）", bad)
+		}
+	}
+}

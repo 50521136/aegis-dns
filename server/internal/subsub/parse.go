@@ -316,7 +316,12 @@ func plausibleGlob(d string) bool {
 		if l == "" || len(l) > 63 {
 			return false
 		}
-		if strings.ContainsAny(l, "_ 	/\\:#?[]{}()<>@!$%^&'\"") {
+		// 与 plausibleDomain 同一口径：允许标签中间的下划线（真域名），
+		// 拒绝以 `_` 开头的标签（服务记录 / CSS 片段）。
+		if strings.ContainsAny(l, " 	/\\:#?[]{}()<>@!$%^&'\"") {
+			return false
+		}
+		if strings.HasPrefix(l, "_") {
 			return false
 		}
 	}
@@ -405,8 +410,15 @@ func plausibleDomain(d string) bool {
 		if l == "" || len(l) > 63 {
 			return false
 		}
-		// 下划线是服务记录（_dmarc）或 CSS 片段（_ad_300），不是域名
-		if strings.ContainsAny(l, "_ \t/\\:*?#[]{}()<>@!$%^&'\"") {
+		// 下划线：**标签中间的下划线是真域名**（`upload_data.qq.com`、
+		// `aphone_pv_log.kltb.com.cn`、`1980_s.gw.irs03.com` 这些在公共
+		// hosts 列表里大量存在，实测一份源里 22 条因此被整行丢掉）。
+		// 但**以 `_` 开头的标签是服务记录或 CSS 片段**（`_dmarc.qq.com`、
+		// `_300x250.js`），拦它们没有意义，继续拒绝。
+		if strings.ContainsAny(l, " 	/\\:*?#[]{}()<>@!$%^&'\"") {
+			return false
+		}
+		if strings.HasPrefix(l, "_") {
 			return false
 		}
 		if l[0] == '-' || l[len(l)-1] == '-' {
