@@ -38,6 +38,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
 import { StatCard } from '@/components/StatCard'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -88,6 +89,8 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
   // 「显示全部」展开到接口返回的全部租户。数据层已经取满 200 条，
   // 截断只发生在渲染这一步，不会悄悄丢数据。
   const [trafficExpanded, setTrafficExpanded] = useState(false)
+  // 清缓存是全站级破坏操作（所有租户命中率归零、一起回源），必须二次确认。
+  const [flushOpen, setFlushOpen] = useState(false)
 
   // 清除缓存：管理员清全站，普通用户只清自己那份
   const flush = useMutation({
@@ -251,12 +254,12 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-6 px-1.5 text-[11px] text-muted-foreground hover:text-danger"
+                      className="h-10 min-w-[7.5rem] px-3 text-xs text-muted-foreground hover:text-danger"
                       loading={flush.isPending}
-                      onClick={() => flush.mutate()}
+                      onClick={() => setFlushOpen(true)}
                       title={isAdmin ? '清空全站解析缓存' : '清空你自己的解析缓存'}
                     >
-                      <Eraser className="size-3" />
+                      <Eraser className="size-3.5" />
                       {isAdmin ? '清除全站缓存' : '清除我的缓存'}
                     </Button>
                   }
@@ -583,6 +586,24 @@ export default function Dashboard({ scope = 'user' }: { scope?: Scope }) {
           desc="管理外部规则列表与自动更新"
         />
       </div>
+
+      {/* 清除缓存前二次确认：管理员是全站级操作，会打断所有租户的命中缓存。 */}
+      <ConfirmDialog
+        open={flushOpen}
+        onOpenChange={setFlushOpen}
+        title={isAdmin ? '清除全站解析缓存？' : '清除我的解析缓存？'}
+        description={
+          isAdmin
+            ? '所有租户的 DNS 缓存会被清空，之后的查询会重新回源，短时间内延迟上升、命中率归零。规则与配置不受影响。'
+            : '你自己的 DNS 缓存会被清空，之后的查询会重新回源。其他租户不受影响。'
+        }
+        destructive
+        confirmText="确认清除"
+        loading={flush.isPending}
+        onConfirm={() => {
+          flush.mutate(undefined, { onSettled: () => setFlushOpen(false) })
+        }}
+      />
     </div>
   )
 }

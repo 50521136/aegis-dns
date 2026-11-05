@@ -161,6 +161,9 @@ export interface Subscription {
   last_count: number
   last_fetched: number | string | null
   last_status: string
+  /** 连续刷新失败次数；成功后清零。列表里 >=3 次要标红，否则一条
+   *  已经 404 四天的源看起来和正常的没区别（后端 subToJSON 一直有这列）。 */
+  fail_count: number
   created_at: string
   /**
    * 该订阅自己的拉取超时（秒），0 表示跟随全局默认。

@@ -105,6 +105,10 @@ export function CaptchaSettingsCard() {
   // 参数不全时的真实后果要说出来：开关看着是开的，实际一个入口都没验。
   const misconfigured = enabled && (captchaID.trim() === '' || !keySet)
   const sceneOn = Object.values(scenes).filter(Boolean).length
+  // 总开关关着时，四个场景开关即便存的是 true 也不会生效。旧版仍让它们
+  // 亮着可点，管理员会误以为登录/注册已经有人机验证 —— 这里显式置灰，
+  // 并把「已启用 N 个入口」改成「实际生效 0 个」，避免两套状态混淆。
+  const effectiveScenes = enabled && !misconfigured ? sceneOn : 0
 
   return (
     <div className="min-w-0 space-y-4 rounded-xl border border-border/60 p-3">
@@ -149,6 +153,18 @@ export function CaptchaSettingsCard() {
         </div>
       </div>
 
+      {/* 总开关未启用时，下面的场景开关一律置灰并说明「存着但不生效」，
+          否则管理员看到四个亮着的开关会误以为登录/注册已经有人机验证。 */}
+      {!enabled && (
+        <div className="flex items-start gap-2 rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">
+            总开关未启用，下面所有入口都不验证。页面显示的开关是已保存的配置，
+            打开总开关后才会生效；当前<strong className="text-foreground">实际生效 0 个入口</strong>。
+          </span>
+        </div>
+      )}
+
       <div className="space-y-2">
         <p className="text-xs font-medium text-foreground">哪些入口需要验证</p>
         <div className="space-y-2">
@@ -176,7 +192,10 @@ export function CaptchaSettingsCard() {
           ].map((it) => (
             <div
               key={it.key}
-              className="flex min-w-0 items-start justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2.5"
+              className={cn(
+                'flex min-w-0 items-start justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2.5',
+                !enabled && 'opacity-50',
+              )}
             >
               <div className="min-w-0">
                 <p className="text-sm">{it.name}</p>
@@ -185,13 +204,14 @@ export function CaptchaSettingsCard() {
               <Switch
                 checked={scenes[it.key]}
                 onCheckedChange={(v) => setScenes((s) => ({ ...s, [it.key]: v }))}
+                disabled={!enabled}
                 aria-label={`${it.name}需要验证`}
               />
             </div>
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          已启用 {sceneOn} 个入口。
+          已保存 {sceneOn} 个入口、实际生效 {effectiveScenes} 个。
           <span className="text-foreground"> 只有总开关打开、参数填全、且该入口开关打开，才会真的弹验证</span>
           —— 少任何一道都按「不验证」处理，避免把自己锁在门外。
         </p>

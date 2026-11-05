@@ -296,8 +296,15 @@ export function AdminUserSubsPanel() {
                   </p>
                   <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{s.url}</p>
                 </div>
-                <div className="flex items-center gap-3 font-mono text-xs text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-3 font-mono text-xs text-muted-foreground">
                   <span>{s.entry_count.toLocaleString('zh-CN')} 条</span>
+                  {/* 用户订阅在后台只读，管理员是唯一能发现「某人的源已经死了」的人。
+                      累计失败 >=3 次标红，否则一条 404 四天的订阅看起来和正常的一样。 */}
+                  {s.fail_count >= 3 && (
+                    <Badge variant="danger" className="font-sans" title={s.last_status || '连续刷新失败'}>
+                      连续失败 {s.fail_count} 次
+                    </Badge>
+                  )}
                   <span className={s.enabled ? 'text-success' : ''}>{s.enabled ? '启用' : '停用'}</span>
                 </div>
               </div>

@@ -409,6 +409,19 @@ export default function Subscriptions({ scope = 'user' }: { scope?: Scope }) {
                   {sub.last_fetched ? formatRelative(sub.last_fetched) : '从未同步'}
                 </span>
                 <StatusBadge status={sub.last_status} />
+                {/* 连续失败会在下一次刷新里继续失败，但状态徽章只显示最后一次原因。
+                    累计 >=3 次单独标出来：这条源基本已经死了（URL 404 / 长期超时），
+                    留着 enabled 只会每 24h 再报错一次，管理员却看不出它有多旧。 */}
+                {sub.fail_count >= 3 && (
+                  <Badge
+                    variant="danger"
+                    className="shrink-0"
+                    title={`连续失败 ${sub.fail_count} 次，建议换源或停用`}
+                  >
+                    <AlertTriangle className="size-3 shrink-0" />
+                    连续失败 {sub.fail_count} 次
+                  </Badge>
+                )}
               </div>
 
               <div className="mt-3 flex items-center justify-end gap-1 border-t border-border/60 pt-2.5">

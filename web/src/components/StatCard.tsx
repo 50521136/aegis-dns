@@ -37,9 +37,16 @@ const iconToneMap: Record<NonNullable<StatCardProps['tone']>, string> = {
   warning: 'bg-warning/15 text-warning',
 }
 
-/** 数字滚动动画（count-up），尊重 prefers-reduced-motion */
+/** 数字滚动动画（count-up），尊重 prefers-reduced-motion。
+ *
+ *  后台标签页不跑 requestAnimationFrame：旧实现把初值设成 0 后就只靠
+ *  rAF 推进，页面一直 hidden 时四张统计卡会永远停在 0（数据其实是好的）。
+ *  所以「不可见」时不启用补间，直接落终值；切回前台也不再倒着数一遍。
+ */
 function useCountUp(target: number, enabled: boolean, duration = 800) {
-  const [value, setValue] = useState(enabled ? 0 : target)
+  const visible = () =>
+    typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  const [value, setValue] = useState(enabled && visible() ? 0 : target)
   const frame = useRef<number | null>(null)
 
   useEffect(() => {
@@ -50,10 +57,23 @@ function useCountUp(target: number, enabled: boolean, duration = 800) {
     const reduce =
       typeof window !== 'undefined' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduce) {
-      setValue(target)
-      return
+    const stop = () => {
+      if (frame.current) cancelAnimationFrame(frame.current)
+      frame.current = null
     }
+    const settle = () => {
+      if (document.visibilityState === 'hidden') {
+        stop()
+        setValue(target)
+      }
+    }
+    document.addEventListener('visibilitychange', settle)
+    // 不可见 / 减少动效：直接显示终值，不要留一个永远推不动的 0。
+    if (reduce || !visible()) {
+      setValue(target)
+      return () => document.removeEventListener('visibilitychange', settle)
+    }
+
     const start = performance.now()
     const from = 0
     const tick = (now: number) => {
@@ -61,10 +81,12 @@ function useCountUp(target: number, enabled: boolean, duration = 800) {
       const eased = 1 - Math.pow(1 - p, 3)
       setValue(Math.round(from + (target - from) * eased))
       if (p < 1) frame.current = requestAnimationFrame(tick)
+      else frame.current = null
     }
     frame.current = requestAnimationFrame(tick)
     return () => {
-      if (frame.current) cancelAnimationFrame(frame.current)
+      stop()
+      document.removeEventListener('visibilitychange', settle)
     }
   }, [target, enabled, duration])
 
