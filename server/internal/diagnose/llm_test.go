@@ -16,7 +16,7 @@ import (
 // TestParseSuggestionPlainJSON 断言标准输出能解析。
 func TestParseSuggestionPlainJSON(t *testing.T) {
 	raw := `{"verdict":"wrong_block","reason":"订阅层误拦","action":{"type":"add_global_allow","domains":["t.apkpure.net"]},"reply":"已放行"}`
-	sug, err := parseSuggestion(raw)
+	sug, err := parseSuggestion(raw, LookupByDomain)
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestParseSuggestionPlainJSON(t *testing.T) {
 // 线上会频繁报「模型输出不是合法 JSON」。
 func TestParseSuggestionWithMarkdownFence(t *testing.T) {
 	raw := "```json\n{\"verdict\":\"correct\",\"reason\":\"规则正确\",\"action\":{\"type\":\"no_action\"},\"reply\":\"这不是误杀\"}\n```"
-	sug, err := parseSuggestion(raw)
+	sug, err := parseSuggestion(raw, LookupByDomain)
 	if err != nil {
 		t.Fatalf("应容忍 Markdown 包裹，实际: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestParseSuggestionWithMarkdownFence(t *testing.T) {
 // TestParseSuggestionWithPrefixText 断言 JSON 前有解释文字时仍能解析。
 func TestParseSuggestionWithPrefixText(t *testing.T) {
 	raw := `好的，我的判断如下：{"verdict":"unclear","reason":"证据不足","action":{"type":"need_human"},"reply":"需要人工确认"} 以上。`
-	sug, err := parseSuggestion(raw)
+	sug, err := parseSuggestion(raw, LookupByDomain)
 	if err != nil {
 		t.Fatalf("应容忍前后文字，实际: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestParseSuggestionRejectsBadEnums(t *testing.T) {
 		`{"verdict":"correct","reason":"x","action":{"type":"allow_everything"},"reply":"x"}`,
 	}
 	for _, raw := range cases {
-		if _, err := parseSuggestion(raw); err == nil {
+		if _, err := parseSuggestion(raw, LookupByDomain); err == nil {
 			t.Errorf("应拒绝非法枚举: %s", raw)
 		}
 	}
@@ -74,11 +74,11 @@ func TestParseSuggestionRejectsBadEnums(t *testing.T) {
 // TestParseSuggestionRejectsEmptyReply 断言缺回复文案时拒绝（need_human 除外）。
 func TestParseSuggestionRejectsEmptyReply(t *testing.T) {
 	bad := `{"verdict":"wrong_block","reason":"x","action":{"type":"add_global_allow","domains":["a.com"]},"reply":""}`
-	if _, err := parseSuggestion(bad); err == nil {
+	if _, err := parseSuggestion(bad, LookupByDomain); err == nil {
 		t.Fatal("add_global_allow 缺 reply 应被拒绝")
 	}
 	ok := `{"verdict":"unclear","reason":"x","action":{"type":"need_human"},"reply":""}`
-	if _, err := parseSuggestion(ok); err != nil {
+	if _, err := parseSuggestion(ok, LookupByDomain); err != nil {
 		t.Fatalf("need_human 允许空 reply，实际: %v", err)
 	}
 }

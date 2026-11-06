@@ -163,12 +163,21 @@ type Feedback struct {
 	// 单独维护一套字段而不是塞进 AdminReply：诊断结论要保留
 	// 「模型说了什么」「闸门挡了什么」两份原始信息，便于事后复盘
 	// 模型的判断是否可信 —— 混进回复文本里就再也拆不出来了。
-	AIStatus     string `json:"ai_status,omitempty"`      // '' | pending | done | failed
-	AIVerdict    string `json:"ai_verdict,omitempty"`     // wrong_block | correct | unclear
-	AIReason     string `json:"ai_reason,omitempty"`      // 给管理员看的判断依据
-	AIAction     string `json:"ai_action,omitempty"`      // add_global_allow | add_user_allow | no_action | need_human
-	AIReply      string `json:"ai_reply,omitempty"`       // 建议发给用户的回复
-	AIDomains    string `json:"ai_domains,omitempty"`     // 建议放行的域名，逗号分隔
+	AIStatus  string `json:"ai_status,omitempty"`  // '' | pending | done | failed
+	AIVerdict string `json:"ai_verdict,omitempty"` // wrong_block | correct | unclear
+	AIReason  string `json:"ai_reason,omitempty"`  // 给管理员看的判断依据
+	AIAction  string `json:"ai_action,omitempty"`  // add_global_allow | add_user_allow | no_action | need_human
+	AIReply   string `json:"ai_reply,omitempty"`   // 建议发给用户的回复
+	AIDomains string `json:"ai_domains,omitempty"` // 建议放行的域名，逗号分隔
+	// AICandidates 是「按内容推断」模式下模型给出的建议核查域名，逗号分隔。
+	//
+	// 与 AIDomains 严格分开：后者点「采纳」就写成放行规则，前者只是
+	// 「去看一眼这些域名是不是元凶」，不该被自动执行。用户没填域名字段时
+	// 模型只能猜，把猜测放进可执行清单会造成误放行。
+	AICandidates string `json:"ai_candidates,omitempty"`
+	// AILookupMode 是本次诊断的取证方式（by_domain / by_content），
+	// 落库供管理员列表与自动处理回调区分「是否只给建议」。
+	AILookupMode string `json:"ai_lookup_mode,omitempty"`
 	AIGuardNotes string `json:"ai_guard_notes,omitempty"` // 闸门拒绝了哪些，为什么
 	AIEvidence   string `json:"-"`                        // 证据 JSON，仅入库审计，不返回前端
 	AIModel      string `json:"ai_model,omitempty"`

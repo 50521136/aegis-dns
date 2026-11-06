@@ -199,12 +199,37 @@ func (s *Server) rebuildDiagnoser(set *model.GlobalSettings) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
+		// 按内容查（用户没填域名）：结论是从正文和近期拦截记录推断的，
+		// 不是用户指认的对象。这里只标记「需人工」并留在队列里，
+		// 绝不自动回复结单或写放行规则，等管理员看完候选域名自己决定。
+		//
+		// 用落库的 ai_lookup_mode 判断而不是 fb.Domain：域名字段可能填了
+		// 「上不了网」这类非域名内容，Collect 的判断才是准的。
+		if fb.AILookupMode == string(diagnose.LookupByContent) {
+			if err := s.store.MarkFeedbackNeedsHuman(ctx, fb.ID, time.Now().Unix()); err != nil {
+				s.log.Warn("标记需人工失败", "feedback", fb.ID, "err", err)
+			}
+			s.log.Info("反馈按内容诊断完成，仅给建议等待人工处理",
+				"feedback", fb.ID, "candidates", fb.AICandidates)
+			return
+		}
+
 		cur, err := s.store.GetSettings(ctx)
 		if err != nil || !cur.AIAutoHandle {
 			return
 		}
-		if _, err := s.autoHandleFeedback(ctx, fb); err != nil {
+		res, err := s.autoHandleFeedback(ctx, fb)
+		if err != nil {
 			s.log.Warn("AI 自动处理反馈失败", "feedback", fb.ID, "err", err)
+			return
+		}
+		// autoHandleFeedback 判定处理不了时要真的打上标记，否则管理员在
+		// 「需人工」筛选里看不到这条（线上曾出现 8 条无域名反馈全是 0）。
+		if res != nil && res.NeedsHuman {
+			if err := s.store.MarkFeedbackNeedsHuman(ctx, fb.ID, time.Now().Unix()); err != nil {
+				s.log.Warn("标记需人工失败", "feedback", fb.ID, "err", err)
+			}
+			s.log.Info("反馈转人工", "feedback", fb.ID, "reason", res.Reason)
 		}
 	})
 

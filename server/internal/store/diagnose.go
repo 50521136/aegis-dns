@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/50521136/aegis-dns/server/internal/diagnose"
 	"github.com/50521136/aegis-dns/server/internal/model"
 )
 
@@ -23,11 +24,11 @@ import (
 func (s *Store) WriteAIDiagnosis(ctx context.Context, f *model.Feedback) error {
 	_, err := s.write.ExecContext(ctx,
 		`UPDATE feedback SET ai_status = ?, ai_verdict = ?, ai_reason = ?, ai_action = ?,
-			ai_reply = ?, ai_domains = ?, ai_guard_notes = ?, ai_evidence = ?,
+			ai_reply = ?, ai_domains = ?, ai_candidates = ?, ai_lookup_mode = ?, ai_guard_notes = ?, ai_evidence = ?,
 			ai_model = ?, ai_ran_at = ?
 		 WHERE id = ?`,
 		f.AIStatus, f.AIVerdict, f.AIReason, f.AIAction,
-		f.AIReply, f.AIDomains, f.AIGuardNotes, f.AIEvidence,
+		f.AIReply, f.AIDomains, f.AICandidates, f.AILookupMode, f.AIGuardNotes, f.AIEvidence,
 		f.AIModel, time.Now().Unix(), f.ID)
 	if err != nil {
 		return fmt.Errorf("写入诊断结果失败: %w", err)
@@ -50,7 +51,7 @@ func (s *Store) MarkAIDiagnosisFailed(ctx context.Context, fid, reason string) e
 func (s *Store) ResetAIDiagnosis(ctx context.Context, fid string) error {
 	_, err := s.write.ExecContext(ctx,
 		`UPDATE feedback SET ai_status = ?, ai_verdict = '', ai_reason = '', ai_action = '',
-			ai_reply = '', ai_domains = '', ai_guard_notes = '', ai_model = ''
+			ai_reply = '', ai_domains = '', ai_candidates = '', ai_lookup_mode = '', ai_guard_notes = '', ai_model = ''
 		 WHERE id = ?`, model.AIDiagPending, fid)
 	if err != nil {
 		return fmt.Errorf("重置诊断状态失败: %w", err)
@@ -205,6 +206,43 @@ func (s *Store) RecentQueriesOfDomain(ctx context.Context, uid, domain string, s
 		return out, 0, nil // 计数失败不影响主流程
 	}
 	return out, blocked, nil
+}
+
+// RecentBlockedDomainsForUser 返回某用户近期被拦截最多的域名。
+//
+// 只用于「用户没填域名」的诊断兜底：正文里也抽不出域名时，靠这些线索
+// 结合反馈描述推断可疑对象。ORDER BY 命中次数再按最近时间，让最可疑的
+// 排前面；limit 限制体积，避免一个重度用户把证据撑爆。
+//
+// 依赖 idx_qlog_user_ts(user_id, ts DESC)，按 user_id + 时间范围扫描。
+func (s *Store) RecentBlockedDomainsForUser(ctx context.Context, uid string, since int64, limit int) ([]diagnose.DomainHit, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT domain, COUNT(*) AS hits, MAX(ts) AS last_ts
+		 FROM query_log
+		 WHERE user_id = ? AND ts >= ? AND action = 'blocked' AND domain <> ''
+		 GROUP BY domain
+		 ORDER BY hits DESC, last_ts DESC
+		 LIMIT ?`, uid, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询近期被拦截域名失败: %w", err)
+	}
+	defer rows.Close()
+	out := make([]diagnose.DomainHit, 0, limit)
+	for rows.Next() {
+		var h diagnose.DomainHit
+		if err := rows.Scan(&h.Domain, &h.Hits, &h.LastTS); err != nil {
+			return nil, err
+		}
+		// 查询日志里可能混进非法域名（反解 PTR、畸形输入），别喂给模型。
+		if !diagnose.IsPlausibleDomain(h.Domain) {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // QueryRow 是一条查询日志（脱敏后）。

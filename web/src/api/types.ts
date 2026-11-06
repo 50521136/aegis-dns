@@ -645,8 +645,15 @@ export interface Feedback {
   ai_reason?: string
   ai_action?: AIActionType
   ai_reply?: string
-  /** 建议放行的域名，逗号分隔 */
+  /** 建议放行的域名，逗号分隔（点「采纳」会写成放行规则） */
   ai_domains?: string
+  /**
+   * 按内容查模式下 AI 推断的「建议核查」域名，逗号分隔。
+   * 与 ai_domains 严格分开：这些只是线索，不会被自动放行。
+   */
+  ai_candidates?: string
+  /** 取证方式：by_domain（用户填了域名）/ by_content（没填，按内容推断） */
+  ai_lookup_mode?: 'by_domain' | 'by_content'
   /** 闸门拒绝了哪些、为什么 */
   ai_guard_notes?: string
   ai_model?: string

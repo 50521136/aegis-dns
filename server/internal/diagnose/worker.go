@@ -178,6 +178,12 @@ func (w *Worker) runOne(fb model.Feedback) {
 	out.AIAction = guard.Action.Type
 	out.AIReply = sug.Reply
 	out.AIDomains = strings.Join(guard.Action.Domains, ",")
+	// 按内容查模式下，模型只给「建议核查」的候选域名，与可执行的
+	// 放行清单严格分开：前者给管理员人工排查，后者点采纳才写规则。
+	out.AICandidates = strings.Join(sug.Candidates, ",")
+	// 落库取证方式：管理员列表与自动处理回调据此区分「按域名查」（可自动
+	// 处理）与「按内容查」（只给建议、必须等人工）。
+	out.AILookupMode = string(ev.Mode)
 	out.AIGuardNotes = strings.Join(guard.Notes, "；")
 	out.AIEvidence = MarshalEvidence(ev)
 	// 记录实际给出结论的模型：主模型失败时这里会是回退模型，
@@ -189,10 +195,16 @@ func (w *Worker) runOne(fb model.Feedback) {
 		return
 	}
 	w.log.Info("反馈诊断完成",
-		"feedback", fb.ID, "verdict", sug.Verdict,
-		"action", guard.Action.Type, "domains", out.AIDomains)
+		"feedback", fb.ID, "mode", ev.Mode,
+		"verdict", sug.Verdict, "action", guard.Action.Type,
+		"domains", out.AIDomains, "candidates", out.AICandidates)
 
 	// 诊断结果已落库，交给上层决定「要不要自动处理」。
+	//
+	// 按内容查模式（用户没填域名）把 mode 传给上层：结论是从正文和近期
+	// 拦截记录推断的，上层必须只标记「需人工」、不自动放行或结单。
+	// 放在这里而不是让上层自己猜域名字段，是因为域名字段可能填了
+	// 「上不了网」这类非域名内容 —— Collect 的判断才是准的。
 	//
 	// 放在写入之后：自动处理会读这条反馈的 ai_* 字段，若先处理再落库，
 	// 它会读到旧值（或空值），结论就是错的。

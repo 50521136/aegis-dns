@@ -26,6 +26,12 @@ type fakeSource struct {
 	blocked     int
 	enabled     bool
 	errOnRules  error
+	recentHits  []DomainHit
+	recentErr   error
+}
+
+func (f *fakeSource) RecentBlockedDomains(context.Context, string, int64, int) ([]DomainHit, error) {
+	return f.recentHits, f.recentErr
 }
 
 func (f *fakeSource) UserRules(context.Context, string) ([]model.Rule, error) {

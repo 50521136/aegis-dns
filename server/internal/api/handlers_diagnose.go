@@ -86,6 +86,10 @@ func (ss storeSource) UserEnabled(ctx context.Context, userID string) (bool, err
 	return u.Enabled, nil
 }
 
+func (ss storeSource) RecentBlockedDomains(ctx context.Context, userID string, since int64, limit int) ([]diagnose.DomainHit, error) {
+	return ss.srv.store.RecentBlockedDomainsForUser(ctx, userID, since, limit)
+}
+
 // handleAdminDiagnoseFeedback 触发一次 AI 诊断。
 //
 // 异步执行：模型响应可能要几秒到几十秒，阻塞 HTTP 会让面板以为卡死。

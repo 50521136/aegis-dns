@@ -56,6 +56,11 @@ type Suggestion struct {
 	Reason  string `json:"reason"`
 	Action  Action `json:"action"`
 	Reply   string `json:"reply"`
+	// Candidates 是「按内容查」模式下模型认为值得核查的域名。
+	//
+	// 与 Action.Domains 严格分开：后者是明确建议放行的域名（管理员点采纳
+	// 就写规则），前者只是「去看一眼这几个」的线索，不该被自动执行。
+	Candidates []string `json:"candidates,omitempty"`
 	// Model 是实际给出这个结论的模型名（主模型失败时可能是回退模型）。
 	// 不进 JSON：它不是模型输出，是本地记录的来源，供落库与日志用。
 	Model string `json:"-"`
@@ -111,7 +116,44 @@ action / layer 都是规则引擎确定性计算的结果，不要质疑、不�
 6. reply 是给用户看的一句话，不超过 80 个汉字，不要堆技术术语，不要提订阅名。
 
 只输出 JSON，不要任何解释文字或 Markdown 代码块。格式：
-{"verdict":"wrong_block|correct|unclear","reason":"给管理员看的判断依据，一句话","action":{"type":"add_global_allow","domains":["a.example.com"]},"reply":"给用户看的一句话"}`
+{"verdict":"wrong_block|correct|unclear","reason":"给管理员看的判断依据，一句话","action":{"type":"add_global_allow","domains":["a.example.com"]},"reply":"给用户看的一句话","candidates":[]}`
+
+// byDomainPrompt 是「用户填了域名」模式追加的指令。
+const byDomainPrompt = `
+本次用户**明确填写了域名**。证据里 source=explicit 的域名是用户指认的报障对象，
+必须优先据此判断；source=message 的域名只是正文里顺带提到的线索，不要喧宾夺主。
+反馈正文只用来理解现象（哪个 App、哪一步失败），不能拿它推翻 explicit 域名的
+确定性判定。candidates 留空数组。`
+
+// byContentPrompt 是「用户没填域名」模式追加的指令。
+//
+// 这一模式的核心约束：证据里的域名都不是用户指认的，模型只能给建议，
+// 绝不能下结论说「某域名被误拦、应该放行」。用户要求这类反馈一律等人工处理。
+const byContentPrompt = `
+本次用户**没有填写域名**。证据里 source=message / source=recent 的域名都只是
+推断线索：前者是从反馈正文里抽出来的，后者来自该用户近期被拦截最多的查询记录，
+都不是用户明确报障的对象。
+
+硬性要求（本模式覆盖上面的通用规则）：
+1. verdict 只能取 unclear；action.type 只能是 need_human。
+2. action.domains 必须是空数组 —— 这一步只给建议，不提供任何可执行的放行清单，
+   管理员会自己核查后再决定。reply 留空字符串。
+3. 把你认为最值得人工核查的域名放进 candidates（最多 5 个，只能从证据的
+   domains 里选，不要凭空编造），按可疑程度排序。结合反馈正文判断：用户描述
+   的现象更像哪个域名造成的？例如「开屏广告」优先看广告/图片类域名，
+   「小组件不更新」优先看接口/数据类域名。一个都判断不出来就留空数组。
+4. reason 写清楚「用户未填域名，以下为按反馈内容推断的候选，需人工核查」，
+   并说明推断依据（引用反馈正文里的现象），不要写成确定结论。
+5. 不要因为某个域名 action=block 就说它是误杀 —— 用户没指认它，拦截它可能
+   本来就是对的。`
+
+// promptFor 按取证模式拼出系统提示词。
+func promptFor(mode LookupMode) string {
+	if mode == LookupByContent {
+		return systemPrompt + byContentPrompt
+	}
+	return systemPrompt + byDomainPrompt
+}
 
 // modelChain 把主模型与回退模型拼成去重、去空的尝试顺序。
 func modelChain(primary string, fallbacks []string) []string {
@@ -151,11 +193,13 @@ func Diagnose(ctx context.Context, cfg LLMConfig, ev *Evidence) (*Suggestion, er
 		return nil, fmt.Errorf("序列化证据失败: %w", err)
 	}
 
+	prompt := promptFor(ev.Mode)
 	var errs []string
 	for _, name := range chain {
-		sug, err := callModel(ctx, cfg, name, string(evJSON), maxTokens)
+		sug, err := callModel(ctx, cfg, name, prompt, string(evJSON), maxTokens, ev.Mode)
 		if err == nil {
 			sug.Model = name
+			sanitizeSuggestion(sug, ev)
 			return sug, nil
 		}
 		// 只针对「思考把 token 吃光」做同模型加大重试；HTTP 错误、
@@ -166,9 +210,10 @@ func Diagnose(ctx context.Context, cfg LLMConfig, ev *Evidence) (*Suggestion, er
 			if retryTokens > maxAutoRetryTokens {
 				retryTokens = maxAutoRetryTokens
 			}
-			sug, retryErr := callModel(ctx, cfg, name, string(evJSON), retryTokens)
+			sug, retryErr := callModel(ctx, cfg, name, prompt, string(evJSON), retryTokens, ev.Mode)
 			if retryErr == nil {
 				sug.Model = name
+				sanitizeSuggestion(sug, ev)
 				return sug, nil
 			}
 			err = fmt.Errorf("%w；加大 max_tokens 到 %d 后仍失败: %v", err, retryTokens, retryErr)
@@ -194,12 +239,55 @@ func (e *thinkingTruncatedError) Error() string {
 		e.finishReason, e.completionTokens, e.reasoningTokens)
 }
 
+// sanitizeSuggestion 是模型输出落到系统里的最后一道硬约束。
+//
+// 提示词是「请求」，不是「保证」：模型可能不遵守「没填域名就别给放行清单」。
+// 所以按内容查模式下，无论模型说了什么都强制收敛成「只给建议」：
+//   - verdict=unclear、action=need_human、清空可执行域名与自动回复；
+//   - candidates 只允许证据里出现过的域名，且不超过 5 个。
+//
+// 这样即使模型跑偏，也不可能把推断出来的域名变成放行规则。
+func sanitizeSuggestion(sug *Suggestion, ev *Evidence) {
+	if ev.Mode != LookupByContent {
+		sug.Candidates = nil
+		return
+	}
+	sug.Verdict = "unclear"
+	sug.Action = Action{Type: "need_human"}
+	sug.Reply = ""
+	allowed := make(map[string]bool, len(ev.Domains))
+	for _, d := range ev.Domains {
+		allowed[strings.ToLower(d.Domain)] = true
+	}
+	kept := make([]string, 0, len(sug.Candidates))
+	seen := map[string]bool{}
+	for _, raw := range sug.Candidates {
+		d := strings.ToLower(strings.TrimSpace(raw))
+		d = strings.TrimPrefix(d, "http://")
+		d = strings.TrimPrefix(d, "https://")
+		d = strings.TrimPrefix(d, "*.")
+		d = strings.TrimSuffix(d, ".")
+		if i := strings.IndexAny(d, "/?#"); i >= 0 {
+			d = d[:i]
+		}
+		if !allowed[d] || seen[d] || !IsPlausibleDomain(d) {
+			continue
+		}
+		seen[d] = true
+		kept = append(kept, d)
+		if len(kept) >= 5 {
+			break
+		}
+	}
+	sug.Candidates = kept
+}
+
 // callModel 对单个模型发一次请求并解析。
-func callModel(ctx context.Context, cfg LLMConfig, name, evJSON string, maxTokens int) (*Suggestion, error) {
+func callModel(ctx context.Context, cfg LLMConfig, name, prompt, evJSON string, maxTokens int, mode LookupMode) (*Suggestion, error) {
 	body := map[string]any{
 		"model": name,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
+			{"role": "system", "content": prompt},
 			{"role": "user", "content": evJSON},
 		},
 		"temperature": 0, // 诊断要可复现，不要创造性
@@ -272,7 +360,7 @@ func callModel(ctx context.Context, cfg LLMConfig, name, evJSON string, maxToken
 		return nil, errors.New("模型返回内容为空")
 	}
 
-	sug, err := parseSuggestion(content)
+	sug, err := parseSuggestion(content, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +445,10 @@ func ParseFallbackModels(s string) []string {
 // parseSuggestion 容忍模型常见的输出瑕疵：Markdown 代码块包裹、
 // JSON 前后的解释性文字。生产上这两种情况出现频率不低，
 // 直接 json.Unmarshal 会整条失败。
-func parseSuggestion(content string) (*Suggestion, error) {
+//
+// mode 用来放宽「按内容查」模式下的校验：该模式最终由
+// sanitizeSuggestion 强制收敛成只给建议，不必因模型没听话就判失败。
+func parseSuggestion(content string, mode LookupMode) (*Suggestion, error) {
 	c := content
 	if i := strings.Index(c, "```"); i >= 0 {
 		c = c[i+3:]
@@ -378,6 +469,14 @@ func parseSuggestion(content string) (*Suggestion, error) {
 	var sug Suggestion
 	if err := json.Unmarshal([]byte(c), &sug); err != nil {
 		return nil, fmt.Errorf("模型输出不是合法 JSON（%w）: %s", err, truncate(content, 300))
+	}
+	// 按内容查模式下模型本该输出 need_human + 空 reply。若它没听话、
+	// 给了 add_*_allow 且 reply 为空，通用校验会因「reply 不能为空」
+	// 让整条诊断失败 —— 但 sanitizeSuggestion 随后会强制清掉这些字段，
+	// 所以这里跳过 reply 校验，别把模型不听话升级成诊断失败。
+	if mode == LookupByContent {
+		sug.Action.Type = "need_human"
+		sug.Reply = "（无域名，仅给建议）"
 	}
 	if err := sug.validate(); err != nil {
 		return nil, fmt.Errorf("模型输出不符合约定（%w）: %s", err, truncate(content, 300))

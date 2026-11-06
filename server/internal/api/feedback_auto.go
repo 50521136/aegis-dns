@@ -53,6 +53,18 @@ type autoHandleResult struct {
 func (s *Server) autoHandleFeedback(ctx context.Context, fb *model.Feedback) (*autoHandleResult, error) {
 	res := &autoHandleResult{}
 
+	// ── 门槛 0：按内容查（用户没填域名）一律只给建议、等人工 ──
+	//
+	// 这类结论是从反馈正文和近期拦截记录推断的，不是用户指认的报障对象。
+	// 用户明确要求「不要直接结单和处理，给建议就行，等我处理」。
+	// 上层 onDone 已经拦了一道，这里再兜一次：任何路径调进来都不会
+	// 自动回复、写规则或结单。
+	if fb.AILookupMode == string(diagnose.LookupByContent) {
+		res.NeedsHuman = true
+		res.Reason = "未填域名，按反馈内容推断的候选仅供人工核查"
+		return res, nil
+	}
+
 	// ── 门槛 1：没有结论，一定转人工 ──
 	if fb.AIStatus != model.AIDiagDone {
 		res.NeedsHuman = true

@@ -40,8 +40,11 @@ export function AiDiagnosisPanel({ feedback, onDone }: { feedback: Feedback; onD
 
   const status = feedback.ai_status ?? ''
   const domains = (feedback.ai_domains ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  const candidates = (feedback.ai_candidates ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  const byContent = feedback.ai_lookup_mode === 'by_content'
   const canApply =
-    feedback.ai_action === 'add_global_allow' || feedback.ai_action === 'add_user_allow'
+    !byContent &&
+    (feedback.ai_action === 'add_global_allow' || feedback.ai_action === 'add_user_allow')
   const canDiagnose = status === '' || status === 'failed' || status === 'done'
 
   const runDiagnose = async () => {
@@ -120,13 +123,37 @@ export function AiDiagnosisPanel({ feedback, onDone }: { feedback: Feedback; onD
         {feedback.ai_model && (
           <span className="font-mono text-[11px] text-muted-foreground">{feedback.ai_model}</span>
         )}
+        {byContent && <Badge variant="outline">按内容推断</Badge>}
       </div>
+
+      {/* 没填域名的反馈：结论是推断出来的，只给建议，不自动结单/写规则。
+          用户明确要求「给建议就行，等我处理」，所以把这条放在最显眼处。 */}
+      {byContent && (
+        <div className="flex items-start gap-1.5 rounded-md bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+          <Info className="mt-0.5 size-3 shrink-0" />
+          <span className="min-w-0 break-words">
+            用户未填域名，AI 结合反馈内容与近期拦截记录给出以下候选，仅供参考。
+            本条不会自动回复、结单或写入放行规则，等你核查后处理。
+          </span>
+        </div>
+      )}
 
       {feedback.ai_reason && (
         <p className="text-xs leading-relaxed text-muted-foreground">
           <span className="font-medium text-foreground">依据：</span>
           {feedback.ai_reason}
         </p>
+      )}
+
+      {candidates.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-muted-foreground">建议核查：</span>
+          {candidates.map((d) => (
+            <code key={d} className="mono-addr rounded bg-background px-1.5 py-0.5">
+              {d}
+            </code>
+          ))}
+        </div>
       )}
 
       {domains.length > 0 && (
@@ -170,9 +197,11 @@ export function AiDiagnosisPanel({ feedback, onDone }: { feedback: Feedback; onD
         )}
         {!canApply && feedback.ai_action && (
           <span className={cn('text-[11px]', 'text-muted-foreground')}>
-            {feedback.ai_action === 'no_action'
-              ? '模型认为规则没问题，可直接结单'
-              : '这条建议不写规则，需要你手工判断'}
+            {byContent
+              ? '仅给建议，等你人工核查处理'
+              : feedback.ai_action === 'no_action'
+                ? '模型认为规则没问题，可直接结单'
+                : '这条建议不写规则，需要你手工判断'}
           </span>
         )}
       </div>

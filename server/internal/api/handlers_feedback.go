@@ -44,6 +44,10 @@ func feedbackJSON(f *model.Feedback) map[string]any {
 	m["ai_action"] = f.AIAction
 	m["ai_reply"] = f.AIReply
 	m["ai_domains"] = f.AIDomains
+	// ai_candidates 是「按内容查」模式下的建议核查域名，与可执行的
+	// ai_domains 分开：前者仅供人工排查，后者点采纳才写规则。
+	m["ai_candidates"] = f.AICandidates
+	m["ai_lookup_mode"] = f.AILookupMode
 	m["ai_guard_notes"] = f.AIGuardNotes
 	m["ai_model"] = f.AIModel
 	m["ai_ran_at"] = f.AIRanAt
