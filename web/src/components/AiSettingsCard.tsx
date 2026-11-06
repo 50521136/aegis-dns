@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Brain, PlugZap, Save, Sparkles } from 'lucide-react'
+import { Brain, ChevronDown, ListChecks, PlugZap, Save, Sparkles } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,8 +14,8 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/components/ui/toast'
 import { errorMessage } from '@/api/client'
-import { getAISettings, testAI, updateAISettings } from '@/api/scope'
-import type { AITestResult } from '@/api/types'
+import { getAISettings, listAIModels, testAI, updateAISettings } from '@/api/scope'
+import type { AIModelInfo, AITestResult } from '@/api/types'
 
 /**
  * AiSettingsCard 配置「反馈自动诊断」用的模型。
@@ -34,10 +34,16 @@ export function AiSettingsCard() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<AITestResult | null>(null)
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const [models, setModels] = useState<AIModelInfo[]>([])
+  const [modelsError, setModelsError] = useState('')
+  const [showModels, setShowModels] = useState(false)
 
   const [enabled, setEnabled] = useState(false)
   const [baseURL, setBaseURL] = useState('')
   const [model, setModel] = useState('')
+  const [fallback, setFallback] = useState('')
+  const [maxTokens, setMaxTokens] = useState(4000)
   const [apiKey, setApiKey] = useState('')
   const [keySet, setKeySet] = useState(false)
   const [timeoutSec, setTimeoutSec] = useState(30)
@@ -50,6 +56,8 @@ export function AiSettingsCard() {
       setEnabled(s.ai_enabled)
       setBaseURL(s.ai_base_url)
       setModel(s.ai_model)
+      setFallback(s.ai_fallback_models ?? '')
+      setMaxTokens(s.ai_max_tokens ?? 4000)
       setKeySet(s.ai_key_set)
       setTimeoutSec(s.ai_timeout_sec || 30)
       setMaxPerHour(s.ai_max_per_hour ?? 20)
@@ -73,6 +81,8 @@ export function AiSettingsCard() {
         ai_enabled: enabled,
         ai_base_url: baseURL.trim(),
         ai_model: model.trim(),
+        ai_fallback_models: fallback.trim(),
+        ai_max_tokens: maxTokens,
         ai_timeout_sec: timeoutSec,
         ai_max_per_hour: maxPerHour,
         ai_trigger_mode: triggerMode,
@@ -91,6 +101,38 @@ export function AiSettingsCard() {
     }
   }
 
+  const fetchModels = async () => {
+    setFetchingModels(true)
+    setModelsError('')
+    try {
+      const res = await listAIModels()
+      setModels(res.models || [])
+      setShowModels(true)
+      if (!res.ok) {
+        setModelsError(res.error ?? '上游未返回模型列表')
+        toast.error('获取模型列表失败', res.error ?? '请检查模型地址与 Key')
+      } else {
+        toast.success(`获取到 ${res.models?.length ?? 0} 个模型`)
+      }
+    } catch (err) {
+      setModelsError(errorMessage(err))
+      toast.error('获取模型列表失败', errorMessage(err))
+    } finally {
+      setFetchingModels(false)
+    }
+  }
+
+  /** 把列表里的模型追加回退链（去重、跳过主模型）。 */
+  const addFallback = (id: string) => {
+    const cur = fallback.split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean)
+    if (id === model.trim() || cur.includes(id)) {
+      toast.error('已在主模型或回退链里', id)
+      return
+    }
+    setFallback([...cur, id].join(', '))
+    toast.success('已加入回退链', id)
+  }
+
   const runTest = async () => {
     setTesting(true)
     setTestResult(null)
@@ -98,7 +140,10 @@ export function AiSettingsCard() {
       const res = await testAI()
       setTestResult(res)
       if (res.ok) {
-        toast.success('模型可用', `${res.model} · ${res.elapsed_ms}ms`)
+        toast.success(
+          res.fell_back ? `已回退到 ${res.used_model}` : '模型可用',
+          `${res.used_model || res.model} · ${res.elapsed_ms}ms`,
+        )
       } else {
         toast.error('模型不可用', res.error ?? '未知错误')
       }
@@ -136,9 +181,12 @@ export function AiSettingsCard() {
             value={baseURL}
             onChange={(e) => setBaseURL(e.target.value)}
           />
+          <p className="text-xs text-muted-foreground">
+            地址与 Key 会先保存，再点「获取模型列表」由服务端向该地址的 /models 拉取。
+          </p>
         </div>
         <div className="space-y-1.5">
-          <Label className="text-xs">模型名</Label>
+          <Label className="text-xs">主模型名</Label>
           <Input
             className="font-mono"
             placeholder="deepseek-chat"
@@ -159,6 +207,35 @@ export function AiSettingsCard() {
             onChange={(e) => setApiKey(e.target.value)}
             autoComplete="new-password"
           />
+        </div>
+        <div className="space-y-1.5 sm:col-span-2">
+          <Label className="text-xs">
+            回退模型（按顺序尝试，逗号分隔；主模型失败时自动切换）
+          </Label>
+          <Input
+            className="font-mono"
+            placeholder="deepseek-v4-flash-0731, glm-5.3"
+            value={fallback}
+            onChange={(e) => setFallback(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            推理模型可能把 token 全花在「思考」上导致空输出；配一个便宜的非推理模型兜底，
+            避免「额度扣了、结论没有」。
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">max_tokens（推理模型建议 ≥4000）</Label>
+          <Input
+            type="number"
+            min={0}
+            max={32000}
+            step={100}
+            value={maxTokens}
+            onChange={(e) => setMaxTokens(Number(e.target.value) || 0)}
+          />
+          <p className="text-xs text-muted-foreground">
+            0 = 用服务端默认 4000。太小会让推理模型空返回但照常扣费。
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">触发方式</Label>
@@ -206,10 +283,72 @@ export function AiSettingsCard() {
           <PlugZap />
           测试模型
         </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => (showModels && models.length ? setShowModels(!showModels) : void fetchModels())}
+          loading={fetchingModels}
+          disabled={!baseURL}
+        >
+          <ListChecks />
+          获取模型列表
+          {showModels && models.length > 0 && <ChevronDown className="rotate-180" />}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={fetchModels} loading={fetchingModels} disabled={!baseURL}>
+          刷新列表
+        </Button>
         <span className="text-xs text-muted-foreground">
           测试会真实消耗一次调用
         </span>
       </div>
+
+      {modelsError && (
+        <div className="rounded-lg bg-danger/10 px-2.5 py-2 text-xs text-danger">
+          模型列表：{modelsError}
+        </div>
+      )}
+
+      {showModels && models.length > 0 && (
+        <div className="space-y-1.5 rounded-lg border border-border/60 p-2.5">
+          <p className="text-xs text-muted-foreground">
+            共 {models.length} 个模型 · 点击「设为主模型」可直接填入，或加入回退链
+          </p>
+          <div className="max-h-56 space-y-1 overflow-y-auto">
+            {models.map((m) => (
+              <div
+                key={m.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1.5"
+              >
+                <span className="min-w-0 break-all font-mono text-xs">
+                  {m.id}
+                  {m.id === model.trim() && <Badge variant="success" className="ml-1.5">主模型</Badge>}
+                  {fallback.split(/[,，\s]+/).includes(m.id) && (
+                    <Badge className="ml-1.5">回退</Badge>
+                  )}
+                </span>
+                <span className="flex shrink-0 gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => setModel(m.id)}
+                  >
+                    设为主模型
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => addFallback(m.id)}
+                  >
+                    加入回退
+                  </Button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {testResult && (
         <div className="space-y-1.5">
@@ -223,8 +362,14 @@ export function AiSettingsCard() {
             <Sparkles className="mt-0.5 size-3.5 shrink-0" />
             <span className="min-w-0 break-words">
               {testResult.ok
-                ? `连通正常：${testResult.model} · ${testResult.elapsed_ms}ms`
+                ? `连通正常：${testResult.used_model || testResult.model} · ${testResult.elapsed_ms}ms`
                 : testResult.error}
+              {testResult.ok && testResult.fell_back && (
+                <span className="mt-1 block text-warning">
+                  主模型 {testResult.model} 未能出结论，已回退到 {testResult.used_model}。
+                  建议把主模型换成响应稳定的模型，避免每次都多花一轮调用。
+                </span>
+              )}
             </span>
           </div>
           {testResult.ok && testResult.sample && (

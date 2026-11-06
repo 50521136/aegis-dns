@@ -192,6 +192,14 @@ func (s *Store) GetSettings(ctx context.Context) (*model.GlobalSettings, error) 
 	if v, ok := kv["ai_model"]; ok {
 		set.AIModel = v
 	}
+	if v, ok := kv["ai_fallback_models"]; ok {
+		set.AIFallbackModels = v
+	}
+	if v, ok := kv["ai_max_tokens"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			set.AIMaxTokens = n
+		}
+	}
 	if v, ok := kv["ai_key_encrypted"]; ok {
 		set.AIKeyEncrypted = v
 	}
@@ -466,14 +474,16 @@ func (s *Store) SaveSettings(ctx context.Context, set *model.GlobalSettings) err
 		"sub_fetch_timeout_sec":   strconv.Itoa(set.SubFetchTimeoutSec),
 
 		// AI 诊断
-		"ai_enabled":       boolStr(set.AIEnabled),
-		"ai_base_url":      set.AIBaseURL,
-		"ai_model":         set.AIModel,
-		"ai_key_encrypted": set.AIKeyEncrypted,
-		"ai_timeout_sec":   strconv.Itoa(set.AITimeoutSec),
-		"ai_max_per_hour":  strconv.Itoa(set.AIMaxPerHour),
-		"ai_trigger_mode":  set.AITriggerMode,
-		"ai_auto_handle":   boolStr(set.AIAutoHandle),
+		"ai_enabled":         boolStr(set.AIEnabled),
+		"ai_base_url":        set.AIBaseURL,
+		"ai_model":           set.AIModel,
+		"ai_fallback_models": set.AIFallbackModels,
+		"ai_max_tokens":      strconv.Itoa(set.AIMaxTokens),
+		"ai_key_encrypted":   set.AIKeyEncrypted,
+		"ai_timeout_sec":     strconv.Itoa(set.AITimeoutSec),
+		"ai_max_per_hour":    strconv.Itoa(set.AIMaxPerHour),
+		"ai_trigger_mode":    set.AITriggerMode,
+		"ai_auto_handle":     boolStr(set.AIAutoHandle),
 
 		// 配额与新增开关：之前没写进 pairs，等于后台永远存不住。
 		"max_sub_entries":      strconv.Itoa(set.MaxSubEntries),

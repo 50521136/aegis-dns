@@ -170,11 +170,13 @@ func (s *Server) rebuildDiagnoser(set *model.GlobalSettings) {
 			return diagnose.LLMConfig{}
 		}
 		return diagnose.LLMConfig{
-			BaseURL:    cur.AIBaseURL,
-			APIKey:     s.decryptSecret(cur.AIKeyEncrypted),
-			Model:      cur.AIModel,
-			Timeout:    time.Duration(cur.AITimeoutSec) * time.Second,
-			MaxPerHour: cur.AIMaxPerHour,
+			BaseURL:        cur.AIBaseURL,
+			APIKey:         s.decryptSecret(cur.AIKeyEncrypted),
+			Model:          cur.AIModel,
+			Timeout:        time.Duration(cur.AITimeoutSec) * time.Second,
+			MaxPerHour:     cur.AIMaxPerHour,
+			MaxTokens:      cur.AIMaxTokens,
+			FallbackModels: diagnose.ParseFallbackModels(cur.AIFallbackModels),
 		}
 	}
 	modeFn := func() string {

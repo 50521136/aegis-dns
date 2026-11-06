@@ -513,6 +513,14 @@ type GlobalSettings struct {
 	AIBaseURL      string `json:"ai_base_url"`
 	AIModel        string `json:"ai_model"`
 	AIKeyEncrypted string `json:"-"`
+	// AIFallbackModels 是主模型失败后依次尝试的回退模型，逗号/换行/空格分隔。
+	//
+	// 为什么要回退：推理模型常因思考耗尽 max_tokens 而空输出，或某个模型
+	// 临时不可用；配一个便宜的非推理模型兜底，能避免「额度扣了、结论没有」。
+	AIFallbackModels string `json:"ai_fallback_models"`
+	// AIMaxTokens 是单次调用的 max_tokens，<=0 用 diagnose 包的默认值。
+	// 推理模型需要 1600+，旧版写死 800 会让 content 恒为空。
+	AIMaxTokens int `json:"ai_max_tokens"`
 	// AITimeoutSec 是单次诊断的超时，默认 30 秒。
 	AITimeoutSec int `json:"ai_timeout_sec"`
 	// AIMaxPerHour 是每小时最多的诊断次数，防止莫名刷爆模型额度。
@@ -787,6 +795,9 @@ func DefaultSettings() GlobalSettings {
 		AITimeoutSec:  30,
 		AIMaxPerHour:  20,
 		AITriggerMode: "manual",
+		// 推理模型思考量实测在 1190~2000+ 波动，默认给 4000 让一次
+		// 调用就能出结论（上限不是实际消耗，正常只用了 1253）。
+		AIMaxTokens: 4000,
 		// 自动处理默认开启，理由见 AIAutoHandle 字段注释。
 		AIAutoHandle: true,
 

@@ -694,16 +694,37 @@ export interface AISettings {
   ai_enabled: boolean
   ai_base_url: string
   ai_model: string
+  /** 主模型失败后依次尝试的回退模型，逗号/换行/空格分隔。 */
+  ai_fallback_models: string
+  /** 单次调用 max_tokens，0 表示用服务端默认值（推理模型建议 ≥4000）。 */
+  ai_max_tokens: number
   ai_timeout_sec: number
   ai_max_per_hour: number
   ai_trigger_mode: 'off' | 'on_submit' | 'manual'
   ai_key_set: boolean
 }
 
+/** 上游 /models 的单个模型。 */
+export interface AIModelInfo {
+  id: string
+  owned_by?: string
+}
+
+/** 拉取模型列表的结果；失败时 ok=false 且带 error，前端仍可手填。 */
+export interface AIModelsResult {
+  ok: boolean
+  base_url?: string
+  models: AIModelInfo[]
+  error?: string
+}
+
 /** 模型连通性测试结果。 */
 export interface AITestResult {
   ok: boolean
   model?: string
+  /** 实际给出结论的模型（主模型失败回退后与 model 不同）。 */
+  used_model?: string
+  fell_back?: boolean
   base_url?: string
   elapsed_ms?: number
   error?: string

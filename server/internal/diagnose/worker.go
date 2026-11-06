@@ -130,11 +130,21 @@ func (w *Worker) loop() {
 // runOne 执行一次完整诊断：收证据 → 调模型 → 过闸门 → 落库。
 func (w *Worker) runOne(fb model.Feedback) {
 	// 用独立的超时 ctx：与 HTTP 请求解耦，不受提交方断开影响。
-	timeout := time.Duration(w.cfgFn().Timeout)
+	//
+	// 预算要按回退链的最坏情况算：每个模型可能「思考耗尽」再自动重试一次，
+	// 主模型 + N 个回退 = 2*(1+N) 次调用。旧版只给 timeout+10s，
+	// 主模型一慢就把父级 deadline 吃光，回退模型一发请求就超时。
+	cfg := w.cfgFn()
+	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+10*time.Second)
+	attempts := 2 * (1 + len(cfg.FallbackModels))
+	budget := timeout*time.Duration(attempts) + 10*time.Second
+	if budget > 3*time.Minute {
+		budget = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	if !w.allowRate() {
@@ -148,10 +158,11 @@ func (w *Worker) runOne(fb model.Feedback) {
 		return
 	}
 
-	cfg := w.cfgFn()
+	cfg = w.cfgFn()
 	sug, err := Diagnose(ctx, cfg, ev)
 	if err != nil {
-		w.fail(ctx, fb.ID, "模型调用失败: "+err.Error())
+		// Diagnose 的错误已带「模型调用失败」前缀，别再叠一层。
+		w.fail(ctx, fb.ID, err.Error())
 		return
 	}
 
@@ -169,7 +180,9 @@ func (w *Worker) runOne(fb model.Feedback) {
 	out.AIDomains = strings.Join(guard.Action.Domains, ",")
 	out.AIGuardNotes = strings.Join(guard.Notes, "；")
 	out.AIEvidence = MarshalEvidence(ev)
-	out.AIModel = cfg.Model
+	// 记录实际给出结论的模型：主模型失败时这里会是回退模型，
+	// 写主模型名会让事后复盘查错对象。
+	out.AIModel = sug.Model
 
 	if err := w.st.WriteAIDiagnosis(ctx, &out); err != nil {
 		w.log.Error("写入诊断结果失败", "feedback", fb.ID, "err", err)

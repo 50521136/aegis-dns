@@ -201,14 +201,16 @@ func (s *Server) handleAdminGetAISettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ai_enabled":      set.AIEnabled,
-		"ai_base_url":     set.AIBaseURL,
-		"ai_model":        set.AIModel,
-		"ai_timeout_sec":  set.AITimeoutSec,
-		"ai_max_per_hour": set.AIMaxPerHour,
-		"ai_trigger_mode": set.AITriggerMode,
-		"ai_auto_handle":  set.AIAutoHandle,
-		"ai_key_set":      set.AIKeyEncrypted != "",
+		"ai_enabled":         set.AIEnabled,
+		"ai_base_url":        set.AIBaseURL,
+		"ai_model":           set.AIModel,
+		"ai_fallback_models": set.AIFallbackModels,
+		"ai_max_tokens":      set.AIMaxTokens,
+		"ai_timeout_sec":     set.AITimeoutSec,
+		"ai_max_per_hour":    set.AIMaxPerHour,
+		"ai_trigger_mode":    set.AITriggerMode,
+		"ai_auto_handle":     set.AIAutoHandle,
+		"ai_key_set":         set.AIKeyEncrypted != "",
 	})
 }
 
@@ -222,6 +224,8 @@ func (s *Server) handleAdminUpdateAISettings(w http.ResponseWriter, r *http.Requ
 		Enabled     *bool   `json:"ai_enabled"`
 		BaseURL     *string `json:"ai_base_url"`
 		Model       *string `json:"ai_model"`
+		Fallback    *string `json:"ai_fallback_models"`
+		MaxTokens   *int    `json:"ai_max_tokens"`
 		APIKey      *string `json:"ai_key"`
 		TimeoutSec  *int    `json:"ai_timeout_sec"`
 		MaxPerHour  *int    `json:"ai_max_per_hour"`
@@ -245,6 +249,18 @@ func (s *Server) handleAdminUpdateAISettings(w http.ResponseWriter, r *http.Requ
 	}
 	if req.Model != nil {
 		set.AIModel = strings.TrimSpace(*req.Model)
+	}
+	if req.Fallback != nil {
+		set.AIFallbackModels = strings.TrimSpace(*req.Fallback)
+	}
+	if req.MaxTokens != nil {
+		// 上限 32000：再大只会让一次失败调用烧掉更多额度，没意义。
+		if *req.MaxTokens < 0 || *req.MaxTokens > 32000 {
+			writeError(w, http.StatusUnprocessableEntity, CodeValidationFailed,
+				"ai_max_tokens 必须在 0~32000 之间（0 表示用默认值）", nil)
+			return
+		}
+		set.AIMaxTokens = *req.MaxTokens
 	}
 	if req.TimeoutSec != nil && *req.TimeoutSec > 0 {
 		set.AITimeoutSec = *req.TimeoutSec
@@ -321,7 +337,17 @@ func (s *Server) handleAdminTestAI(w http.ResponseWriter, r *http.Request) {
 		},
 		UserRuleCount: 1, SubBlockCount: 100, UserEnabled: true,
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Timeout)+5*time.Second)
+	// 回退链要串行走多个模型，且每个模型可能触发一次「思考耗尽」自动重试。
+	// 父级 ctx 必须按最坏情况给足预算，否则主模型吃光时间后，回退模型
+	// 一发请求就撞上父级 deadline（实测 25s 配置下两个模型都是
+	// context deadline exceeded）。单次调用仍由 callModel 内部按
+	// cfg.Timeout 独立限时，父级只是兜底。
+	attempts := 2 * (1 + len(cfg.FallbackModels))
+	budget := time.Duration(cfg.Timeout)*time.Duration(attempts) + 10*time.Second
+	if budget > 3*time.Minute {
+		budget = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	start := time.Now()
 	sug, err := diagnose.Diagnose(ctx, cfg, ev)
@@ -335,8 +361,34 @@ func (s *Server) handleAdminTestAI(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "model": cfg.Model, "base_url": cfg.BaseURL,
+		// 主模型失败时 Diagnose 会回退；回报实际给结论的模型，
+		// 否则面板显示主模型名、管理员会以为它一直可用。
+		"used_model": sug.Model, "fell_back": sug.Model != cfg.Model,
 		"elapsed_ms": elapsed,
 		"sample":     sug,
+	})
+}
+
+// handleAdminListAIModels 代理上游 /models，让面板能直接选模型而不是手敲。
+//
+// 用「当前已保存的设置」而不是前端传参：模型地址与 Key 只在服务端，
+// 前端永远拿不到明文 Key；顺带避免有人拿这个接口当任意 URL 探测器。
+func (s *Server) handleAdminListAIModels(w http.ResponseWriter, r *http.Request) {
+	cfg := s.currentLLMConfig()
+	if cfg.BaseURL == "" {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "模型地址未填写", nil)
+		return
+	}
+	models, err := diagnose.ListModels(r.Context(), cfg)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "base_url": cfg.BaseURL, "models": []diagnose.ModelInfo{},
+			"error": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "base_url": cfg.BaseURL, "models": models,
 	})
 }
 
@@ -347,11 +399,13 @@ func (s *Server) currentLLMConfig() diagnose.LLMConfig {
 		return diagnose.LLMConfig{}
 	}
 	return diagnose.LLMConfig{
-		BaseURL:    set.AIBaseURL,
-		APIKey:     s.decryptSecret(set.AIKeyEncrypted),
-		Model:      set.AIModel,
-		Timeout:    time.Duration(set.AITimeoutSec) * time.Second,
-		MaxPerHour: set.AIMaxPerHour,
+		BaseURL:        set.AIBaseURL,
+		APIKey:         s.decryptSecret(set.AIKeyEncrypted),
+		Model:          set.AIModel,
+		Timeout:        time.Duration(set.AITimeoutSec) * time.Second,
+		MaxPerHour:     set.AIMaxPerHour,
+		MaxTokens:      set.AIMaxTokens,
+		FallbackModels: diagnose.ParseFallbackModels(set.AIFallbackModels),
 	}
 }
 

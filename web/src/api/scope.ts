@@ -1,5 +1,8 @@
 import { api } from './client'
 import type {
+  AIModelsResult,
+  AISettings,
+  AITestResult,
   CaptchaResult,
   Feedback,
   FeedbackKind,
@@ -121,8 +124,6 @@ export async function updatePreferences(patch: Partial<Preferences>): Promise<Pr
 // AI 诊断（管理员）
 // ---------------------------------------------------------------------------
 
-import type { AISettings, AITestResult } from './types'
-
 /**
  * 触发一次 AI 诊断。
  *
@@ -161,6 +162,12 @@ export async function updateAISettings(patch: Partial<AISettings> & { ai_key?: s
 /** 用一条假数据跑一次模型，验证地址/Key/模型名是否都对。 */
 export async function testAI(): Promise<AITestResult> {
   const { data } = await api.post<AITestResult>('/admin/ai/test')
+  return data
+}
+
+/** 拉取上游 /models 列表（用服务端已保存的地址与 Key）。 */
+export async function listAIModels(): Promise<AIModelsResult> {
+  const { data } = await api.get<AIModelsResult>('/admin/ai/models')
   return data
 }
 
