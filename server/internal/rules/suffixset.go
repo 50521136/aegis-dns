@@ -3,6 +3,7 @@ package rules
 import (
 	"sort"
 	"strings"
+	"unsafe"
 
 	"github.com/miekg/dns"
 )
@@ -65,6 +66,8 @@ func (s *suffixSet) add(domains []string) {
 // 不去重会让数组白白变大，二分也要多走几层。
 func (s *suffixSet) finish() {
 	if len(s.sorted) == 0 {
+		// add may have reserved storage for entries that all failed validation.
+		s.sorted = nil
 		s.size = 0
 		return
 	}
@@ -76,11 +79,22 @@ func (s *suffixSet) finish() {
 			out = append(out, s.sorted[i])
 		}
 	}
-	// 把尾部残留清空，让 GC 能回收被去重掉的字符串引用
-	for i := len(out); i < len(s.sorted); i++ {
-		s.sorted[i] = ""
+	// Reslicing alone retains the original string-header array. Copy only when
+	// at least an eighth of its capacity and 64 KiB can be reclaimed; small
+	// savings do not justify a second allocation during snapshot rebuilding.
+	spare := cap(s.sorted) - len(out)
+	const minSpareBytes = 64 << 10
+	if spare >= (cap(s.sorted)+7)/8 &&
+		spare >= minSpareBytes/int(unsafe.Sizeof("")) {
+		compact := make([]string, len(out))
+		copy(compact, out)
+		s.sorted = compact
+	} else {
+		// Clear even spare capacity, since filtered entries or previous add
+		// calls may otherwise retain references beyond the visible length.
+		clear(s.sorted[len(out):cap(s.sorted)])
+		s.sorted = out
 	}
-	s.sorted = out
 	s.size = len(out)
 }
 
