@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -223,34 +224,59 @@ func TestDOQRejectedWhenDoTDisabled(t *testing.T) {
 
 // --- DoH3 ---
 
+func startDoH3TestServer(t *testing.T, srv *http3.Server) string {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var serveErr error
+	go func() {
+		defer close(done)
+		serveErr = srv.Serve(conn)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = conn.Close()
+		<-done
+	})
+
+	// Binding UDP is not enough: wait until HTTP/3 registers the listener.
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		if err := srv.SetQUICHeaders(make(http.Header)); err == nil {
+			return conn.LocalAddr().String()
+		} else if !errors.Is(err, http3.ErrNoAltSvcPort) {
+			t.Fatalf("checking HTTP/3 readiness: %v", err)
+		}
+		select {
+		case <-done:
+			t.Fatalf("starting HTTP/3 listener: %v", serveErr)
+		case <-timer.C:
+			t.Fatal("HTTP/3 listener was not registered in time")
+		case <-tick.C:
+		}
+	}
+}
+
 func TestDoH3ServesQueries(t *testing.T) {
 	s, _ := newDevCertServer(t)
-	addr := freeUDPAddr(t)
 
 	// 直接构造 http3.Server，与 Server.Start 里的接线保持一致。
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", s.handleDoH)
 	mux.HandleFunc("/dns-query/", s.handleDoH)
 	srv := &http3.Server{
-		Addr:       addr,
 		Handler:    mux,
 		TLSConfig:  s.certs.TLSConfigForALPN("h3"),
 		QUICConfig: &quic.Config{MaxIdleTimeout: 10 * time.Second},
 	}
 	s.doh3 = srv
-	go func() { _ = srv.ListenAndServe() }()
-	defer func() { _ = srv.Close() }()
-
-	// 等 QUIC 端口就绪。
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, err := net.ListenPacket("udp", addr); err != nil {
-			break
-		} else {
-			_ = c.Close()
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	addr := startDoH3TestServer(t, srv)
 
 	rt := &http3.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "dns.test.local"},
@@ -314,27 +340,14 @@ func TestDoHAltSvcAdvertisesH3(t *testing.T) {
 	// addListener 触发生成，只 new 一个对象（没有 listener）时 SetQUICHeaders
 	// 会返回 ErrNoAltSvcPort。所以这里必须真的起一个监听，
 	// 与 Server.Start 里的接线保持一致。
-	addr := freeUDPAddr(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", s.handleDoH)
 	s.doh3 = &http3.Server{
-		Addr:       addr,
 		Handler:    mux,
 		TLSConfig:  s.certs.TLSConfigForALPN("h3"),
 		QUICConfig: &quic.Config{MaxIdleTimeout: 10 * time.Second},
 	}
-	go func() { _ = s.doh3.ListenAndServe() }()
-	defer func() { _ = s.doh3.Close() }()
-	// 等监听就绪：端口被占（err != nil）说明已经 bind 上了。
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, err := net.ListenPacket("udp", addr); err != nil {
-			break
-		} else {
-			_ = c.Close()
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	addr := startDoH3TestServer(t, s.doh3)
 
 	h := http.Header{}
 	if err := s.doh3.SetQUICHeaders(h); err != nil {
@@ -343,8 +356,12 @@ func TestDoHAltSvcAdvertisesH3(t *testing.T) {
 	if got := h.Get("Alt-Svc"); got == "" {
 		t.Fatal("Alt-Svc 头为空：客户端不会发现 HTTP/3")
 	}
-	if !containsFold(h.Get("Alt-Svc"), "h3") {
-		t.Fatalf("Alt-Svc 里没有 h3: %q", h.Get("Alt-Svc"))
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `h3=":` + port + `"`; !containsFold(h.Get("Alt-Svc"), want) {
+		t.Fatalf("Alt-Svc = %q, want %q", h.Get("Alt-Svc"), want)
 	}
 }
 
