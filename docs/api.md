@@ -482,6 +482,7 @@ access token，改密码就形同虚设。
 | GET | `/admin/users?page&page_size&q` | 用户列表（含规则数与 IP 数） |
 | PUT | `/admin/users/{id}` | 启用/禁用/改角色/改邮箱 |
 | DELETE | `/admin/users/{id}` | 删除用户（级联删除其规则、订阅、IP、令牌） |
+| POST | `/admin/users/bulk/member` | 预览或批量发放会员 |
 | GET | `/admin/settings` | 全局设置 |
 | PUT | `/admin/settings` | 修改全局设置 |
 | POST | `/admin/snapshot/rebuild` | 强制重建配置快照 |
@@ -501,6 +502,23 @@ access token，改密码就形同虚设。
 - 不能删除自己
 - 系统必须**至少保留一个启用的管理员**（否则会把自己锁在门外）
 
+### POST /admin/users/bulk/member
+
+先预览，不写会员记录、不重建快照：
+
+```json
+{ "tier_id": "vip", "days": 30, "dry_run": true }
+```
+
+确认后将 `dry_run` 改为 `false`，并在请求头带上 `Idempotency-Key`（每个发放批次使用一个唯一标识，例如 UUID）。
+`tier_id` 必须是存在的非默认会员档位，`days` 须为 1–36500 的整数。
+只处理普通用户角色，不修改管理员。尚在有效期内的更高档位不会被降级，续期从当前到期时间和现在两者中较晚的时间算起。
+
+正式发放使用一次事务，快照在后台统一更新。请求超时后，使用**相同的键和参数**重试，以免重复发放；同一键不能用于不同的档位或天数。
+响应包含 `users`（实际改动或预计改动的账户数）、`tier`、`days`、`dry_run` 和 `replayed`。
+重试已经提交的批次时 `replayed` 为 `true`；同一键与不同参数组合返回 `409`。
+预览是查询时的统计，不会锁定用户名单；实际以发放事务中的用户为准。
+
 ### GET /admin/settings
 
 ```json
@@ -515,7 +533,7 @@ access token，改密码就形同虚设。
   "cache_max_ttl": 86400,
   "rate_limit_qps": 0,
   "max_inflight": 300,
-  "query_timeout_ms": 10000,
+  "query_timeout_ms": 3000,
   "query_log_size": 10000,
   "enable_query_log": true,
   "sub_interval_hours": 24,

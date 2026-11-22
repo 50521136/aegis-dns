@@ -266,3 +266,94 @@ func TestEmptyModeFallsBackToHedge(t *testing.T) {
 		t.Errorf("空模式应答来自 %s，期望 primary（按 hedge 处理）", src)
 	}
 }
+
+// Parallel queries must cap concurrent upstream work instead of launching the
+// whole pool at once.
+func TestParallelCapsConcurrentUpstreams(t *testing.T) {
+	var active atomic.Int64
+	var maxActive atomic.Int64
+	ups := make([]upstream.Upstream, 4)
+	for i := range ups {
+		ups[i] = &concurrencyUpstream{addr: string(rune('a' + i)), delay: 40 * time.Millisecond, fail: true, active: &active, maxActive: &maxActive}
+	}
+	p := newTestPool("parallel", ups...)
+
+	start := time.Now()
+	if _, _, err := p.ExchangeWithSource(context.Background(), testReq()); err == nil {
+		t.Fatal("全部上游失败时应返回错误")
+	}
+	if got := maxActive.Load(); got > int64(maxParallelUpstreams) {
+		t.Fatalf("并发上游数为 %d，超过预算 %d", got, maxParallelUpstreams)
+	}
+	if elapsed := time.Since(start); elapsed < 2*40*time.Millisecond {
+		t.Fatalf("耗时 %v，四个上游似乎没有分两批执行", elapsed)
+	}
+}
+
+type concurrencyUpstream struct {
+	addr      string
+	delay     time.Duration
+	active    *atomic.Int64
+	maxActive *atomic.Int64
+	fail      bool
+}
+
+func (u *concurrencyUpstream) Address() string { return u.addr }
+func (u *concurrencyUpstream) Close() error    { return nil }
+func (u *concurrencyUpstream) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	n := u.active.Add(1)
+	defer u.active.Add(-1)
+	for {
+		old := u.maxActive.Load()
+		if n <= old || u.maxActive.CompareAndSwap(old, n) {
+			break
+		}
+	}
+	select {
+	case <-time.After(u.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	if u.fail {
+		return nil, errors.New("假上游故障")
+	}
+	return resp, nil
+}
+
+func TestCancelledAttemptsDoNotTriggerCooldown(t *testing.T) {
+	u := &fakeUpstream{addr: "cancelled", delay: time.Second}
+	p := newTestPool("load_balance", u)
+
+	for i := 0; i < failureThreshold; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, _, err := p.ExchangeWithSource(ctx, testReq()); err == nil {
+			t.Fatal("已取消的查询应失败")
+		}
+	}
+	if _, _, err := p.ExchangeWithSource(context.Background(), testReq()); err != nil {
+		t.Fatalf("取消请求不应让上游进入冷却: %v", err)
+	}
+	if got := u.calls.Load(); got != int64(failureThreshold+1) {
+		t.Fatalf("实际调用 %d，取消请求不应被错误计入失败", got)
+	}
+}
+
+func TestRepeatedFailuresTriggerShortCooldown(t *testing.T) {
+	u := &fakeUpstream{addr: "failing", fail: true}
+	p := newTestPool("load_balance", u)
+	for i := 0; i < failureThreshold; i++ {
+		if _, _, err := p.ExchangeWithSource(context.Background(), testReq()); err == nil {
+			t.Fatal("故障上游应返回错误")
+		}
+	}
+	before := u.calls.Load()
+	if _, _, err := p.ExchangeWithSource(context.Background(), testReq()); err == nil {
+		t.Fatal("冷却中的上游仍应报告失败")
+	}
+	if got := u.calls.Load(); got != before {
+		t.Fatalf("冷却期间仍调用上游: before=%d after=%d", before, got)
+	}
+}

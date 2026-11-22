@@ -311,6 +311,7 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/invite-codes", s.handleCreateInviteCode)
 				r.Patch("/invite-codes/{code}", s.handleUpdateInviteCode)
 				r.Delete("/invite-codes/{code}", s.handleDeleteInviteCode)
+				r.Post("/users/bulk/member", s.handleBulkSetMember)
 				r.Post("/users/{id}/member", s.handleSetMember)
 				r.Post("/users/{id}/member/revoke", s.handleRevokeMember)
 

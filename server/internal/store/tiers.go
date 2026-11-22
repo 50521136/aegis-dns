@@ -11,7 +11,15 @@ import (
 
 // ListTiers 返回全部会员种类，按 sort 升序。
 func (s *Store) ListTiers(ctx context.Context) ([]model.TierDef, error) {
-	rows, err := s.read.QueryContext(ctx,
+	return listTiers(ctx, s.read)
+}
+
+type sqlQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func listTiers(ctx context.Context, q sqlQueryer) ([]model.TierDef, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id, name, sort, max_rules, max_subs, daily_queries, is_default
 		   FROM tiers ORDER BY sort, id`)
 	if err != nil {
@@ -36,7 +44,11 @@ func (s *Store) ListTiers(ctx context.Context) ([]model.TierDef, error) {
 // 每次生成快照都要按用户算配额，逐个查库会是 N+1；
 // 一次取出几十条档位拼成 map，之后纯内存查。
 func (s *Store) TierMap(ctx context.Context) (map[string]model.TierDef, error) {
-	tiers, err := s.ListTiers(ctx)
+	return tierMap(ctx, s.read)
+}
+
+func tierMap(ctx context.Context, q sqlQueryer) (map[string]model.TierDef, error) {
+	tiers, err := listTiers(ctx, q)
 	if err != nil {
 		return nil, err
 	}

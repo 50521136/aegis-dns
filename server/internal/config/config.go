@@ -20,6 +20,12 @@ type DNS struct {
 	ListenUDP string `yaml:"listen_udp"`
 	ListenTCP string `yaml:"listen_tcp"`
 	ListenDOT string `yaml:"listen_dot"`
+	// DoT 接入保护：限制活动连接、单 IP 连接和同时进行的 TLS 握手。
+	// 这些是进程级参数，不进入运行期快照。
+	DOTMaxConnections      int `yaml:"dot_max_connections"`
+	DOTMaxConnectionsPerIP int `yaml:"dot_max_connections_per_ip"`
+	DOTMaxHandshakes       int `yaml:"dot_max_handshakes"`
+	DOTHandshakeTimeoutSec int `yaml:"dot_handshake_timeout_sec"`
 	// ListenDOH 是 DoH 的 HTTPS 监听地址。dnsd 自己做 TLS 终止，
 	// 不依赖任何反代（文档约束 C4）。
 	ListenDOH string `yaml:"listen_doh"`
@@ -132,11 +138,15 @@ func Default() *Config {
 		Domain:  "",
 		DataDir: "./data",
 		DNS: DNS{
-			ListenUDP:    ":53",
-			ListenTCP:    ":53",
-			ListenDOT:    ":853",
-			ListenDOH:    ":443",
-			QueryLogRing: 1000,
+			ListenUDP:              ":53",
+			ListenTCP:              ":53",
+			ListenDOT:              ":853",
+			DOTMaxConnections:      512,
+			DOTMaxConnectionsPerIP: 16,
+			DOTMaxHandshakes:       64,
+			DOTHandshakeTimeoutSec: 3,
+			ListenDOH:              ":443",
+			QueryLogRing:           1000,
 		},
 		API: API{
 			Listen: ":8080",
@@ -216,6 +226,18 @@ func (c *Config) normalize() error {
 	}
 	if c.DNS.ListenDOT == "" {
 		c.DNS.ListenDOT = ":853"
+	}
+	if c.DNS.DOTMaxConnections <= 0 {
+		c.DNS.DOTMaxConnections = 512
+	}
+	if c.DNS.DOTMaxConnectionsPerIP <= 0 {
+		c.DNS.DOTMaxConnectionsPerIP = 16
+	}
+	if c.DNS.DOTMaxHandshakes <= 0 {
+		c.DNS.DOTMaxHandshakes = 64
+	}
+	if c.DNS.DOTHandshakeTimeoutSec <= 0 {
+		c.DNS.DOTHandshakeTimeoutSec = 3
 	}
 	if c.DNS.ListenDOH == "" {
 		c.DNS.ListenDOH = ":443"

@@ -128,7 +128,7 @@ func NewHandler(reg *Registry, cache *Cache, collector *stats.Collector, log *sl
 		cache = NewCache(10000, 60, 86400)
 	}
 	h.cache.Store(cache)
-	d := model.Defaults{MaxInflight: 300, QueryTimeout: 10000, BlockingMode: model.BlockingNullIP}
+	d := model.Defaults{MaxInflight: 300, QueryTimeout: 3000, BlockingMode: model.BlockingNullIP}
 	h.defaults.Store(&d)
 	sem := semaphore(make(chan struct{}, d.MaxInflight))
 	h.sem.Store(&sem)
@@ -160,7 +160,7 @@ func (h *Handler) ApplyDefaults(d model.Defaults) {
 		d.MaxInflight = 300
 	}
 	if d.QueryTimeout <= 0 {
-		d.QueryTimeout = 10000
+		d.QueryTimeout = 3000
 	}
 	h.defaults.Store(&d)
 
@@ -190,16 +190,30 @@ const (
 
 // ServeDNS 实现 dns.Handler 接口（UDP/TCP 路径）。
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
-	h.Handle(w, req, nil)
+	h.HandleContext(context.Background(), w, req, nil)
 }
 
 // Handle 执行完整查询管线。
 func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint) {
+	h.HandleContext(context.Background(), w, req, hint)
+}
+
+// HandleContext 执行完整查询管线，并把调用方的生命周期传给上游查询。
+// DoT/DoH 调用方应传入连接或请求 context；UDP/TCP 可继续使用 Handle。
+func (h *Handler) HandleContext(parent context.Context, w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	start := time.Now()
 	// 整条管线耗时：所有 return 分支都会经过这个 defer。
 	defer func() { observe(stageTotal, time.Since(start)) }()
 	// det 承载日志详情，贯穿整条管线逐步填充。
 	det := qdetail{Proto: protoOf(hint, w), ECS: ecsFrom(req)}
+	// Protocol handlers may have already observed a closed request/connection.
+	// Return before producing any response or consuming query resources.
+	if parent.Err() != nil {
+		return
+	}
 
 	// 协议开关：管理员关掉的协议直接拒绝。
 	// 放在最前面是因为它和用户无关，没有任何后续处理的意义；
@@ -232,7 +246,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 		}
 	}()
 
-	if w == nil || req == nil {
+	if w == nil || req == nil || parent.Err() != nil {
 		return
 	}
 
@@ -552,7 +566,7 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 
 	timeout := time.Duration(d.QueryTimeout) * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	// EDNS / DNSSEC：这两个开关只在「要发出去的报文」上动手。
@@ -604,6 +618,11 @@ func (h *Handler) Handle(w dns.ResponseWriter, req *dns.Msg, hint *IdentifyHint)
 	}
 	det.Upstream = upSrc
 	if err != nil {
+		// A closed DoT/DoH request owns the cancellation. Do not write a
+		// SERVFAIL into a response path that the caller has already abandoned.
+		if parent.Err() != nil {
+			return
+		}
 		h.upstreamErrs.Add(1)
 		h.log.Warn("上游解析失败", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype], "err", err)
 		h.record(user.UserID, q, "upstream", "SERVFAIL", time.Since(start), w, det)

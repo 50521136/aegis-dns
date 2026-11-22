@@ -26,7 +26,7 @@ import (
 // 正确的判据是「有多久没说话」：还在发查询就一直续期，真闲置才回收。
 
 // startTestDOT 起一个真实的 DoT 监听，返回地址与清理函数。
-func startTestDOT(t *testing.T) (string, *Handler) {
+func startTestDOT(t *testing.T) (string, *Handler, *Server) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	certs := certmgr.New("", "", true, log)
@@ -35,6 +35,7 @@ func startTestDOT(t *testing.T) (string, *Handler) {
 	}
 	h, _ := newTestHandler(t)
 	cfg := &config.Config{Domain: "dns.test.local"}
+	cfg.DNS.DOTMaxHandshakes = 2
 	s := NewServer(cfg, h, certs, log)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -42,9 +43,23 @@ func startTestDOT(t *testing.T) (string, *Handler) {
 		t.Fatalf("监听失败: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() { cancel(); _ = ln.Close() })
-	go s.serveDOT(ctx, ln)
-	return ln.Addr().String(), h
+	s.dotMu.Lock()
+	s.dotLn = ln
+	s.dotCancel = cancel
+	s.dotStopping = false
+	s.dotMu.Unlock()
+	s.dotAcceptWG.Add(1)
+	go func() {
+		defer s.dotAcceptWG.Done()
+		s.serveDOT(ctx, ln)
+	}()
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+		_ = s.Shutdown(shutdownCtx)
+		shutdownCancel()
+		cancel()
+	})
+	return ln.Addr().String(), h, s
 }
 
 // dialTestDOT 建一条到测试 DoT 服务端的连接。
@@ -94,7 +109,7 @@ func dotQuery(t *testing.T, conn *tls.Conn, name string) {
 //
 // 120 条只是为了让测试跑得快；原来上限 100，第 101 条必然读失败。
 func TestDOTConnectionSurvivesManyQueries(t *testing.T) {
-	addr, _ := startTestDOT(t)
+	addr, _, _ := startTestDOT(t)
 	conn := dialTestDOT(t, addr, "aaaaaaaaaa.dns.test.local")
 
 	for i := 0; i < 120; i++ {
@@ -111,7 +126,7 @@ func TestDOTConnectionSurvivesManyQueries(t *testing.T) {
 // 大于「若未续期就会超时」的间隔（用短间隔模拟），再发查询仍成功。
 // 判据是「续期生效」，不依赖具体秒数。
 func TestDOTIdleTimeoutIsSliding(t *testing.T) {
-	addr, _ := startTestDOT(t)
+	addr, _, _ := startTestDOT(t)
 	conn := dialTestDOT(t, addr, "aaaaaaaaaa.dns.test.local")
 
 	// 第一条
@@ -156,7 +171,7 @@ func TestDOTIdleTimeoutConstantSane(t *testing.T) {
 
 // TestDOTTenantIdentifiedPerConnection 确认改动没有破坏 SNI 租户识别。
 func TestDOTTenantIdentifiedPerConnection(t *testing.T) {
-	addr, h := startTestDOT(t)
+	addr, h, _ := startTestDOT(t)
 	conn := dialTestDOT(t, addr, "aaaaaaaaaa.dns.test.local")
 	dotQuery(t, conn, "example.com")
 
@@ -171,5 +186,65 @@ func TestDOTTenantIdentifiedPerConnection(t *testing.T) {
 	})
 	if u == nil || u.UserID != "usr_t1" {
 		t.Fatalf("按 SNI 识别租户失败，期望 usr_t1，实际 %v", u)
+	}
+}
+
+// TestDOTAdmissionRejectsWithoutWaiting verifies that a connection rejected by
+// the handshake limit never waits behind an existing slow handshake.
+func TestDOTAdmissionRejectsWithoutWaiting(t *testing.T) {
+	cfg := config.Default()
+	cfg.DNS.DOTMaxConnections = 2
+	cfg.DNS.DOTMaxConnectionsPerIP = 2
+	cfg.DNS.DOTMaxHandshakes = 1
+	s := NewServer(cfg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	firstServer, firstClient := net.Pipe()
+	defer firstServer.Close()
+	defer firstClient.Close()
+	if !s.admitDOTConn(firstServer) {
+		t.Fatal("first connection should be admitted")
+	}
+
+	secondServer, secondClient := net.Pipe()
+	defer secondServer.Close()
+	defer secondClient.Close()
+	started := time.Now()
+	if s.admitDOTConn(secondServer) {
+		t.Fatal("second connection should be rejected while handshake slot is full")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("rejected connection waited %v for a handshake slot", elapsed)
+	}
+
+	s.releaseDOTHandshake()
+	s.unregisterDOTConn(firstServer)
+	s.dotWG.Done()
+	thirdServer, thirdClient := net.Pipe()
+	defer thirdServer.Close()
+	defer thirdClient.Close()
+	if !s.admitDOTConn(thirdServer) {
+		t.Fatal("a new connection should be admitted after the handshake slot is released")
+	}
+	s.releaseDOTHandshake()
+	s.unregisterDOTConn(thirdServer)
+	s.dotWG.Done()
+	if got := s.DOTMetrics()["handshake_rejects"]; got != 1 {
+		t.Fatalf("handshake rejects = %d, want 1", got)
+	}
+}
+
+func TestDOTShutdownClosesActiveConnection(t *testing.T) {
+	addr, _, srv := startTestDOT(t)
+	conn := dialTestDOT(t, addr, "aaaaaaaaaa.dns.test.local")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	var b [1]byte
+	if _, err := conn.Read(b[:]); err == nil {
+		t.Fatal("active DoT connection remained readable after shutdown")
 	}
 }

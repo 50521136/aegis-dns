@@ -29,6 +29,11 @@ dns:
   listen_udp: ":53"
   listen_tcp: ":53"
   listen_dot: ":853"
+  # DoT 进程级接入限制；单 IP 上限可按共享 NAT 的客户端数量调整。
+  dot_max_connections: 512
+  dot_max_connections_per_ip: 16
+  dot_max_handshakes: 64
+  dot_handshake_timeout_sec: 3
   # dnsd 自己做 TLS 终止的 DoH 端口。
   listen_doh: ":443"
   # 明文 DoH，默认关闭。仅当你想在前面挂反向代理终止 TLS、

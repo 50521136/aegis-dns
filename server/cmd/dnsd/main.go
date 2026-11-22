@@ -120,7 +120,7 @@ func main() {
 	// dnsd 的内存计数器，所以这些数字只能在 dnsd 侧落地。
 	// 用周期性结构化日志（而不是新增端点或写库）的好处：不引入新的传输通道、
 	// 不动表结构，运维 grep 一次就能看，也能被 journal 留存回溯。
-	go metricsLoop(ctx, handler, log)
+	go metricsLoop(ctx, handler, srv, log)
 	// 打印生效域名而不是 cfg.Domain：config.yaml 的 domain 只是首次初始化的兜底，
 	// 后台改过域名后它就不再更新，直接打印会报出一个早就不用的域名。
 	effDomain := registry.Domain()
@@ -145,16 +145,19 @@ func main() {
 	<-ctx.Done()
 	log.Info("收到退出信号，开始优雅关闭")
 
-	// 关闭前把统计刷一次，避免丢掉最后一批数据。
-	// 这里用一次性调度器：退避与缓冲在退出路径上没有意义，只求尽力写完。
-	if storeHandle != nil {
-		flushOnce(context.Background(), storeHandle, collector, newFlushScheduler(defaultFlushBufferRows), log)
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 先关闭监听和活动连接，避免统计落库期间继续接收新请求。
+	// systemd 的停止窗口必须覆盖连接回收与最后一次统计落库。
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("关闭 DNS 监听时出错", "err", err)
+	}
+	// 关闭后把统计刷一次，最多给 5 秒；不能再用无界 Background，
+	// 否则 SQLite 卡住时会让 systemd 等满 TimeoutStopSec 后 SIGKILL。
+	if storeHandle != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushOnce(flushCtx, storeHandle, collector, newFlushScheduler(defaultFlushBufferRows), log)
+		flushCancel()
 	}
 	pools.Close()
 	log.Info("aegis-dnsd 已退出")
@@ -169,7 +172,7 @@ func main() {
 // 冷启动多说明域名长尾（容量/TTL），过期多说明上游 TTL 短（该调 minTTL），
 // 被并发合并的多说明是并发击穿（singleflight 已挡住上游压力，不该再拿命中率
 // 当目标）。三者动作完全不同，所以把分类计数打出来，让判断有据可依。
-func metricsLoop(ctx context.Context, h *dns.Handler, log *slog.Logger) {
+func metricsLoop(ctx context.Context, h *dns.Handler, srv *dns.Server, log *slog.Logger) {
 	const interval = 5 * time.Minute
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -179,6 +182,7 @@ func metricsLoop(ctx context.Context, h *dns.Handler, log *slog.Logger) {
 			return
 		case <-t.C:
 			m := h.Metrics()
+			dot := srv.DOTMetrics()
 			st := dns.StageMetrics()
 			absent, _ := m["cache_miss_absent"].(int64)
 			expired, _ := m["cache_miss_expired"].(int64)
@@ -199,6 +203,9 @@ func metricsLoop(ctx context.Context, h *dns.Handler, log *slog.Logger) {
 				"inflight", m["inflight"],
 				"rejected", m["rejected"],
 				"upstream_errors", m["upstream_errors"],
+				"dot_connection_rejects", dot["connection_rejects"],
+				"dot_handshake_rejects", dot["handshake_rejects"],
+				"dot_handshake_failures", dot["handshake_failures"],
 			)
 
 			// 分阶段耗时快照。

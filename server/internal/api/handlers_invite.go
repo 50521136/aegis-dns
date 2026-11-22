@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
+	"github.com/50521136/aegis-dns/server/internal/store"
 )
 
 // === 邀请码（管理员）===
@@ -279,6 +281,39 @@ func (s *Server) handleSetMember(w http.ResponseWriter, r *http.Request) {
 		"member_forever": st.Forever,
 		"member_days":    st.Days,
 	})
+}
+
+// handleBulkSetMember 一次给全部普通用户发放会员期，只触发一次快照重建。
+func (s *Server) handleBulkSetMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Days   int    `json:"days"`
+		TierID string `json:"tier_id"`
+		DryRun bool   `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Joining makes multiple header lines invalid just like a comma-joined
+	// header forwarded through a proxy. Dry runs ignore the key entirely.
+	result, err := s.store.BulkGrantMembership(r.Context(), store.BulkMemberRequest{
+		TierID: req.TierID, Days: req.Days, DryRun: req.DryRun,
+		IdempotencyKey: strings.Join(r.Header.Values("Idempotency-Key"), ","),
+		ActorID:        currentUser(r).ID,
+		IP:             clientIP(r, s.cfg.API.TrustedProxies),
+	})
+	switch {
+	case errors.Is(err, store.ErrBulkMemberDays), errors.Is(err, store.ErrBulkMemberTier), errors.Is(err, store.ErrBulkMemberKey):
+		writeError(w, http.StatusBadRequest, CodeValidationFailed, err.Error(), nil)
+	case errors.Is(err, store.ErrBulkMemberConflict):
+		writeError(w, http.StatusConflict, CodeConflict, err.Error(), nil)
+	case err != nil:
+		writeStoreError(w, err, "")
+	default:
+		if !result.DryRun && !result.Replayed {
+			s.coord.TouchedAsync()
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 // handleRevokeMember 直接取消会员（到期时间置 0，会员种类一并清掉）。

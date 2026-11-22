@@ -31,6 +31,14 @@ import (
 // 正好等于 HedgeDelay(700) + 本值(3000) —— 就是两个上游双双超时的尾巴。
 const PerUpstreamTimeout = 1500 * time.Millisecond
 
+const (
+	maxParallelUpstreams = 2
+	failureThreshold     = 3
+	upstreamCooldown     = 500 * time.Millisecond
+)
+
+var cooldownError = errors.New("上游处于冷却期")
+
 // Pool 是一组上游服务器。
 type Pool struct {
 	addrs []string
@@ -226,7 +234,7 @@ func (p *Pool) ExchangeWithSource(ctx context.Context, req *dns.Msg) (*dns.Msg, 
 func (p *Pool) dispatch(ctx context.Context, ups []upstream.Upstream, req *dns.Msg) (*dns.Msg, string, error) {
 	// 单个上游：直接查，没有可竞速的对象。
 	if len(ups) == 1 {
-		resp, err := p.exchangeOne(ctx, ups[0], req)
+		resp, err := p.exchangeOneTracked(ctx, 0, ups[0], req)
 		return resp, ups[0].Address(), err
 	}
 	switch p.mode {
@@ -248,9 +256,11 @@ func (p *Pool) dispatch(ctx context.Context, ups []upstream.Upstream, req *dns.M
 // 想真正用上备用请选 parallel 或 load_balance。
 func (p *Pool) exchangeHedge(ctx context.Context, ups []upstream.Upstream, req *dns.Msg) (*dns.Msg, string, error) {
 	type result struct {
-		resp *dns.Msg
-		src  string
-		err  error
+		resp    *dns.Msg
+		src     string
+		err     error
+		idx     int
+		started bool
 	}
 	raceCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -258,17 +268,24 @@ func (p *Pool) exchangeHedge(ctx context.Context, ups []upstream.Upstream, req *
 	ch := make(chan result, len(ups))
 	launched := 0
 	pending := 0
+	active := 0
 
 	launch := func(u upstream.Upstream) {
+		idx := launched
 		launched++
 		pending++
-		go func(u upstream.Upstream) {
-			r, e := p.exchangeOne(raceCtx, u, req)
-			ch <- result{r, u.Address(), e}
-		}(u)
+		if p.inCooldown(idx) {
+			ch <- result{src: u.Address(), err: cooldownError, idx: idx}
+			return
+		}
+		active++
+		go func(idx int, u upstream.Upstream) {
+			r, e := p.exchangeOneTracked(raceCtx, idx, u, req)
+			ch <- result{resp: r, src: u.Address(), err: e, idx: idx, started: true}
+		}(idx, u)
 	}
 	launchRemaining := func() {
-		for launched < len(ups) {
+		for launched < len(ups) && active < maxParallelUpstreams {
 			launch(ups[launched])
 		}
 	}
@@ -293,6 +310,13 @@ func (p *Pool) exchangeHedge(ctx context.Context, ups []upstream.Upstream, req *
 
 		case r := <-ch:
 			pending--
+			if r.started {
+				// A cooldown skip has no running goroutine and does not consume a
+				// concurrency slot; actual attempts always have a result error or response.
+				if active > 0 {
+					active--
+				}
+			}
 			if r.err == nil && r.resp != nil {
 				cancel() // 拿到结果立刻取消其余在途请求
 				return r.resp, r.src, nil
@@ -306,6 +330,10 @@ func (p *Pool) exchangeHedge(ctx context.Context, ups []upstream.Upstream, req *
 				launchRemaining()
 			}
 			if pending == 0 {
+				if launched < len(ups) {
+					launchRemaining()
+					continue
+				}
 				if lastErr == nil {
 					lastErr = errors.New("所有上游均失败")
 				}
@@ -336,6 +364,42 @@ func (p *Pool) exchangeOne(ctx context.Context, u upstream.Upstream, req *dns.Ms
 		return nil, fmt.Errorf("上游 %s 失败: %w", u.Address(), err)
 	}
 	return resp, nil
+}
+
+func (p *Pool) exchangeOneTracked(ctx context.Context, idx int, u upstream.Upstream, req *dns.Msg) (*dns.Msg, error) {
+	if p.inCooldown(idx) {
+		return nil, cooldownError
+	}
+	started := time.Now()
+	resp, err := p.exchangeOne(ctx, u, req)
+	if err == nil && resp != nil {
+		if resp.Rcode == dns.RcodeServerFailure {
+			p.recordFailure(idx)
+			return resp, nil
+		}
+		if idx >= 0 && idx < len(p.scores) {
+			p.scores[idx].observe(time.Since(started).Microseconds())
+		}
+		return resp, nil
+	}
+	if err != nil && ctx.Err() == nil {
+		p.recordFailure(idx)
+	}
+	return resp, err
+}
+
+func (p *Pool) inCooldown(idx int) bool {
+	return idx >= 0 && idx < len(p.scores) && time.Now().UnixNano() < p.scores[idx].cooldownUntil.Load()
+}
+
+func (p *Pool) recordFailure(idx int) {
+	if idx < 0 || idx >= len(p.scores) {
+		return
+	}
+	s := p.scores[idx]
+	if s.failures.Add(1) >= failureThreshold {
+		s.cooldownUntil.Store(time.Now().Add(upstreamCooldown).UnixNano())
+	}
 }
 
 // Close 关闭池内全部上游连接。

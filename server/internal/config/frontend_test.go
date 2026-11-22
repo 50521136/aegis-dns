@@ -81,3 +81,13 @@ func TestNormalizeFrontendDisabledByDefault(t *testing.T) {
 		t.Fatalf("FrontendHosts = %v，期望退到 domain", c.DNS.FrontendHosts)
 	}
 }
+
+func TestDefaultDOTAdmissionLimits(t *testing.T) {
+	c := Default()
+	if c.DNS.DOTMaxHandshakes != 64 || c.DNS.DOTHandshakeTimeoutSec != 3 {
+		t.Fatalf("default DoT handshake limits = (%d, %d), want (64, 3)", c.DNS.DOTMaxHandshakes, c.DNS.DOTHandshakeTimeoutSec)
+	}
+	if c.DNS.DOTMaxConnections != 512 || c.DNS.DOTMaxConnectionsPerIP != 16 {
+		t.Fatalf("default DoT connection limits = (%d, %d), want (512, 16)", c.DNS.DOTMaxConnections, c.DNS.DOTMaxConnectionsPerIP)
+	}
+}

@@ -760,12 +760,14 @@ func DefaultSettings() GlobalSettings {
 		// 缓存键是 (用户, 域名, 类型, DO)，条目数远多于域名数：
 		// 线上 24 小时 2659 个独立域名，按 3 个租户 × 约 1.5 种类型算就接近 1.2 万条，
 		// 原来的 1 万会把当天的热条目挤出去，命中率被 LRU 自己吃掉一部分。
-		CacheSize:      30000,
-		CacheMinTTL:    60,
-		CacheMaxTTL:    86400,
-		RateLimitQPS:   0, // 0 = 不限制
-		MaxInflight:    300,
-		QueryTimeoutMS: 10000,
+		CacheSize:    30000,
+		CacheMinTTL:  60,
+		CacheMaxTTL:  86400,
+		RateLimitQPS: 0, // 0 = 不限制
+		MaxInflight:  300,
+		// Three seconds is the default end-to-end query budget. Persisted
+		// non-zero settings remain authoritative when loaded from storage.
+		QueryTimeoutMS: 3000,
 		QueryLogSize:   10000,
 		EnableQueryLog: true,
 		// 三个协议默认全开，升级后行为不变

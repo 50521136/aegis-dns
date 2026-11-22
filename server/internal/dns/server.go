@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -36,8 +38,19 @@ type Server struct {
 	udp *dns.Server
 	tcp *dns.Server
 
-	dotLn net.Listener
-	doqLn *quic.Listener
+	dotLn                net.Listener
+	dotMu                sync.Mutex
+	dotStopping          bool
+	dotCancel            context.CancelFunc
+	dotConns             map[net.Conn]struct{}
+	dotByIP              map[string]int
+	dotHandshakeSem      chan struct{}
+	dotAcceptWG          sync.WaitGroup
+	dotWG                sync.WaitGroup
+	dotConnectionRejects atomic.Int64
+	dotHandshakeRejects  atomic.Int64
+	dotHandshakeFailures atomic.Int64
+	doqLn                *quic.Listener
 
 	dohTLS   *http.Server
 	dohPlain *http.Server
@@ -61,7 +74,18 @@ const dotIdleTimeout = 60 * time.Second
 
 // NewServer 创建 DNS 服务器。
 func NewServer(cfg *config.Config, h *Handler, certs *certmgr.Manager, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, handler: h, certs: certs, log: log}
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Server{
+		cfg: cfg, handler: h, certs: certs, log: log,
+		dotConns:        make(map[net.Conn]struct{}),
+		dotByIP:         make(map[string]int),
+		dotHandshakeSem: make(chan struct{}, dotMaxHandshakes(cfg)),
+	}
 }
 
 // Start 启动全部监听。
@@ -117,7 +141,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// --- DoT 853 ---
 	if addr := s.cfg.DNS.ListenDOT; addr != "" {
-		if !s.certs.Available() {
+		if s.certs == nil || !s.certs.Available() {
 			// 无证书时降级：只打警告，不阻止 UDP/TCP 服务（文档 3.4 兜底）。
 			s.log.Warn("没有可用证书，跳过 DoT 监听（UDP/TCP 不受影响）", "addr", addr)
 		} else {
@@ -126,7 +150,19 @@ func (s *Server) Start(ctx context.Context) error {
 				s.recordErr("DoT", addr, err)
 			} else {
 				s.dotLn = ln
-				go s.serveDOT(ctx, ln)
+				s.dotMu.Lock()
+				s.dotStopping = false
+				s.dotConns = make(map[net.Conn]struct{})
+				s.dotByIP = make(map[string]int)
+				s.dotHandshakeSem = make(chan struct{}, dotMaxHandshakes(s.cfg))
+				dotCtx, dotCancel := context.WithCancel(ctx)
+				s.dotCancel = dotCancel
+				s.dotMu.Unlock()
+				s.dotAcceptWG.Add(1)
+				go func() {
+					defer s.dotAcceptWG.Done()
+					s.serveDOT(dotCtx, ln)
+				}()
 				started++
 				s.log.Info("DNS over TLS 已启动", "addr", addr)
 			}
@@ -135,7 +171,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// --- DoH 443 ---
 	if addr := s.cfg.DNS.ListenDOH; addr != "" {
-		if !s.certs.Available() {
+		if s.certs == nil || !s.certs.Available() {
 			s.log.Warn("没有可用证书，跳过 DoH 监听", "addr", addr)
 		} else {
 			mux := http.NewServeMux()
@@ -185,7 +221,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// 放在 DoT/DoH 之后：它依赖证书，且与 DoT 共用 853 端口号（TCP 与 UDP
 	// 互不影响）。没证书时与 DoT 同样降级跳过，不阻止其它协议。
 	if addr := s.cfg.DNS.ListenDOQ; addr != "" {
-		if !s.certs.Available() {
+		if s.certs == nil || !s.certs.Available() {
 			s.log.Warn("没有可用证书，跳过 DoQ 监听", "addr", addr)
 		} else {
 			s.startDOQ(ctx, addr)
@@ -198,7 +234,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// 与 DoH 用同一个 mux 和同一个 URL 形态，只是底层换成 UDP+QUIC，
 	// 客户端靠 ALPN "h3" 区分。DoH（TCP）响应里会带 Alt-Svc 指过来（见 handleDoH）。
 	if addr := s.cfg.DNS.ListenDOH3; addr != "" {
-		if !s.certs.Available() {
+		if s.certs == nil || !s.certs.Available() {
 			s.log.Warn("没有可用证书，跳过 DoH3 监听", "addr", addr)
 		} else {
 			mux := http.NewServeMux()
@@ -256,7 +292,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		errs = append(errs, s.tcp.ShutdownContext(ctx))
 	}
 	if s.dotLn != nil {
-		errs = append(errs, s.dotLn.Close())
+		s.dotMu.Lock()
+		if !s.dotStopping {
+			s.dotStopping = true
+			if s.dotCancel != nil {
+				s.dotCancel()
+			}
+		}
+		ln := s.dotLn
+		s.dotMu.Unlock()
+		// Close the listener first so Accept cannot create more work, then close
+		// every admitted socket. Closing a TLS socket also interrupts a blocked
+		// handshake and a blocked DNS read.
+		errs = append(errs, ln.Close())
+		s.closeDOTConnections()
+		s.dotAcceptWG.Wait()
+		wait := make(chan struct{})
+		go func() { s.dotWG.Wait(); close(wait) }()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			errs = append(errs, ctx.Err())
+		}
 	}
 	if s.doqLn != nil {
 		errs = append(errs, s.doqLn.Close())
@@ -295,19 +352,179 @@ func (s *Server) serveDOT(ctx context.Context, ln net.Listener) {
 			s.log.Warn("DoT accept 失败", "err", err)
 			continue
 		}
-		go s.handleDOTConn(ctx, conn)
+		if !s.admitDOTConn(conn) {
+			_ = conn.Close()
+			continue
+		}
+		go func() {
+			defer s.dotWG.Done()
+			defer s.unregisterDOTConn(conn)
+			s.handleDOTConn(ctx, conn)
+		}()
+	}
+}
+
+func dotMaxConnections(cfg *config.Config) int {
+	if cfg == nil || cfg.DNS.DOTMaxConnections <= 0 {
+		return 512
+	}
+	return cfg.DNS.DOTMaxConnections
+}
+
+func dotMaxConnectionsPerIP(cfg *config.Config) int {
+	if cfg == nil || cfg.DNS.DOTMaxConnectionsPerIP <= 0 {
+		return 16
+	}
+	return cfg.DNS.DOTMaxConnectionsPerIP
+}
+
+func dotMaxHandshakes(cfg *config.Config) int {
+	if cfg == nil || cfg.DNS.DOTMaxHandshakes <= 0 {
+		return 64
+	}
+	return cfg.DNS.DOTMaxHandshakes
+}
+
+func dotRemoteIP(conn net.Conn) string {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err == nil {
+		return host
+	}
+	return conn.RemoteAddr().String()
+}
+
+// admitDOTConn performs connection, per-IP, handshake and shutdown admission
+// under one lock. A rejected connection never waits for a handshake slot.
+func (s *Server) admitDOTConn(conn net.Conn) bool {
+	s.dotMu.Lock()
+	defer s.dotMu.Unlock()
+	if s.dotStopping || s.dotConns == nil || s.dotByIP == nil || s.dotHandshakeSem == nil {
+		s.noteDOTReject("shutdown")
+		return false
+	}
+	if len(s.dotConns) >= dotMaxConnections(s.cfg) {
+		s.noteDOTReject("connections")
+		return false
+	}
+	ip := dotRemoteIP(conn)
+	if s.dotByIP[ip] >= dotMaxConnectionsPerIP(s.cfg) {
+		s.noteDOTReject("per_ip")
+		return false
+	}
+	select {
+	case s.dotHandshakeSem <- struct{}{}:
+	default:
+		s.noteDOTReject("handshakes")
+		return false
+	}
+	s.dotConns[conn] = struct{}{}
+	s.dotByIP[ip]++
+	// Add while holding dotMu. Shutdown takes the same lock before waiting,
+	// so it cannot race WaitGroup.Add with Wait.
+	s.dotWG.Add(1)
+	return true
+}
+
+func (s *Server) releaseDOTHandshake() {
+	s.dotMu.Lock()
+	sem := s.dotHandshakeSem
+	s.dotMu.Unlock()
+	if sem != nil {
+		<-sem
+	}
+}
+
+func (s *Server) noteDOTReject(reason string) {
+	var n int64
+	switch reason {
+	case "connections", "per_ip":
+		n = s.dotConnectionRejects.Add(1)
+	case "handshakes":
+		n = s.dotHandshakeRejects.Add(1)
+	default:
+		n = s.dotConnectionRejects.Add(1)
+	}
+	// Keep rejection logs useful under a scan without logging every refused
+	// socket. The counters remain exact for monitoring and tests.
+	if n == 1 || n%64 == 0 {
+		s.log.Warn("DoT 连接被拒绝", "reason", reason, "sample", n)
+	}
+}
+
+func (s *Server) unregisterDOTConn(conn net.Conn) {
+	s.dotMu.Lock()
+	defer s.dotMu.Unlock()
+	if _, ok := s.dotConns[conn]; !ok {
+		return
+	}
+	delete(s.dotConns, conn)
+	ip := dotRemoteIP(conn)
+	if s.dotByIP[ip] <= 1 {
+		delete(s.dotByIP, ip)
+	} else {
+		s.dotByIP[ip]--
+	}
+}
+
+func (s *Server) closeDOTConnections() {
+	s.dotMu.Lock()
+	conns := make([]net.Conn, 0, len(s.dotConns))
+	for conn := range s.dotConns {
+		conns = append(conns, conn)
+	}
+	s.dotMu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+func (s *Server) noteDOTHandshakeFailure(remote string, err error) {
+	n := s.dotHandshakeFailures.Add(1)
+	if n == 1 || n%64 == 0 {
+		s.log.Debug("DoT 握手失败（采样）", "remote", remote, "err", err, "sample", n)
+	}
+}
+
+func (s *Server) DOTMetrics() map[string]int64 {
+	return map[string]int64{
+		"connection_rejects": s.dotConnectionRejects.Load(),
+		"handshake_rejects":  s.dotHandshakeRejects.Load(),
+		"handshake_failures": s.dotHandshakeFailures.Load(),
 	}
 }
 
 func (s *Server) handleDOTConn(ctx context.Context, raw net.Conn) {
+	if raw == nil {
+		return
+	}
 	defer raw.Close()
+	handshakeHeld := true
+	defer func() {
+		if handshakeHeld {
+			s.releaseDOTHandshake()
+		}
+	}()
+	if s.certs == nil || !s.certs.Available() || s.handler == nil {
+		return
+	}
 
 	tlsConn := tls.Server(raw, s.certs.TLSConfig())
-	hsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	handshakeTimeout := time.Duration(s.cfg.DNS.DOTHandshakeTimeoutSec) * time.Second
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = 3 * time.Second
+	}
+	hsCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	err := tlsConn.HandshakeContext(hsCtx)
 	cancel()
+	// The admission slot protects only the TLS handshake. Release it before
+	// entering the DNS read loop so long-lived clients do not exhaust it.
+	s.releaseDOTHandshake()
+	handshakeHeld = false
 	if err != nil {
-		s.log.Debug("DoT 握手失败", "remote", raw.RemoteAddr().String(), "err", err)
+		s.noteDOTHandshakeFailure(raw.RemoteAddr().String(), err)
 		return
 	}
 
@@ -339,7 +556,7 @@ func (s *Server) handleDOTConn(ctx context.Context, raw net.Conn) {
 		// 收到一条就续期一次：空闲计时以「最后一次收到报文」为起点。
 		_ = tlsConn.SetDeadline(time.Now().Add(dotIdleTimeout))
 		w := &streamResponseWriter{conn: dnsConn, remote: raw.RemoteAddr(), local: raw.LocalAddr()}
-		s.handler.Handle(w, msg, &IdentifyHint{ClientID: clientID, Source: "sni", Host: normalizeHost(sni)})
+		s.handler.HandleContext(ctx, w, msg, &IdentifyHint{ClientID: clientID, Source: "sni", Host: normalizeHost(sni), Proto: "dot"})
 	}
 }
 

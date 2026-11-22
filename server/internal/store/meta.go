@@ -649,9 +649,14 @@ func (s *Store) GetAppVersion(ctx context.Context, channel string) (*model.AppVe
 
 // LogAudit 写一条审计记录。失败不影响主流程，仅记录错误。
 func (s *Store) LogAudit(ctx context.Context, userID, action, detail, ip string) {
-	_, _ = s.write.ExecContext(ctx,
+	_ = insertAudit(ctx, s.write, userID, action, detail, ip)
+}
+
+func insertAudit(ctx context.Context, q sqlExecer, userID, action, detail, ip string) error {
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO audit_log (ts, user_id, action, detail, ip) VALUES (?,?,?,?,?)`,
 		time.Now().Unix(), userID, action, detail, ip)
+	return err
 }
 
 // splitList 把逗号分隔的字符串拆成切片，去空白与空项。

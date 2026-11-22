@@ -43,16 +43,17 @@ func grantMember(ctx context.Context, q sqlExecer, uid, tierID string, days int,
 		return 0, err
 	}
 
-	now := time.Now().Unix()
-	base := now
-	if cur > base {
-		base = cur
+	next, applied := membershipGrant(cur, curTier, tierID, days, time.Now().Unix(), tiers)
+	if _, err := q.ExecContext(ctx,
+		`UPDATE users SET member_until = ?, tier_id = ? WHERE id = ?`, next, applied, uid); err != nil {
+		return 0, fmt.Errorf("更新会员期失败: %w", err)
 	}
-	next := base + int64(days)*86400
-	if next < 0 {
-		next = 0
-	}
+	return next, nil
+}
 
+func membershipGrant(cur int64, curTier, tierID string, days int, now int64,
+	tiers map[string]model.TierDef) (int64, string) {
+	next := max(0, max(now, cur)+int64(days)*86400)
 	applied := strings.TrimSpace(curTier)
 	want := strings.TrimSpace(tierID)
 	if want != "" {
@@ -67,12 +68,7 @@ func grantMember(ctx context.Context, q sqlExecer, uid, tierID string, days int,
 	if applied == "" {
 		applied = model.GrantableTierID(tiers, "")
 	}
-
-	if _, err := q.ExecContext(ctx,
-		`UPDATE users SET member_until = ?, tier_id = ? WHERE id = ?`, next, applied, uid); err != nil {
-		return 0, fmt.Errorf("更新会员期失败: %w", err)
-	}
-	return next, nil
+	return next, applied
 }
 
 // GrantMembership 给用户发放一段会员期（天数可正可负）。
