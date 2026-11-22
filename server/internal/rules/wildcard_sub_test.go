@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -122,8 +123,7 @@ func TestSubscriptionWildcardCountedInStats(t *testing.T) {
 
 // TestGlobPatternDoesNotEnterSuffixSet 验证通配模式不会被 suffixSet 静默吃掉。
 //
-// suffixSet.add 会对含 * 的条目调用 normalizeDomain，那必然报错并跳过；
-// 如果 Build 没有先分流，通配规则就又变回「不生效」。
+// 构建时字面索引与通配索引各自只接受对应类型的条目。
 func TestGlobPatternDoesNotEnterSuffixSet(t *testing.T) {
 	rs, err := Build(Layers{SubBlock: []string{"at*.doubanio.com"}})
 	if err != nil {
@@ -134,5 +134,61 @@ func TestGlobPatternDoesNotEnterSuffixSet(t *testing.T) {
 	}
 	if got := rs.subWildBlock.size; got != 1 {
 		t.Errorf("globSet 应收到 1 条，实际 %d", got)
+	}
+}
+
+// TestSubscriptionBuildPreservesMixedInput 验证直接消费原始切片不会改变
+// 混合订阅的分类、去重、非法项处理和匹配优先级。
+func TestSubscriptionBuildPreservesMixedInput(t *testing.T) {
+	block := []string{
+		"blocked.example",
+		"trk*.other.example",
+		"BLOCKED.example.",
+		"trk*.other.example",
+		"bad domain",
+		"bad*",
+	}
+	allow := []string{
+		"ok.blocked.example",
+		"safe*.blocked.example",
+		"OK.blocked.example.",
+		"bad*",
+	}
+	originalBlock := append([]string(nil), block...)
+	originalAllow := append([]string(nil), allow...)
+
+	rs, err := Build(Layers{SubBlock: block, SubAllow: allow})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	global, err := BuildWithGlobal(BuildGlobal(&model.GlobalSnap{SubBlock: block, SubAllow: allow}), Layers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(block, originalBlock) || !slices.Equal(allow, originalAllow) {
+		t.Fatal("构建不应修改输入切片")
+	}
+	if rs.Empty() || rs.Stats != (Stats{SubBlock: 3, SubAllow: 2}) {
+		t.Fatalf("tenant stats = %+v", rs.Stats)
+	}
+	if global.Empty() || global.Stats != (Stats{GSubBlock: 3, GSubAllow: 2}) {
+		t.Fatalf("global stats = %+v", global.Stats)
+	}
+	for _, tc := range []struct {
+		domain string
+		want   Action
+	}{
+		{"blocked.example", ActionBlock},
+		{"www.trk1.other.example", ActionBlock},
+		{"ok.blocked.example", ActionAllow},
+		{"safe1.blocked.example", ActionAllow},
+		{"other.example", ActionNone},
+	} {
+		if got := rs.Match(tc.domain, dns.TypeA).Action; got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.domain, got, tc.want)
+		}
+		if got := global.Match(tc.domain, dns.TypeA).Action; got != tc.want {
+			t.Errorf("global %s: got %v, want %v", tc.domain, got, tc.want)
+		}
 	}
 }

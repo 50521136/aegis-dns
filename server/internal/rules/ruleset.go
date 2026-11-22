@@ -121,14 +121,13 @@ func Build(l Layers) (*RuleSet, error) {
 		// 记录型错误不影响其它规则；这里不返回错误，只跳过。
 		_ = rs.addRule(r, rs.userAllow, rs.userRewrite, rs.userBlock)
 	}
-	// 订阅条目按「整域名 / 通配模式」分流：suffixSet 会静默丢弃含 * 的条目，
-	// 所以必须先拆开，否则通配规则又会被无声吃掉。
-	subAllowLit, subAllowGlob := splitGlobEntries(l.SubAllow)
-	subBlockLit, subBlockGlob := splitGlobEntries(l.SubBlock)
-	rs.subAllow.add(subAllowLit)
-	rs.subBlock.add(subBlockLit)
-	rs.subWildAllow.add(subAllowGlob)
-	rs.subWildBlock.add(subBlockGlob)
+	// 两个集合各自跳过不属于自己的条目，直接消费原始切片。
+	// 不再先拆成 literal/glob 两个临时切片，避免大订阅列表产生一份
+	// 数百万个字符串头的额外峰值。
+	rs.subAllow.add(l.SubAllow)
+	rs.subBlock.add(l.SubBlock)
+	rs.subWildAllow.add(l.SubAllow)
+	rs.subWildBlock.add(l.SubBlock)
 
 	if l.Global != nil {
 		rs.global = BuildGlobal(l.Global)
@@ -149,21 +148,6 @@ func Build(l Layers) (*RuleSet, error) {
 		SubBlock:    rs.subBlock.size + rs.subWildBlock.size,
 	}
 	return rs, nil
-}
-
-// splitGlobEntries 把条目拆成「整域名」与「含 * 的通配模式」两组。
-func splitGlobEntries(in []string) (literal, glob []string) {
-	if len(in) == 0 {
-		return nil, nil
-	}
-	for _, d := range in {
-		if isGlobPattern(d) {
-			glob = append(glob, d)
-		} else {
-			literal = append(literal, d)
-		}
-	}
-	return literal, glob
 }
 
 // insertDomains 把一批域名插进指定的 Trie，非法域名跳过。
@@ -501,12 +485,10 @@ func BuildGlobal(g *model.GlobalSnap) *GlobalLayer {
 	for _, r := range g.Rules {
 		_ = tmp.addRule(r, gl.allow, gl.rewrite, gl.block)
 	}
-	gAllowLit, gAllowGlob := splitGlobEntries(g.SubAllow)
-	gBlockLit, gBlockGlob := splitGlobEntries(g.SubBlock)
-	gl.subAllow.add(gAllowLit)
-	gl.subBlock.add(gBlockLit)
-	gl.subWildAllow.add(gAllowGlob)
-	gl.subWildBlock.add(gBlockGlob)
+	gl.subAllow.add(g.SubAllow)
+	gl.subBlock.add(g.SubBlock)
+	gl.subWildAllow.add(g.SubAllow)
+	gl.subWildBlock.add(g.SubBlock)
 	gl.subAllow.finish()
 	gl.subBlock.finish()
 	gl.subWildAllow.finish()

@@ -142,6 +142,25 @@ func TestSuffixSetMemoryAtScale(t *testing.T) {
 	}
 }
 
+func BenchmarkBuildGlobalSubscriptions(b *testing.B) {
+	const n = 600_000
+	snap := &model.GlobalSnap{SubBlock: make([]string, n)}
+	for i := range snap.SubBlock {
+		if i%1000 == 0 {
+			snap.SubBlock[i] = fmt.Sprintf("trk%06d*.example", i)
+		} else {
+			snap.SubBlock[i] = fmt.Sprintf("trk%06d.example", i)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		layer := BuildGlobal(snap)
+		if layer.gsubBlockSize != n {
+			b.Fatalf("gsubBlockSize = %d, want %d", layer.gsubBlockSize, n)
+		}
+	}
+}
+
 func BenchmarkSuffixSetLookup(b *testing.B) {
 	s := newSuffixSet()
 	r := rand.New(rand.NewSource(1))

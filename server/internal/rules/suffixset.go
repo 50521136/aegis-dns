@@ -30,16 +30,29 @@ type suffixSet struct {
 func newSuffixSet() *suffixSet { return &suffixSet{} }
 
 // add 批量插入域名。构建期允许重复，Finish 时统一去重排序。
+//
+// 输入也可能包含通配模式；这里直接跳过它们，而不是要求调用方先创建
+// 一份 literal 子切片。订阅列表可能有几十万条，少一次字符串头数组就
+// 能降低重建时的瞬时堆峰值。
 func (s *suffixSet) add(domains []string) {
 	if len(domains) == 0 {
 		return
 	}
-	if cap(s.sorted)-len(s.sorted) < len(domains) {
-		grown := make([]string, len(s.sorted), len(s.sorted)+len(domains))
+	literals := 0
+	for _, d := range domains {
+		if !isGlobPattern(d) {
+			literals++
+		}
+	}
+	if cap(s.sorted)-len(s.sorted) < literals {
+		grown := make([]string, len(s.sorted), len(s.sorted)+literals)
 		copy(grown, s.sorted)
 		s.sorted = grown
 	}
 	for _, d := range domains {
+		if isGlobPattern(d) {
+			continue
+		}
 		if dom, err := normalizeDomain(d); err == nil {
 			s.sorted = append(s.sorted, dom)
 		}
