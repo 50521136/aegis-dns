@@ -71,9 +71,13 @@ func blockedBy(rs *rules.RuleSet, domain string) bool {
 	return rs.Match(domain, 1).Action == rules.ActionBlock
 }
 
-// BenchmarkFallbackRuleConstruction compares the production dedupe-map path
-// with handing duplicates to suffixSet's existing sort-and-dedupe stage.
-// Inputs approximate the current production block-entry counts and duplicate ratio.
+// BenchmarkFallbackRuleConstruction builds the fallback ruleset at production
+// scale（tenant + global 条目，约 4MB 原始域名）。
+//
+// 两个子 benchmark 对比「平铺合并」（生产路径，原始去重已移交给
+// suffixSet.finish()，见 fallback_rules_maps_test.go 的等价性测试）与「把含
+// 重复条目的原始列表直传 rules.Build」：两条路最终都由 suffixSet.finish()
+// 统一去重，测的是合并阶段的开销。
 func BenchmarkFallbackRuleConstruction(b *testing.B) {
 	const (
 		tenantEntries = 2_596_988
@@ -98,7 +102,7 @@ func BenchmarkFallbackRuleConstruction(b *testing.B) {
 	snap.Global.SubBlock = global
 	snap.Users = []model.UserSnap{{Enabled: true, SubBlock: tenant}}
 
-	b.Run("dedupe-map", func(b *testing.B) {
+	b.Run("plain-merge", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			if _, err := buildFallbackRules(snap); err != nil {

@@ -235,17 +235,25 @@ func normalizeGlobDomain(s string) (string, error) {
 	if len(d) > 253 {
 		return "", errGlobTooLong
 	}
-	for i := 0; i < len(d); i++ {
-		c := d[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_', c == '.', c == '*':
-		default:
-			return "", errGlobBadChar
-		}
-	}
-	for _, label := range strings.Split(d, ".") {
-		if label == "" || len(label) > 63 {
-			return "", errGlobBadLabel
+	// 非法字符、标签长度、空标签合并到单 pass 扫描里，不再用 strings.Split
+	// 倒切（省下每条模式 1 个 slice header + N 个 string header 的分配）。
+	prev := -1
+	for i := 0; i <= len(d); i++ {
+		if i == len(d) || d[i] == '.' {
+			// 标签就是 d[prev+1 : i]
+			if i-prev-1 == 0 || i-prev-1 > 63 {
+				return "", errGlobBadLabel
+			}
+			for j := prev + 1; j < i; j++ {
+				switch c := d[j]; c {
+				case 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+					'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+					'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '_', '*':
+				default:
+					return "", errGlobBadChar
+				}
+			}
+			prev = i
 		}
 	}
 	return d, nil
