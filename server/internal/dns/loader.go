@@ -53,7 +53,8 @@ type Loader struct {
 	prevUserFlush map[string]int64
 	prevUserFP    map[string]string
 	// onReload 在每次成功重载后回调（用于刷新 handler 的运行时参数）。
-	onReload func(*model.Snapshot)
+	// 只传 Defaults，避免回调链无意中继续持有几十 MB 的快照载荷。
+	onReload func(model.Defaults)
 }
 
 // NewLoader 创建快照加载器。
@@ -69,7 +70,7 @@ func NewLoader(path string, reg *Registry, h *Handler, log *slog.Logger) *Loader
 }
 
 // OnReload 注册重载回调。
-func (l *Loader) OnReload(fn func(*model.Snapshot)) { l.onReload = fn }
+func (l *Loader) OnReload(fn func(model.Defaults)) { l.onReload = fn }
 
 // invalidateCache 在规则变更后清掉受影响的缓存条目。
 //
@@ -224,8 +225,12 @@ func (l *Loader) LoadOnce() error {
 	}
 	l.prevUserFP = next
 
+	// Registry.Build 已经把需要的规则转成不可变运行时结构；后续回调只
+	// 需要 Defaults。不要把包含数百万订阅字符串的 Snapshot 传出加载器，
+	// 否则回调链很容易把整份快照多保留一个 GC 周期。
+	defaults := snap.Defaults
 	if l.onReload != nil {
-		l.onReload(snap)
+		l.onReload(defaults)
 	}
 
 	st, err := os.Stat(l.path)

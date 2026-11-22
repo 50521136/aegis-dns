@@ -75,7 +75,7 @@ func TestLoaderDoesNotApplySameVersionTwice(t *testing.T) {
 	// 两次都读到同一份文件。回调（刷新运行时参数）跟着跑两次是无谓开销，
 	// 更糟的是每次都会重算一遍缓存失效。
 	reloads := 0
-	l.OnReload(func(*model.Snapshot) { reloads++ })
+	l.OnReload(func(model.Defaults) { reloads++ })
 
 	if err := l.LoadOnce(); err != nil {
 		t.Fatalf("首次加载失败: %v", err)

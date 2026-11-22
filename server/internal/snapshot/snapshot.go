@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,6 +27,26 @@ import (
 // rename 在同一文件系统内是原子的，读者要么看到完整旧文件、要么看到完整新文件，
 // 绝不会读到写了一半的内容。这也是 dnsd 侧可以无锁读文件的前提。
 func AtomicWrite(path string, data []byte) error {
+	return atomicWrite(path, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// AtomicWriteJSON 原子写入 JSON 值，但不先把整个 JSON 编码成 []byte。
+//
+// 快照本身可能几十 MB。先 json.Marshal 再写文件会同时保留「结构化快照」
+// 和「完整 JSON 字节串」，把编码阶段的峰值白白抬高一份快照大小。
+// 直接编码到临时文件保持原子替换语义，同时避免这份额外的长期存活缓冲。
+func AtomicWriteJSON(path string, value any) error {
+	return atomicWrite(path, func(w io.Writer) error {
+		enc := json.NewEncoder(w)
+		return enc.Encode(value)
+	})
+}
+
+// atomicWrite 负责临时文件、fsync 和 rename；调用方只负责写入内容。
+func atomicWrite(path string, write func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("创建快照目录失败: %w", err)
@@ -37,7 +58,7 @@ func AtomicWrite(path string, data []byte) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // 失败路径清理；成功 rename 后此调用无副作用
 
-	if _, err := tmp.Write(data); err != nil {
+	if err := write(tmp); err != nil {
 		tmp.Close()
 		return fmt.Errorf("写入临时快照失败: %w", err)
 	}
@@ -259,11 +280,7 @@ func Write(ctx context.Context, st *store.Store, path string, version int64, cha
 	if err != nil {
 		return nil, err
 	}
-	data, err := Marshal(snap)
-	if err != nil {
-		return nil, err
-	}
-	if err := AtomicWrite(path, data); err != nil {
+	if err := AtomicWriteJSON(path, snap); err != nil {
 		return nil, err
 	}
 	return snap, nil
@@ -271,12 +288,24 @@ func Write(ctx context.Context, st *store.Store, path string, version int64, cha
 
 // Read 从磁盘读取快照。
 func Read(path string) (*model.Snapshot, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+
 	var snap model.Snapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
+	dec := json.NewDecoder(f)
+	if err := dec.Decode(&snap); err != nil {
+		return nil, fmt.Errorf("解析快照 %s 失败: %w", path, err)
+	}
+	// Decoder.Decode 允许一个流里紧接着出现第二个 JSON 值；原来的
+	// json.Unmarshal 不允许，所以保留严格的「恰好一个 JSON 值」契约。
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("解析快照 %s 失败: 包含多个 JSON 值", path)
+		}
 		return nil, fmt.Errorf("解析快照 %s 失败: %w", path, err)
 	}
 	return &snap, nil

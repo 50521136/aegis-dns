@@ -94,10 +94,10 @@ func main() {
 
 	// --- 快照加载（先加载再监听，保证对外服务时规则已就绪）---
 	loader := dns.NewLoader(cfg.SnapshotPath(), registry, handler, log)
-	loader.OnReload(func(snap *model.Snapshot) {
-		handler.ApplyDefaults(snap.Defaults)
+	loader.OnReload(func(defaults model.Defaults) {
+		handler.ApplyDefaults(defaults)
 		// 缓存容量变化时重建缓存，避免旧容量一直生效。
-		handler.ResizeCache(snap.Defaults.CacheSize, snap.Defaults.CacheMinTTL, snap.Defaults.CacheMaxTTL)
+		handler.ResizeCache(defaults.CacheSize, defaults.CacheMinTTL, defaults.CacheMaxTTL)
 	})
 	loader.Run(ctx)
 
