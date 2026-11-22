@@ -506,7 +506,9 @@ func (h *Handler) HandleContext(parent context.Context, w dns.ResponseWriter, re
 	rs := user.Rules.Load()
 	rulesStart := time.Now()
 	if rs != nil && !rs.Empty() {
-		decision := rs.Match(q.Name, q.Qtype)
+		// 不传 q.Name：Stage 3 的 CacheKeyFrom 已经做过一遍 ToLower+去尾点
+		//（那些工作不必每笔查询重做两遍，报文的名字天生带尾点）。
+		decision := rs.Match(cacheKey.QName, q.Qtype)
 		observe(stageRules, time.Since(rulesStart))
 		switch decision.Action {
 		case rules.ActionAllow:
