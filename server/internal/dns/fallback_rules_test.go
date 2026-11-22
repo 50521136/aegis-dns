@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/50521136/aegis-dns/server/internal/model"
@@ -68,4 +69,55 @@ func TestFallbackRulesPassthroughIsEmpty(t *testing.T) {
 // blockedBy 判断某个域名在规则集里是否被判为拦截。
 func blockedBy(rs *rules.RuleSet, domain string) bool {
 	return rs.Match(domain, 1).Action == rules.ActionBlock
+}
+
+// BenchmarkFallbackRuleConstruction compares the production dedupe-map path
+// with handing duplicates to suffixSet's existing sort-and-dedupe stage.
+// Inputs approximate the current production block-entry counts and duplicate ratio.
+func BenchmarkFallbackRuleConstruction(b *testing.B) {
+	const (
+		tenantEntries = 2_596_988
+		tenantUnique  = 657_827
+		globalEntries = 659_309
+		globalUnique  = 536_098
+	)
+	makeEntries := func(prefix string, entries, unique int) []string {
+		pool := make([]string, unique)
+		for i := range pool {
+			pool[i] = fmt.Sprintf("d%07d.%s.example", i, prefix)
+		}
+		out := make([]string, entries)
+		for i := range out {
+			out[i] = pool[i%unique]
+		}
+		return out
+	}
+	snap := &model.Snapshot{Defaults: model.Defaults{FallbackPolicy: model.FallbackBlocklistOnly}}
+	global := makeEntries("g", globalEntries, globalUnique)
+	tenant := makeEntries("t", tenantEntries, tenantUnique)
+	snap.Global.SubBlock = global
+	snap.Users = []model.UserSnap{{Enabled: true, SubBlock: tenant}}
+
+	b.Run("dedupe-map", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := buildFallbackRules(snap); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("append-duplicates", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			block := make([]string, 0, len(global)+len(tenant))
+			block = append(block, global...)
+			block = append(block, tenant...)
+			if _, err := rules.Build(rules.Layers{
+				SubBlock: block,
+				Global:   &model.GlobalSnap{SubAllow: snap.Global.SubAllow},
+			}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
